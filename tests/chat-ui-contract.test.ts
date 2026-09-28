@@ -204,4 +204,11 @@ assertIncludes(shell, 'desktop-sidebar-toggle', 'desktop collapse control lives 
 assertIncludes(shell, 'mobile-sidebar-toggle', 'mobile menu control stays in the primary header');
 assertIncludes(shell, 'aria-expanded={!sideCollapsed}', 'desktop collapse control exposes its actual state');
 
+// Issue #86: workspace-bar (hamburger + Chat header) overlapped the iOS status bar
+// in standalone PWA mode because it never applied env(safe-area-inset-top), unlike
+// .chat-drawer-head which already did. Assert the same pattern on all three rules.
+assertIncludes(styles, 'padding-top: max(1rem, env(safe-area-inset-top));', 'workspace-bar base rule respects iPhone top safe area');
+assertIncludes(styles, 'padding-top: max(0.75rem, env(safe-area-inset-top));', 'workspace-bar 768px breakpoint respects iPhone top safe area');
+assertIncludes(styles, 'padding-top: max(0.7rem, env(safe-area-inset-top));', 'workspace-bar 480px breakpoint respects iPhone top safe area');
+
 console.log('chat UI contract tests passed');

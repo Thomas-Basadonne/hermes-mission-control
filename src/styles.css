@@ -540,6 +540,7 @@ body.modal-open .route-page-scroll {
   align-items: center;
   justify-content: space-between;
   padding: 1rem 1.5rem;
+  padding-top: max(1rem, env(safe-area-inset-top));
   border-radius: 0;
   border-bottom: 1px solid var(--color-border);
   gap: 1rem;
@@ -2615,6 +2616,7 @@ body.modal-open .route-page-scroll {
 
   .workspace-bar {
     padding: 0.75rem 1rem;
+    padding-top: max(0.75rem, env(safe-area-inset-top));
     align-items: center;
     flex-direction: row;
     min-height: 60px;
@@ -2755,6 +2757,7 @@ body.modal-open .route-page-scroll {
 @media (max-width: 480px) {
   .workspace-bar {
     padding-inline: 0.75rem;
+    padding-top: max(0.7rem, env(safe-area-inset-top));
   }
 
   .workspace-title-wrap {
