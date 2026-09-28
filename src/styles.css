@@ -2757,7 +2757,7 @@ body.modal-open .route-page-scroll {
 @media (max-width: 480px) {
   .workspace-bar {
     padding-inline: 0.75rem;
-    padding-top: max(0.7rem, env(safe-area-inset-top));
+    padding-top: max(0.75rem, env(safe-area-inset-top));
   }
 
   .workspace-title-wrap {

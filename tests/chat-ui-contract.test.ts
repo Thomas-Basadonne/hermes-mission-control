@@ -209,6 +209,6 @@ assertIncludes(shell, 'aria-expanded={!sideCollapsed}', 'desktop collapse contro
 // .chat-drawer-head which already did. Assert the same pattern on all three rules.
 assertIncludes(styles, 'padding-top: max(1rem, env(safe-area-inset-top));', 'workspace-bar base rule respects iPhone top safe area');
 assertIncludes(styles, 'padding-top: max(0.75rem, env(safe-area-inset-top));', 'workspace-bar 768px breakpoint respects iPhone top safe area');
-assertIncludes(styles, 'padding-top: max(0.7rem, env(safe-area-inset-top));', 'workspace-bar 480px breakpoint respects iPhone top safe area');
+assertIncludes(styles, '.workspace-bar {\n    padding-inline: 0.75rem;\n    padding-top: max(0.75rem, env(safe-area-inset-top));\n  }', 'workspace-bar 480px breakpoint respects iPhone top safe area (matches its own cascaded 0.75rem, not the unrelated chat-drawer-head value)');
 
 console.log('chat UI contract tests passed');
