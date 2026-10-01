@@ -1003,13 +1003,18 @@ def _get_hermes_home() -> Path:
 
 
 def _read_runtime_status() -> Optional[Dict[str, Any]]:
-    path = _get_hermes_home() / 'runtime_status.json'
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return None
+    home = _get_hermes_home()
+    for filename in ('gateway_state.json', 'runtime_status.json'):
+        path = home / filename
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text())
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            continue
+    return None
 
 
 def _read_version() -> str:
@@ -1050,6 +1055,21 @@ _STATUS_CACHE: tuple[float, Dict[str, Any]] | None = None
 _STATUS_CACHE_TTL_SECONDS = 2.0
 
 
+def _gateway_process_start_time(pid: int) -> Optional[int]:
+    """Match Hermes' start_time fingerprint without importing gateway internals."""
+    try:
+        # Linux field 22: split after comm, which may contain spaces or parentheses.
+        fields = Path(f'/proc/{pid}/stat').read_text(encoding='utf-8').rsplit(')', 1)[1].split()
+        return int(fields[19])
+    except (OSError, IndexError, ValueError):
+        pass
+    try:
+        # macOS/Windows: Hermes records epoch creation time in centiseconds.
+        return int(round(psutil.Process(pid).create_time() * 100)) if psutil is not None else None
+    except Exception:
+        return None
+
+
 def _collect_status_payload_uncached() -> Dict[str, Any]:
     version = _read_version()
     runtime = _read_runtime_status()
@@ -1060,6 +1080,9 @@ def _collect_status_payload_uncached() -> Dict[str, Any]:
     gateway_exit_reason = None
     gateway_updated_at = None
 
+    pid_records = []
+    if runtime and runtime.get('kind') in (None, 'hermes-gateway'):
+        pid_records.append(runtime)
     try:
         pid_file = _get_hermes_home() / 'gateway.pid'
         if pid_file.exists():
@@ -1067,14 +1090,41 @@ def _collect_status_payload_uncached() -> Dict[str, Any]:
             if raw:
                 try:
                     data = json.loads(raw)
-                    candidate = data.get('pid') if isinstance(data, dict) else int(raw)
-                except (json.JSONDecodeError, ValueError):
-                    candidate = int(raw)
-                if candidate and psutil is not None and psutil.pid_exists(candidate):
-                    gateway_pid = candidate
-                    gateway_running = True
-    except Exception:
+                    pid_records.append(data if isinstance(data, dict) else {'pid': data})
+                except json.JSONDecodeError:
+                    pid_records.append({'pid': raw})
+    except (OSError, UnicodeError):
         pass
+
+    # Merge fingerprints by PID so an unguarded legacy entry cannot resurrect
+    # a PID that the runtime record identifies as belonging to another process.
+    pid_candidates: Dict[int, set[int]] = {}
+    for record in pid_records:
+        try:
+            candidate = int(record.get('pid'))
+            if candidate <= 0:
+                continue
+        except (TypeError, ValueError, OverflowError):
+            continue
+        fingerprints = pid_candidates.setdefault(candidate, set())
+        if record.get('start_time') is not None:
+            try:
+                fingerprints.add(int(record['start_time']))
+            except (TypeError, ValueError, OverflowError):
+                pass
+
+    for candidate, fingerprints in pid_candidates.items():
+        try:
+            if psutil is None or not psutil.pid_exists(candidate):
+                continue
+            current_start = _gateway_process_start_time(candidate) if fingerprints else None
+            if current_start is not None and any(start != current_start for start in fingerprints):
+                continue
+            gateway_pid = candidate
+            gateway_running = True
+            break
+        except (TypeError, ValueError, OSError):
+            continue
 
     if runtime:
         gateway_state = runtime.get('gateway_state')
