@@ -1,0 +1,10 @@
+import { filterModels } from './src/lib/chat-model-options.ts';
+
+const models = ['alpha', 'beta', 'gamma', 'delta'];
+const query = 'a';
+const result = filterModels(query, models);
+console.log('Query:', query);
+console.log('Models:', models);
+console.log('Filtered:', result);
+console.log('Query length:', query.length);
+console.log('Models length:', models.length);

@@ -49,6 +49,7 @@ import { clearPendingChatSubmit, persistPendingChatSubmit, readPendingChatSubmit
 import { applySyncedAssistantMessage, applySyncedChatMessage, applySyncedUserMessage, chatSyncStreamUrl, fetchChatTranscript, publishChatSync, replaceWithCanonicalChatMessages, shouldApplySequencedEvent, type ChatSyncEnvelope } from './chat-sync';
 import { getWebSocketUrl, MAX_RECONNECTS, mintWsCredential, nextReconnectDelay, RPC_TIMEOUT_MS } from './chat-transport';
 import { commandOutput, executeReasoningSlashCommand, resultText } from './chat-commands';
+import { setSessionReasoning } from './chat-status-runtime';
 import {
   buildClarifyAnswers,
   extractClarifyToolContent,
@@ -1550,6 +1551,14 @@ export function useGatewayChat(
     }
   }, [appendSystemMessage, ensureSession, refreshModel, request]);
 
+  const switchReasoning = useCallback(async (value: string, expectedSessionId?: string): Promise<void> => {
+    const activeSessionId = await ensureSession();
+    if (expectedSessionId && expectedSessionId !== activeSessionId) throw new Error('Chat changed; select reasoning again.');
+    const confirmed = await setSessionReasoning(value, activeSessionId, request);
+    if (sessionIdRef.current !== activeSessionId) return;
+    setModelIdentity((current) => current ? { ...current, reasoningEffort: confirmed } : current);
+  }, [ensureSession, request]);
+
   const executeSlashCommand = useCallback(async (command: string, depth = 0): Promise<boolean> => {
     const parsed = parseSlash(command);
     if (!parsed.name) {
@@ -1876,6 +1885,7 @@ export function useGatewayChat(
     ensureSession,
     claimLastChatPointer,
     switchModel,
+    switchReasoning,
     closeModelPicker,
     commandPrefill,
     connect,

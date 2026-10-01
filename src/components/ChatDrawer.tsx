@@ -39,7 +39,7 @@ import {
   XCircle,
   Users,
 } from 'lucide-react';
-import { ChatModelPicker } from './ChatModelPicker';
+import { ChatStatusRuntime } from './ChatStatusRuntime';
 import { ChatComposer } from './ChatComposer';
 import { ChatTodoPlan } from './chat/ChatTodoPlan';
 import { ToolRunSummary } from './chat/ToolRunSummary';
@@ -335,6 +335,7 @@ function AutoHideModeTabs({ active, onSelect, containerRef, chatLed = 'none', ro
 const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToken, initialSessionId, freshSessionId, chatMode = 'general', botProfile, onClose, onStartTaskChat, onNewChat, onOpenRooms }: CanonicalChatDrawerProps) {
   const { t } = useI18n();
   const [draft, setDraft] = useState('');
+  const [runtimeChanging, setRuntimeChanging] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -436,6 +437,7 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
     modelPickerRefresh,
     request,
     switchModel,
+    switchReasoning,
     closeModelPicker,
     commandPrefill,
     connect,
@@ -1913,17 +1915,6 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
         </header>
         {!modelPickerOpen && onOpenRooms ? <AutoHideModeTabs active="chat" onSelect={(mode) => { if (mode === 'rooms') onOpenRooms(); }} containerRef={drawerRef} chatLed={chatHelpAttention} /> : null}
 
-        {modelPickerOpen ? (
-          <ChatModelPicker
-            request={request}
-            sessionId={sessionId}
-            currentModel={modelIdentity ? `${modelIdentity.provider ? `${modelIdentity.provider}/` : ''}${modelIdentity.model}` : undefined}
-            initialRefresh={modelPickerRefresh}
-            onClose={closeModelPicker}
-            onSelect={switchModel}
-          />
-        ) : null}
-
         <div ref={scrollRef} onScroll={handleTranscriptScroll} className={`chat-transcript ${previewMode ? 'is-preview' : ''} ${showTodoPlan ? 'has-todo-plan' : ''} ${isDragging ? 'is-dragging' : ''}`} aria-live="polite">
           {isDragging ? (
             <div className="chat-drop-hint"><Paperclip size={20} /><span>{t('chatDrawer.dropFiles')}</span></div>
@@ -2037,15 +2028,21 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
               {statusLineLabel}
             </span>
             <span className="chat-status-line-separator">|</span>
-            <span className="chat-status-line-model-group">
-              <span className="chat-status-line-model" title={modelIdentity ? `${modelIdentity.model}${modelIdentity.provider ? ` via ${modelIdentity.provider}` : ''}` : 'Model not available'}>
-                {modelIdentity?.model || 'Model unavailable'}
-              </span>
-              <span className="chat-status-line-separator">|</span>
-              <span className="chat-status-line-reasoning">
-                {modelIdentity?.reasoningEffort || '—'}
-              </span>
-            </span>
+            <ChatStatusRuntime
+              identity={modelIdentity}
+              sessionId={sessionId}
+              profile={botProfile || 'default'}
+              request={request}
+              modelOpen={modelPickerOpen}
+              refresh={modelPickerRefresh}
+              onOpenModel={() => { void submitPrompt('/model'); }}
+              onCloseModel={closeModelPicker}
+              onModelChange={switchModel}
+              onReasoningChange={switchReasoning}
+              onBusyChange={setRuntimeChanging}
+              running={running}
+              disabled={connectionState !== 'connected' || previewMode}
+            />
             <span className="chat-status-line-separator">|</span>
             <span className="chat-status-line-ctx" title={contextTokens == null ? 'Context usage not available yet' : `${contextTokens.toLocaleString()} / ${contextWindow.toLocaleString()} context tokens`}>
               {contextTokens == null ? `—/${formatTokens(contextWindow)}` : `${formatTokens(contextTokens)}/${formatTokens(contextWindow)}`}
@@ -2095,7 +2092,7 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
           onClearBotTarget={clearActiveBotTarget}
           running={running}
           submitting={submitting}
-          disabled={connectionState !== 'connected'}
+          disabled={connectionState !== 'connected' || runtimeChanging}
           todoVisible={todoPlanVisible}
           onToggleTodo={() => setTodoPlanVisible((v) => !v)}
         />

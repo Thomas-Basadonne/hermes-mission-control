@@ -98,7 +98,7 @@ assertIncludes(styles, 'flex-wrap: nowrap;', 'mobile status line keeps every met
 assertIncludes(styles, '.chat-status-line-bar {\n    display: none;', 'mobile status line replaces the linear bar with the ring');
 assertIncludes(styles, '.chat-status-line-separator {\n    display: inline;', 'mobile status line keeps separators between adjacent metadata');
 assertIncludes(styles, '.chat-status-line-verb {\n    flex: 0 0 auto;\n    max-width: none;\n    overflow: visible;', 'mobile status verb stays fully readable');
-assertIncludes(component, 'chat-status-line-model-group', 'model and reasoning share one compact mobile group');
+assertIncludes(component, '<ChatStatusRuntime', 'statusline delegates model and reasoning to the interactive compact group');
 assertIncludes(styles, '.chat-status-line-model-group {', 'model and reasoning use one compact flex group');
 assertIncludes(component, "chat-transcript ${previewMode ? 'is-preview' : ''} ${showTodoPlan ? 'has-todo-plan' : ''}", 'preview transcript exposes explicit TODO inset state');
 assertIncludes(styles, '.chat-transcript.is-preview.has-todo-plan .chat-resume-button {\n  margin-bottom: 4.5rem;', 'mobile resume clearance does not depend on relational selectors');

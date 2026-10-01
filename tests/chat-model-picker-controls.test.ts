@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const picker = readFileSync(new URL('../src/components/ChatModelPicker.tsx', import.meta.url), 'utf8');
+const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+assert.match(picker, /<select[\s\S]*?aria-label="Provider"/, 'provider selection must have an explicit accessible control');
+assert.match(picker, /modelRows\(providers, filter, recent, selectedProvider\)/, 'provider control scopes the displayed models');
+assert.match(picker, /setSelectedProvider\(event\.target\.value\); setFilter\(''\)/, 'changing provider clears a stale model/provider search');
+assert.match(css, /\.chat-status-popover \.chat-model-option\s*\{[^}]*border-bottom: 1px solid var\(--color-border\)/, 'restore visible model row separators');
+assert.match(css, /\.chat-status-popover \.chat-model-picker-head\s*\{[^}]*border-bottom: 1px solid var\(--color-border\)/, 'restore header separator');
+console.log('chat model picker controls tests passed');

@@ -1,236 +1,131 @@
-import { useI18n } from '../lib/i18n';
-import { Check, ChevronRight, Cpu, Loader2, RefreshCw, Search, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ChatModelProviderOption, ChatModelSwitchResult } from '../lib/chat-protocol';
 import { isCoarsePointer } from '../lib/device';
+import { modelRows, rememberModel, type ModelSelection } from '../lib/chat-status-runtime';
 
-type GatewayRequest = <T,>(method: string, params?: Record<string, unknown>) => Promise<T>;
-
-type ChatModelPickerProps = {
-  request: GatewayRequest;
+type Props = {
+  request: <T,>(method: string, params?: Record<string, unknown>) => Promise<T>;
   sessionId: string | null;
   currentModel?: string;
+  currentProvider?: string;
+  profile?: string;
   initialRefresh?: boolean;
   onClose: () => void;
-  onSelect: (model: string, provider: string, confirmExpensiveModel?: boolean) => Promise<ChatModelSwitchResult>;
+  onSelect: (model: string, provider: string, confirm?: boolean) => Promise<ChatModelSwitchResult>;
 };
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+function normalizeProviders(raw: unknown): ChatModelProviderOption[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const payload = 'result' in raw && raw.result && typeof raw.result === 'object' ? raw.result : raw;
+  if (!('providers' in payload) || !Array.isArray(payload.providers)) return [];
+  return payload.providers.flatMap((provider) => {
+    if (typeof provider?.slug !== 'string' || !provider.slug) return [];
+    const models = Array.isArray(provider.models) ? provider.models.filter((model: unknown): model is string => typeof model === 'string' && !!model.trim()) : [];
+    return [{ slug: provider.slug, name: provider.name || provider.slug, models, total_models: provider.total_models ?? models.length, authenticated: provider.authenticated !== false, warning: provider.warning }];
+  });
 }
 
-function normalizeProvider(value: unknown): ChatModelProviderOption | null {
-  const raw = asRecord(value);
-  if (!raw || typeof raw.slug !== 'string' || !raw.slug.trim()) return null;
-  const models = Array.isArray(raw.models)
-    ? raw.models.filter((model): model is string => typeof model === 'string' && model.trim().length > 0)
-    : [];
-  return {
-    slug: raw.slug.trim(),
-    name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : raw.slug.trim(),
-    models,
-    total_models: typeof raw.total_models === 'number' ? raw.total_models : models.length,
-    is_current: raw.is_current === true,
-    authenticated: raw.authenticated !== false,
-    warning: typeof raw.warning === 'string' ? raw.warning : undefined,
-  };
-}
-
-function unwrapResult(value: unknown): Record<string, unknown> {
-  const raw = asRecord(value);
-  if (!raw) return {};
-  const nested = asRecord(raw.result);
-  return nested ?? raw;
-}
-
-export function ChatModelPicker({
-  request,
-  sessionId,
-  currentModel,
-  initialRefresh = false,
-  onClose,
-  onSelect,
-}: ChatModelPickerProps) {
-  const { t } = useI18n();
+export function ChatModelPicker({ request, sessionId, currentModel, currentProvider, profile = 'default', initialRefresh = false, onClose, onSelect }: Props) {
+  const key = `mission-control-model-recents:${profile}`;
+  const [recent, setRecent] = useState<ModelSelection[]>(() => {
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || '[]');
+      return Array.isArray(value) ? value.filter((item) => typeof item?.provider === 'string' && typeof item?.model === 'string').slice(0, 5) : [];
+    } catch { return []; }
+  });
   const [providers, setProviders] = useState<ChatModelProviderOption[]>([]);
-  const [selectedProviderSlug, setSelectedProviderSlug] = useState('');
   const [filter, setFilter] = useState('');
+  const [selectedProvider, setSelectedProvider] = useState('');
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [switchingModel, setSwitchingModel] = useState<string | null>(null);
-  const [pendingConfirmation, setPendingConfirmation] = useState<{
-    model: string;
-    provider: string;
-    message: string;
-  } | null>(null);
+  const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<(ModelSelection & { message: string }) | null>(null);
+  const [highlight, setHighlight] = useState(0);
+  const listId = useId();
+  const listRef = useRef<HTMLDivElement>(null);
+  const rows = useMemo(() => modelRows(providers, filter, recent, selectedProvider), [providers, filter, recent, selectedProvider]);
 
-  const loadOptions = async (refresh = initialRefresh) => {
+  const load = async (refresh = false) => {
+    setLoading(true);
     setError(null);
-    if (refresh) setRefreshing(true);
-    else setLoading(true);
     try {
-      const raw = await request<unknown>('model.options', {
-        ...(sessionId ? { session_id: sessionId } : {}),
-        include_unconfigured: true,
-        ...(refresh ? { refresh: true } : {}),
-      });
-      const payload = unwrapResult(raw);
-      const next = Array.isArray(payload.providers)
-        ? payload.providers.map(normalizeProvider).filter((provider): provider is ChatModelProviderOption => Boolean(provider))
-        : [];
-      setProviders(next);
-      const current = next.find((provider) => provider.is_current)
-        ?? next.find((provider) => currentModel?.startsWith(`${provider.slug}/`) || currentModel?.includes(provider.slug));
-      setSelectedProviderSlug(current?.slug ?? next[0]?.slug ?? '');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load model options.');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+      const payload = await request('model.options', { ...(sessionId ? { session_id: sessionId } : {}), include_unconfigured: true, ...(refresh ? { refresh: true } : {}) });
+      setProviders(normalizeProviders(payload));
+      setHighlight(0);
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not load models.'); }
+    finally { setLoading(false); }
   };
+  useEffect(() => { void load(initialRefresh); }, [request, sessionId]);
+  useEffect(() => { listRef.current?.querySelector('[data-highlighted="true"]')?.scrollIntoView({ block: 'nearest' }); }, [highlight]);
 
-  useEffect(() => {
-    void loadOptions();
-    // The picker is intentionally loaded once per open. The refresh button is explicit.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [request, sessionId]);
-
-  const selectedProvider = providers.find((provider) => provider.slug === selectedProviderSlug) ?? providers[0] ?? null;
-  const filteredModels = useMemo(() => {
-    const query = filter.trim().toLowerCase();
-    if (!selectedProvider) return [];
-    if (!query) return selectedProvider.models;
-    return selectedProvider.models.filter((model) => model.toLowerCase().includes(query));
-  }, [filter, selectedProvider]);
-
-  const choose = async (model: string, provider: string, confirmExpensiveModel = false) => {
-    setSwitchingModel(model);
+  const choose = async (selection: ModelSelection, confirm = false) => {
+    setSwitching(true);
     setError(null);
     try {
-      const result = await onSelect(model, provider, confirmExpensiveModel);
+      const result = await onSelect(selection.model, selection.provider, confirm);
       if (result.confirmRequired) {
-        setPendingConfirmation({
-          model,
-          provider,
-          message: result.confirmMessage || result.warning || 'This model has unusually high known pricing.',
-        });
+        setConfirmation({ ...selection, message: result.confirmMessage || result.warning || 'This model has unusually high pricing.' });
         return;
       }
-      if (!result.ok) {
-        setError(result.error || 'Could not switch model.');
-        return;
-      }
-      setPendingConfirmation(null);
-    } finally {
-      setSwitchingModel(null);
-    }
+      if (!result.ok) throw new Error(result.error || 'Could not switch model.');
+      const next = rememberModel(recent, selection);
+      setRecent(next);
+      try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* storage can be blocked */ }
+      onClose();
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not switch model.'); }
+    finally { setSwitching(false); }
   };
 
   return (
-    <section className="chat-model-picker" aria-label={t('modelPicker.chooseAria')}>
+    <section className="chat-model-picker" aria-label="Choose provider and model" onKeyDown={(event) => {
+      if (event.key === 'Escape') { event.stopPropagation(); onClose(); return; }
+      if ((event.target as HTMLElement).tagName === 'SELECT' || switching || confirmation || !rows.length) return;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        let next = highlight;
+        for (let count = 0; count < rows.length; count++) { next = (next + step + rows.length) % rows.length; if (!rows[next].disabled) break; }
+        setHighlight(next);
+      } else if (event.key === 'Enter' && (event.target as HTMLElement).tagName === 'INPUT') {
+        event.preventDefault();
+        if (rows[highlight] && !rows[highlight].disabled) void choose(rows[highlight]);
+      }
+    }}>
       <header className="chat-model-picker-head">
-        <div className="chat-model-picker-title">
-          <span className="chat-model-picker-icon"><Cpu size={16} aria-hidden /></span>
-          <div>
-            <span className="eyebrow">{t('chatDrawer.runtime')}</span>
-            <strong>{t('chatDrawer.chooseModel')}</strong>
-          </div>
-        </div>
+        <strong>Choose model</strong>
         <div className="chat-model-picker-actions">
-          <button type="button" className="chat-model-picker-icon-button" onClick={() => void loadOptions(true)} disabled={refreshing} aria-label={t('modelPicker.refresh')} title={t('modelPicker.refresh')}>
-            <RefreshCw size={15} className={refreshing ? 'chat-spin' : ''} />
-          </button>
-          <button type="button" className="chat-model-picker-icon-button" onClick={onClose} aria-label={t('modelPicker.close')} title={t('modelPicker.close')}>
-            <X size={17} />
-          </button>
+          <button type="button" disabled={loading || switching} onClick={() => void load(true)}>Refresh</button>
+          <button type="button" onClick={onClose}>Close</button>
         </div>
       </header>
-
-      {currentModel ? (
-        <div className="chat-model-picker-current">
-          <span>{t('modelPicker.active')}</span>
-          <strong>{currentModel}</strong>
-        </div>
-      ) : null}
-
-      {loading ? (
-        <div className="chat-model-picker-state"><Loader2 size={16} className="chat-spin" /> Loading providers…</div>
-      ) : error && providers.length === 0 ? (
-        <div className="chat-model-picker-state is-error">{error}</div>
-      ) : (
-        <>
-          <div className="chat-model-picker-section-label">{t('modelPicker.provider')}</div>
-          <div className="chat-model-provider-list" role="tablist" aria-label={t('modelPicker.modelProviders')}>
-            {providers.map((provider) => {
-              const active = provider.slug === selectedProvider?.slug;
-              const disabled = provider.authenticated === false || provider.models.length === 0;
-              return (
-                <button
-                  key={provider.slug}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  disabled={disabled}
-                  className={`chat-model-provider ${active ? 'is-selected' : ''} ${disabled ? 'is-disabled' : ''}`}
-                  onClick={() => { setSelectedProviderSlug(provider.slug); setFilter(''); setPendingConfirmation(null); }}
-                  title={provider.warning || provider.name}
-                >
-                  <span>{provider.name}</span>
-                  <small>{provider.models.length || provider.total_models || 0}</small>
-                </button>
-              );
-            })}
-          </div>
-
-          <label className="chat-model-search">
-            <Search size={15} aria-hidden />
-            <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={t('modelPicker.filterModels')} aria-label={t('modelPicker.filterModels')} autoFocus={!isCoarsePointer()} />
-          </label>
-
-          {pendingConfirmation ? (
-            <div className="chat-model-confirm" role="alert">
-              <strong>{t('modelPicker.confirmSwitch')}</strong>
-              <p>{pendingConfirmation.message}</p>
-              <div className="chat-model-confirm-actions">
-                <button type="button" className="chat-choice" onClick={() => setPendingConfirmation(null)}>{t('curate.cancel')}</button>
-                <button type="button" className="chat-choice is-primary" onClick={() => void choose(pendingConfirmation.model, pendingConfirmation.provider, true)}>{t('modelPicker.switchAnyway')}</button>
-              </div>
-            </div>
-          ) : null}
-
-          <div className="chat-model-picker-section-label">
-            <span>{selectedProvider?.name || 'Models'}</span>
-            <span>{filteredModels.length} available</span>
-          </div>
-          <div className="chat-model-list" role="listbox" aria-label="Available models">
-            {filteredModels.length === 0 ? (
-              <div className="chat-model-picker-state">{t('modelPicker.noMatch')}</div>
-            ) : filteredModels.map((model) => {
-              const active = model === currentModel;
-              const switching = switchingModel === model;
-              return (
-                <button
-                  key={`${selectedProvider?.slug}:${model}`}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  className={`chat-model-option ${active ? 'is-current' : ''}`}
-                  disabled={Boolean(switchingModel)}
-                  onClick={() => selectedProvider && void choose(model, selectedProvider.slug)}
-                >
-                  <span className="chat-model-option-mark">{switching ? <Loader2 size={14} className="chat-spin" /> : active ? <Check size={14} /> : <ChevronRight size={14} />}</span>
-                  <span className="chat-model-option-name">{model}</span>
-                  {active ? <small>{t('modelPicker.current')}</small> : null}
-                </button>
-              );
-            })}
-          </div>
-          {error ? <p className="chat-model-picker-error">{error}</p> : null}
-          <p className="chat-model-picker-footnote">{t('modelPicker.footnote')}</p>
-        </>
-      )}
+      <label className="chat-model-provider-select">
+        <span>Provider</span>
+        <select aria-label="Provider" value={selectedProvider} disabled={loading || switching || !!confirmation} onChange={(event) => { setSelectedProvider(event.target.value); setFilter(''); setHighlight(0); setError(null); }}>
+          <option value="">All providers</option>
+          {providers.map((provider) => <option key={provider.slug} value={provider.slug} disabled={provider.authenticated === false || !provider.models.length}>{provider.name} ({provider.models.length}){provider.authenticated === false ? ' · not configured' : !provider.models.length ? ' · no models' : ''}</option>)}
+        </select>
+      </label>
+      <label className="chat-model-search">
+        <input role="combobox" aria-expanded="true" aria-controls={listId} aria-activedescendant={rows[highlight] ? `${listId}-${highlight}` : undefined} aria-autocomplete="list" aria-label="Search provider or model" placeholder="Search provider or model…" value={filter} onChange={(event) => { setFilter(event.target.value); setHighlight(0); }} autoFocus={!isCoarsePointer()} />
+      </label>
+      {confirmation ? <div className="chat-model-confirm" role="alert">
+        <strong>Confirm model switch</strong><p>{confirmation.message}</p>
+        <div className="chat-model-confirm-actions"><button type="button" disabled={switching} onClick={() => setConfirmation(null)}>Cancel</button><button type="button" disabled={switching} onClick={() => void choose(confirmation, true)}>Switch anyway</button></div>
+      </div> : null}
+      <div className="chat-model-list" role="listbox" id={listId} ref={listRef} aria-label="Available models" aria-busy={loading || switching}>
+        {loading ? <p className="chat-model-picker-state">Loading models…</p> : !rows.length ? <p className="chat-model-picker-state">No matching models.</p> : rows.map((row, index) => {
+          const active = row.model === currentModel && row.provider === currentProvider;
+          return <div key={`${row.provider}:${row.model}`}>
+            {row.recent && index === 0 ? <p className="chat-model-picker-section-label">Recent</p> : null}
+            {!row.recent && (index === 0 || rows[index - 1].recent || rows[index - 1].provider !== row.provider) ? <p className="chat-model-picker-section-label">{row.providerName}</p> : null}
+            <button type="button" id={`${listId}-${index}`} role="option" aria-selected={active} data-highlighted={index === highlight} className={`chat-model-option ${active ? 'is-current' : ''}`} disabled={row.disabled || switching || !!confirmation} title={row.warning || `${row.providerName} · ${row.model}`} onClick={() => void choose(row)}>
+              <span className="chat-model-option-name">{row.model}</span>
+              <small>{row.providerName}{active ? ' · current' : row.disabled ? ' · not configured' : ''}</small>
+            </button>
+          </div>;
+        })}
+      </div>
+      {error ? <p className="chat-model-picker-error" role="alert">{error}</p> : null}
     </section>
   );
 }

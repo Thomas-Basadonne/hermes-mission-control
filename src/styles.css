@@ -5041,7 +5041,7 @@ body.modal-open .route-page-scroll {
   flex-wrap: wrap;
   gap: 0.35rem;
   min-height: 1.5rem;
-  padding: 0.5rem 1rem;
+  padding: 0.2rem 1rem;
   border-top: 1px solid var(--color-border-subtle);
   color: var(--color-text-muted);
   background: var(--color-surface);
@@ -5079,7 +5079,8 @@ body.modal-open .route-page-scroll {
 }
 
 .chat-status-line-separator {
-  color: var(--color-border);
+  color: var(--color-text-muted);
+  font-weight: 500;
   user-select: none;
 }
 
@@ -5105,7 +5106,76 @@ body.modal-open .route-page-scroll {
 }
 
 .chat-status-line-reasoning {
-  color: var(--color-text-muted);
+  color: var(--color-warning);
+  font-weight: 500;
+}
+
+/* Runtime controls keep the existing statusline geometry, not composer chrome. */
+.chat-status-line .chat-status-control {
+  min-height: 1.5rem !important;
+  min-width: 0 !important;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-status-line .chat-status-line-model { flex: 0 1 auto; font-weight: 600; }
+.chat-status-line .chat-status-line-reasoning { flex: 0 0 auto; }
+.chat-status-control:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
+.chat-status-control:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.chat-status-control:disabled { cursor: default; }
+.chat-status-popover {
+  position: absolute;
+  z-index: 15;
+  bottom: calc(100% + 0.25rem);
+  left: 1rem;
+  right: 1rem;
+  max-height: min(55dvh, 30rem);
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface-raised);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--color-text) 12%, transparent);
+  overscroll-behavior: contain;
+}
+.chat-status-popover .chat-model-picker { max-height: none; overflow: visible; border: 0; background: transparent; box-shadow: none; padding: 0.75rem; }
+.chat-status-popover .chat-model-picker-head > strong,
+.chat-reasoning-picker-head > strong { color: var(--color-text); font-size: 0.8rem; font-weight: 600; }
+.chat-status-popover .chat-model-picker-actions button,
+.chat-reasoning-picker-head button { border: 0; padding: 0 0.35rem; background: transparent; color: var(--color-text-muted); font: 400 0.72rem inherit; cursor: pointer; }
+.chat-status-popover .chat-model-search { margin-top: 0.35rem; }
+.chat-status-popover .chat-model-list { max-height: min(35dvh, 21rem); overflow: auto; margin-top: 0.4rem; overscroll-behavior: contain; }
+.chat-status-popover .chat-model-picker-head { padding-bottom: 0.5rem; border-bottom: 1px solid var(--color-border); }
+.chat-status-popover .chat-model-provider-select { display: flex; align-items: center; gap: 0.65rem; padding: 0.5rem 0; border-bottom: 1px solid var(--color-border); color: var(--color-text-muted); font-size: 0.72rem; }
+.chat-status-popover .chat-model-provider-select select { flex: 1; min-width: 0; max-width: 100%; padding: 0.25rem 0.35rem; border: 0; border-radius: 0; background: var(--color-surface-raised); color: var(--color-text); font: inherit; font-weight: 500; }
+.chat-status-popover .chat-model-picker-section-label { margin: 0.5rem 0 0.2rem; padding: 0.35rem 0.4rem; border-bottom: 1px solid var(--color-border); font-size: 0.68rem; font-weight: 500; text-transform: none; letter-spacing: 0; }
+.chat-status-popover .chat-model-option { width: 100%; border: 0; border-bottom: 1px solid var(--color-border); border-radius: 0; padding: 0.4rem; }
+.chat-status-popover .chat-model-option[data-highlighted="true"] { background: var(--color-surface); }
+.chat-status-popover .chat-model-option-name { font-family: inherit; font-size: 0.76rem; font-weight: 500; white-space: normal; overflow-wrap: anywhere; }
+.chat-status-popover .chat-model-option.is-current .chat-model-option-name { color: var(--color-accent); font-weight: 600; }
+.chat-status-popover .chat-model-option small { max-width: 45%; flex: 0 0 auto; text-align: right; overflow-wrap: anywhere; font-weight: 400; }
+.chat-status-popover .chat-model-option:disabled { opacity: 0.5; cursor: default; }
+.chat-status-picker-notice { margin: 0; padding: 0.6rem 0.75rem 0; color: var(--color-warning); font-size: 0.7rem; }
+.chat-status-popover.is-reasoning { padding: 0.65rem 0.75rem; }
+.chat-status-popover.is-reasoning .chat-status-picker-notice { padding: 0 0 0.3rem; }
+.chat-reasoning-picker-head { display: flex; align-items: center; justify-content: space-between; }
+.chat-reasoning-picker-note { margin: 0.1rem 0 0.4rem; color: var(--color-text-muted); font-size: 0.68rem; }
+.chat-reasoning-options { display: flex; flex-wrap: wrap; gap: 0.2rem; }
+.chat-reasoning-options button { border: 0; padding: 0 0.6rem; background: transparent; color: var(--color-text-muted); font-size: 0.78rem; cursor: pointer; }
+.chat-reasoning-options button:hover:not(:disabled) { background: var(--color-surface); }
+.chat-reasoning-options button[aria-pressed="true"] { color: var(--color-warning); font-weight: 600; }
+@media (pointer: coarse) {
+  .chat-status-line .chat-status-control { min-height: 32px !important; }
+  .chat-status-line { padding-block: 0; }
+}
+@media (max-width: 640px) {
+  .chat-status-popover { left: 0.5rem; right: 0.5rem; }
+  .chat-status-popover .chat-model-option { flex-direction: column; align-items: flex-start; gap: 0.15rem; }
+  .chat-status-popover .chat-model-option small { margin-left: 0; max-width: 100%; text-align: left; }
 }
 
 .chat-status-line-ctx {
@@ -5155,8 +5225,8 @@ body.modal-open .route-page-scroll {
     display: flex;
     flex-wrap: nowrap;
     gap: 0.3rem;
-    min-height: 2.55rem;
-    padding: 0.45rem 0.75rem;
+    min-height: 2rem;
+    padding: 0 0.75rem;
     overflow: hidden;
   }
 

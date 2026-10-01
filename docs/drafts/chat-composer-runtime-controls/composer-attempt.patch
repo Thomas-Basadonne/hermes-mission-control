@@ -1,0 +1,326 @@
+diff --git a/src/components/ChatComposer.tsx b/src/components/ChatComposer.tsx
+index 5b57298..bc1b036 100644
+--- a/src/components/ChatComposer.tsx
++++ b/src/components/ChatComposer.tsx
+@@ -7,6 +7,7 @@ import {
+   type FormEvent,
+   type KeyboardEvent,
+   type RefObject,
++  type ReactNode,
+ } from 'react';
+ import { ListTodo, Loader2, Paperclip, Pause, Send, X } from 'lucide-react';
+ import { ChatSlashPopover, type ChatSlashPopoverHandle, type ChatSlashCompletionResponse } from './ChatSlashPopover';
+@@ -38,6 +39,8 @@ export type ChatComposerProps = {
+   disabled: boolean;
+   todoVisible: boolean;
+   onToggleTodo: () => void;
++  runtimeControls?: ReactNode;
++  runtimePopover?: ReactNode;
+ };
+ 
+ export const ChatComposer = forwardRef<HTMLDivElement, ChatComposerProps>(function ChatComposer({
+@@ -63,6 +66,8 @@ export const ChatComposer = forwardRef<HTMLDivElement, ChatComposerProps>(functi
+   disabled,
+   todoVisible,
+   onToggleTodo,
++  runtimeControls,
++  runtimePopover,
+ }, _ref) {
+   const { t } = useI18n();
+   const canSend = Boolean(draft.trim() || pendingAttachments.length);
+@@ -91,6 +96,7 @@ export const ChatComposer = forwardRef<HTMLDivElement, ChatComposerProps>(functi
+       <ChatSlashPopover ref={slashPopoverRef} input={draft} complete={completeSlash} onApply={onDraftChange} />
+       <ChatMentionPopover ref={mentionPopoverRef} input={draft} roster={botRoster} textareaRef={textareaRef} onApply={onDraftChange} />
+       <form className="chat-composer" onSubmit={onSubmit}>
++        {runtimePopover}
+         <div className="chat-composer-main">
+           {activeBotTarget ? (
+             <div className="chat-composer-target-pill" role="status">
+@@ -126,16 +132,17 @@ export const ChatComposer = forwardRef<HTMLDivElement, ChatComposerProps>(functi
+               <Paperclip size={16} />
+               <input className="chat-file-input" type="file" multiple accept="image/*,application/pdf,*/*" onChange={onFileInput} />
+             </label>
+-            <span className="chat-composer-hint">{running ? 'Enter sends steer' : 'Shift+Enter for newline'}</span>
+-            <span className="chat-composer-spacer" />
++            {runtimeControls ? <div className="chat-composer-runtime">{runtimeControls}</div> : <span className="chat-composer-spacer" />}
++            <div className="chat-composer-send-actions">
+             {running ? (
+               <button className="chat-composer-action chat-stop" type="button" onClick={onStop} aria-label={t('chatDrawer.interrupt')} title="Interrupt">
+                 <Pause size={16} />
+               </button>
+             ) : null}
+-            <button className="chat-composer-action chat-send" type="submit" disabled={!canSend || submitting || disabled} aria-label={running ? 'Send steer' : 'Send message'} title={running ? 'Steer' : 'Send'}>
++            <button className="chat-composer-action chat-send" type="submit" disabled={!canSend || submitting || disabled} aria-label={running ? 'Send steer' : 'Send message'} title={running ? 'Enter to steer · Shift+Enter for newline' : 'Enter to send · Shift+Enter for newline'}>
+               {submitting ? <Loader2 size={16} className="chat-spin" /> : <Send size={16} />}
+             </button>
++            </div>
+           </div>
+         </div>
+       </form>
+diff --git a/src/components/ChatDrawer.tsx b/src/components/ChatDrawer.tsx
+index 65c1df5..5df8a2c 100644
+--- a/src/components/ChatDrawer.tsx
++++ b/src/components/ChatDrawer.tsx
+@@ -39,7 +39,7 @@ import {
+   XCircle,
+   Users,
+ } from 'lucide-react';
+-import { ChatModelPicker } from './ChatModelPicker';
++import { ChatRuntimeSelector } from './ChatRuntimeSelector';
+ import { ChatComposer } from './ChatComposer';
+ import { ChatTodoPlan } from './chat/ChatTodoPlan';
+ import { ToolRunSummary } from './chat/ToolRunSummary';
+@@ -335,6 +335,7 @@ function AutoHideModeTabs({ active, onSelect, containerRef, chatLed = 'none', ro
+ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToken, initialSessionId, freshSessionId, chatMode = 'general', botProfile, onClose, onStartTaskChat, onNewChat, onOpenRooms }: CanonicalChatDrawerProps) {
+   const { t } = useI18n();
+   const [draft, setDraft] = useState('');
++  const [runtimeChanging, setRuntimeChanging] = useState(false);
+   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
+   const [isDragging, setIsDragging] = useState(false);
+@@ -436,6 +437,7 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
+     modelPickerRefresh,
+     request,
+     switchModel,
++    switchReasoning,
+     closeModelPicker,
+     commandPrefill,
+     connect,
+@@ -1913,17 +1915,6 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
+         </header>
+         {!modelPickerOpen && onOpenRooms ? <AutoHideModeTabs active="chat" onSelect={(mode) => { if (mode === 'rooms') onOpenRooms(); }} containerRef={drawerRef} chatLed={chatHelpAttention} /> : null}
+ 
+-        {modelPickerOpen ? (
+-          <ChatModelPicker
+-            request={request}
+-            sessionId={sessionId}
+-            currentModel={modelIdentity ? `${modelIdentity.provider ? `${modelIdentity.provider}/` : ''}${modelIdentity.model}` : undefined}
+-            initialRefresh={modelPickerRefresh}
+-            onClose={closeModelPicker}
+-            onSelect={switchModel}
+-          />
+-        ) : null}
+-
+         <div ref={scrollRef} onScroll={handleTranscriptScroll} className={`chat-transcript ${previewMode ? 'is-preview' : ''} ${showTodoPlan ? 'has-todo-plan' : ''} ${isDragging ? 'is-dragging' : ''}`} aria-live="polite">
+           {isDragging ? (
+             <div className="chat-drop-hint"><Paperclip size={20} /><span>{t('chatDrawer.dropFiles')}</span></div>
+@@ -2037,16 +2028,6 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
+               {statusLineLabel}
+             </span>
+             <span className="chat-status-line-separator">|</span>
+-            <span className="chat-status-line-model-group">
+-              <span className="chat-status-line-model" title={modelIdentity ? `${modelIdentity.model}${modelIdentity.provider ? ` via ${modelIdentity.provider}` : ''}` : 'Model not available'}>
+-                {modelIdentity?.model || 'Model unavailable'}
+-              </span>
+-              <span className="chat-status-line-separator">|</span>
+-              <span className="chat-status-line-reasoning">
+-                {modelIdentity?.reasoningEffort || '—'}
+-              </span>
+-            </span>
+-            <span className="chat-status-line-separator">|</span>
+             <span className="chat-status-line-ctx" title={contextTokens == null ? 'Context usage not available yet' : `${contextTokens.toLocaleString()} / ${contextWindow.toLocaleString()} context tokens`}>
+               {contextTokens == null ? `—/${formatTokens(contextWindow)}` : `${formatTokens(contextTokens)}/${formatTokens(contextWindow)}`}
+             </span>
+@@ -2095,7 +2076,24 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
+           onClearBotTarget={clearActiveBotTarget}
+           running={running}
+           submitting={submitting}
+-          disabled={connectionState !== 'connected'}
++          disabled={connectionState !== 'connected' || runtimeChanging}
++          runtimeControls={(
++            <ChatRuntimeSelector
++              identity={modelIdentity}
++              sessionId={sessionId}
++              profile={botProfile || 'default'}
++              request={request}
++              modelOpen={modelPickerOpen}
++              refresh={modelPickerRefresh}
++              onOpenModel={() => { void submitPrompt('/model'); }}
++              onCloseModel={closeModelPicker}
++              onModelChange={switchModel}
++              onReasoningChange={switchReasoning}
++              onBusyChange={setRuntimeChanging}
++              running={running}
++              disabled={connectionState !== 'connected'}
++            />
++          )}
+           todoVisible={todoPlanVisible}
+           onToggleTodo={() => setTodoPlanVisible((v) => !v)}
+         />
+diff --git a/src/lib/chat-gateway.ts b/src/lib/chat-gateway.ts
+index da2c18c..086f037 100644
+--- a/src/lib/chat-gateway.ts
++++ b/src/lib/chat-gateway.ts
+@@ -49,6 +49,7 @@ import { clearPendingChatSubmit, persistPendingChatSubmit, readPendingChatSubmit
+ import { applySyncedAssistantMessage, applySyncedChatMessage, applySyncedUserMessage, chatSyncStreamUrl, fetchChatTranscript, publishChatSync, replaceWithCanonicalChatMessages, shouldApplySequencedEvent, type ChatSyncEnvelope } from './chat-sync';
+ import { getWebSocketUrl, MAX_RECONNECTS, mintWsCredential, nextReconnectDelay, RPC_TIMEOUT_MS } from './chat-transport';
+ import { commandOutput, executeReasoningSlashCommand, resultText } from './chat-commands';
++import { setChatReasoning } from './chat-runtime-controls';
+ import {
+   buildClarifyAnswers,
+   extractClarifyToolContent,
+@@ -1550,6 +1551,14 @@ export function useGatewayChat(
+     }
+   }, [appendSystemMessage, ensureSession, refreshModel, request]);
+ 
++  const switchReasoning = useCallback(async (value: string): Promise<void> => {
++    const activeSessionId = await ensureSession();
++    const confirmed = await setChatReasoning(value, activeSessionId, request);
++    // A late reply from the old chat must never relabel a different session.
++    if (sessionIdRef.current !== activeSessionId) return;
++    setModelIdentity((current) => current ? { ...current, reasoningEffort: confirmed } : current);
++  }, [ensureSession, request]);
++
+   const executeSlashCommand = useCallback(async (command: string, depth = 0): Promise<boolean> => {
+     const parsed = parseSlash(command);
+     if (!parsed.name) {
+@@ -1876,6 +1885,7 @@ export function useGatewayChat(
+     ensureSession,
+     claimLastChatPointer,
+     switchModel,
++    switchReasoning,
+     closeModelPicker,
+     commandPrefill,
+     connect,
+diff --git a/src/styles.css b/src/styles.css
+index 993027a..2b663b9 100644
+--- a/src/styles.css
++++ b/src/styles.css
+@@ -5205,6 +5205,8 @@ body.modal-open .route-page-scroll {
+ }
+ 
+ .chat-composer {
++  position: relative;
++  container: chat-composer / inline-size;
+   display: block;
+   padding: 0.65rem 1rem;
+   padding-bottom: max(0.65rem, env(safe-area-inset-bottom));
+@@ -5272,7 +5274,7 @@ body.modal-open .route-page-scroll {
+ 
+ .chat-composer-main {
+   min-width: 0;
+-  overflow: hidden;
++  overflow: visible;
+   border: 0;
+   border-radius: 0;
+   background: transparent;
+@@ -5313,13 +5315,102 @@ body.modal-open .route-page-scroll {
+ }
+ 
+ .chat-composer-toolbar {
+-  display: flex;
++  display: grid;
++  grid-template-columns: auto auto minmax(0, 1fr) auto;
+   align-items: center;
+   min-height: 2rem;
+   gap: 0.35rem;
+   padding: 0.1rem 0.45rem 0.35rem;
+ }
+ 
++.chat-composer-runtime { min-width: 0; }
++.chat-composer-send-actions { display: flex; align-items: center; gap: 0.35rem; }
++.chat-runtime-selector { display: flex; align-items: center; gap: 0.7rem; min-width: 0; }
++.chat-runtime-selector button { font-family: inherit; }
++.chat-runtime-model,
++.chat-runtime-reasoning {
++  display: inline-flex;
++  align-items: center;
++  min-width: 0 !important;
++  gap: 0;
++  border: 0;
++  padding: 0 0.2rem;
++  background: transparent;
++  font-size: 0.72rem;
++  cursor: pointer;
++  white-space: nowrap;
++}
++.chat-runtime-model { flex: 1 1 auto; overflow: hidden; }
++.chat-runtime-provider { flex: 0 1 auto; max-width: 38%; overflow: hidden; text-overflow: ellipsis; color: var(--color-text-muted); font-weight: 400; }
++.chat-runtime-divider { color: var(--color-text-subtle); padding-inline: 0.25rem; }
++.chat-runtime-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--color-text); font-weight: 600; }
++.chat-runtime-reasoning { flex: 0 0 auto; color: var(--color-warning); }
++.chat-runtime-reasoning-label { color: var(--color-text-muted); margin-right: 0.25rem; font-weight: 400; }
++.chat-runtime-reasoning strong { font-weight: 600; }
++.chat-runtime-next { font-size: 0.65rem; font-weight: 400; }
++.chat-runtime-model:hover:not(:disabled) .chat-runtime-model-name,
++.chat-runtime-reasoning:hover:not(:disabled) strong { text-decoration: underline; text-underline-offset: 3px; }
++.chat-runtime-model:disabled,
++.chat-runtime-reasoning:disabled { opacity: 0.5; cursor: default; }
++.chat-runtime-model:focus-visible,
++.chat-runtime-reasoning:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
++.chat-runtime-popover {
++  position: absolute;
++  z-index: 20;
++  bottom: calc(100% + 0.25rem);
++  left: 1rem;
++  right: 1rem;
++  max-height: min(60dvh, 28rem);
++  overflow: auto;
++  border: 1px solid var(--color-border);
++  border-radius: 12px;
++  background: var(--color-surface-raised);
++  box-shadow: 0 8px 28px color-mix(in srgb, var(--color-text) 10%, transparent);
++  overscroll-behavior: contain;
++}
++.chat-runtime-popover .chat-model-picker { max-height: none; padding: 0.75rem; background: transparent; border: 0; box-shadow: none; }
++.chat-runtime-popover .chat-model-picker-head { margin-bottom: 0.55rem; }
++.chat-runtime-popover .chat-model-picker-head strong { font-size: 0.8rem; font-weight: 600; }
++.chat-runtime-popover .chat-model-picker-actions button,
++.chat-reasoning-picker header button { border: 0; padding: 0 0.4rem; background: transparent; color: var(--color-text-muted); font-size: 0.72rem; }
++.chat-runtime-popover .chat-model-search { margin: 0; padding: 0.4rem 0.55rem; border-radius: 6px; background: var(--color-surface); }
++.chat-runtime-popover .chat-model-search input { font-size: 0.8rem; }
++.chat-runtime-popover .chat-model-picker-section-label { margin-top: 0.65rem; font-size: 0.68rem; font-weight: 500; letter-spacing: 0; text-transform: none; }
++.chat-runtime-popover .chat-model-option { border: 0; border-radius: 6px; padding: 0.45rem 0.55rem; background: transparent; }
++.chat-runtime-popover .chat-model-option:hover:not(:disabled),
++.chat-runtime-popover .chat-model-option.is-highlighted { background: var(--color-surface); }
++.chat-runtime-popover .chat-model-option-name { font: 500 0.76rem var(--font-sans, inherit); overflow-wrap: anywhere; white-space: normal; }
++.chat-runtime-popover .chat-model-option.is-current .chat-model-option-name { color: var(--color-accent); font-weight: 600; }
++.chat-runtime-popover .chat-model-option small { font-size: 0.66rem; font-weight: 400; }
++.chat-runtime-notice { margin: 0; padding: 0.6rem 0.75rem 0; color: var(--color-warning); font-size: 0.7rem; }
++.chat-reasoning-picker { padding: 0.75rem; }
++.chat-reasoning-picker header { display: flex; align-items: center; justify-content: space-between; color: var(--color-text); font-size: 0.8rem; }
++.chat-reasoning-picker header strong { font-weight: 600; }
++.chat-reasoning-picker .chat-runtime-notice { padding: 0 0 0.5rem; }
++.chat-reasoning-options { display: flex; flex-wrap: wrap; gap: 0.2rem; }
++.chat-reasoning-options button { border: 0; padding: 0 0.65rem; color: var(--color-text-muted); background: transparent; font-size: 0.78rem; }
++.chat-reasoning-options button:hover:not(:disabled) { background: var(--color-surface); color: var(--color-text); }
++.chat-reasoning-options button[aria-pressed="true"] { color: var(--color-warning); font-weight: 600; }
++.chat-runtime-error { color: var(--color-negative); font-size: 0.72rem; overflow-wrap: anywhere; }
++.chat-runtime-inline-error { position: absolute; bottom: 100%; left: 1rem; right: 1rem; padding: 0.65rem; background: var(--color-surface-raised); border: 1px solid var(--color-border); border-radius: 8px; }
++
++@container chat-composer (max-width: 560px) {
++  .chat-composer-toolbar { grid-template-columns: auto auto minmax(0, 1fr); row-gap: 0; }
++  .chat-composer-runtime { grid-column: 1 / -1; grid-row: 1; padding-inline: 0.25rem; }
++  .chat-composer-todo { grid-column: 1; grid-row: 2; }
++  .chat-composer-attach { grid-column: 2; grid-row: 2; }
++  .chat-composer-send-actions { grid-column: 3; grid-row: 2; justify-self: end; }
++  .chat-runtime-selector { gap: 0.5rem; }
++  .chat-runtime-reasoning-label { display: none; }
++  .chat-runtime-model, .chat-runtime-reasoning { font-size: 0.74rem; }
++  .chat-runtime-popover { left: 0.5rem; right: 0.5rem; }
++}
++
++@media (pointer: coarse), (max-width: 640px) {
++  .chat-composer-action, .chat-composer-attach { width: 44px; height: 44px; }
++  .chat-runtime-popover { max-height: min(55dvh, 26rem); }
++}
++
+ .chat-composer-attach,
+ .chat-composer-action {
+   display: inline-flex;
+@@ -5344,15 +5435,6 @@ body.modal-open .route-page-scroll {
+   background: var(--color-surface-raised);
+ }
+ 
+-.chat-composer-hint {
+-  min-width: 0;
+-  overflow: hidden;
+-  color: var(--color-text-subtle);
+-  font-size: 0.62rem;
+-  text-overflow: ellipsis;
+-  white-space: nowrap;
+-}
+-
+ .chat-composer-spacer {
+   flex: 1 1 auto;
+   min-width: 0.5rem;
