@@ -344,11 +344,25 @@ export function isSystemNotification(text: string): boolean {
   return SYSTEM_NOTIFICATION_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
 }
 
+const INTERNAL_CONTEXT_PREFIXES = [
+  '[CONTEXT COMPACTION — REFERENCE ONLY]',
+  '[Your active task list was preserved across context compression]',
+] as const;
+
+export function isInternalContextMessage(text: string): boolean {
+  const trimmed = text.trim();
+  return INTERNAL_CONTEXT_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
+}
+
 export function normalizeTranscript(messages: GatewayTranscriptMessage[], _now = Date.now()): ChatMessage[] {
   const normalized: ChatMessage[] = [];
   messages.forEach((message, index) => {
     const sourceRole = safeRole(message.role);
     const rawText = textFromContent(message.text) || textFromContent(message.content);
+    // Hermes may persist its own compaction/task-restoration envelope as a user
+    // row. Keep the canonical source untouched, but don't render internal context
+    // as part of the human conversation in Mission Control.
+    if (sourceRole === 'user' && isInternalContextMessage(rawText)) return;
     const role = sourceRole === 'user' && isSystemNotification(rawText) ? 'system' : sourceRole;
     const displayKind = stringValue(message.display_kind);
     const createdAt = parseChatTimestamp(message.timestamp);

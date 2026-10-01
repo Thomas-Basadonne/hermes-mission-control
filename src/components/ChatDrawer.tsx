@@ -63,7 +63,7 @@ import {
 } from '../lib/chat-gateway?mc=resume-v2';
 import { markChatPresenceRead } from '../lib/chat-presence';
 import { normalizeClarifyInteraction } from '../lib/chat-interactions';
-import { previewText, type ChatAttachmentUpload, type ChatMessage, type GatewayInteractionRequest } from '../lib/chat-protocol';
+import { previewText, isInternalContextMessage, type ChatAttachmentUpload, type ChatMessage, type GatewayInteractionRequest } from '../lib/chat-protocol';
 import {
   loadMissionControlSessionPreview,
   type MissionControlAgentSessionItem,
@@ -693,6 +693,7 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
   );
   const timelinedMessages = useMemo(() => [
     ...messages
+      .filter((message: ChatMessage) => !(message.role === 'user' && isInternalContextMessage(message.text)))
       .filter((message: ChatMessage) => !handoffRequestIds.has(message.id))
       .map((message: ChatMessage) => ({ kind: 'message' as const, createdAt: message.createdAt ?? 0, order: 0, id: message.id, message })),
     ...handoffs.flatMap((handoff) => {
@@ -744,9 +745,10 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
         );
       }
       if (preview) {
-        const previewMessages = (preview.recentMessages ?? []).filter((message) => !handoffs.some((handoff) => (
-          handoff.reply?.trim() && handoff.reply.trim() === message.text.trim()
-        )));
+        const previewMessages = (preview.recentMessages ?? []).filter((message) => (
+          !(message.role === 'user' && isInternalContextMessage(message.text))
+          && !handoffs.some((handoff) => handoff.reply?.trim() && handoff.reply.trim() === message.text.trim())
+        ));
         return (
           <section className="chat-preview-surface">
             <div className="chat-preview-heading">
@@ -763,7 +765,7 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
               {previewMessages.length > 0 ? previewMessages.map((msg, index) => (
                 <ChatPreviewBubble key={`${msg.role}-${msg.timestamp ?? 'na'}-${index}`} message={msg} />
               )) : (
-                <p className="chat-preview-fallback">{preview.preview || 'No recent messages available.'}</p>
+                <p className="chat-preview-fallback">{preview.preview && !isInternalContextMessage(preview.preview) ? preview.preview : 'No recent messages available.'}</p>
               )}
               {handoffs.map((handoff) => (
                 <BotHandoffMessage
@@ -1909,7 +1911,7 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
             </div>
           </div>
         </header>
-        {onOpenRooms ? <AutoHideModeTabs active="chat" onSelect={(mode) => { if (mode === 'rooms') onOpenRooms(); }} containerRef={drawerRef} chatLed={chatHelpAttention} /> : null}
+        {!modelPickerOpen && onOpenRooms ? <AutoHideModeTabs active="chat" onSelect={(mode) => { if (mode === 'rooms') onOpenRooms(); }} containerRef={drawerRef} chatLed={chatHelpAttention} /> : null}
 
         {modelPickerOpen ? (
           <ChatModelPicker

@@ -26,6 +26,7 @@ const chatSync = readFileSync(new URL('../src/lib/chat-sync.ts', import.meta.url
 const chatPersistence = readFileSync(new URL('../src/lib/chat-persistence.ts', import.meta.url), 'utf8');
 
 assertIncludes(component, 'className="chat-head-identity"', 'header groups identity and model metadata');
+assertIncludes(component, '{!modelPickerOpen && onOpenRooms ? <AutoHideModeTabs', 'model picker does not sit beneath the floating Chat | Rooms rail');
 assertIncludes(component, '<ChatTodoPlan plan={showTodoPlan}', 'chat drawer exposes the live TODO plan');
 assertIncludes(component, 'todoPlan: gatewayTodoPlan', 'chat drawer consumes the gateway TODO state');
 assertIncludes(component, 'const [previewTodoPlan, setPreviewTodoPlan] = useState<TodoPlan | null>(null);', 'preview TODO state survives explicit resume');
@@ -35,6 +36,7 @@ assertIncludes(component, "originSessionId = await claimLastChatPointer('submit'
 assertIncludes(component, "appendChatMessage(attributedReply, 'assistant_message');", 'Bot replies are projected into the primary chat transcript');
 assertIncludes(component, "id: `bot-request-${handoffId}`", 'first Bot mention is recorded as a primary user message');
 assertIncludes(component, 'const previewMessages = (preview.recentMessages ?? []).filter', 'resume preview filters the duplicate Bot reply');
+assertIncludes(component, "isInternalContextMessage(message.text)", 'resume preview excludes internal compaction context from the visible transcript');
 assertIncludes(component, 'previewMessages.map((msg, index)', 'resume preview renders the filtered transcript');
 assertIncludes(chatGateway, 'if (since !== undefined && typeof ready.latest_seq === \'number\')', 'fresh relay subscribers replay existing MC messages');
 assertIncludes(chatGateway, 'sessionLifecycleGenerationRef', 'resume hydration is scoped to the current chat lifecycle');

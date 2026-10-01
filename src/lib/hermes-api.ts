@@ -1,4 +1,5 @@
 import { normalizeTodoPlanSnapshot, type TodoPlan } from './todo-plan';
+import { isInternalContextMessage } from './chat-protocol';
 import { getPluginRegistry } from '../core/plugin-registry';
 
 /**
@@ -927,7 +928,7 @@ function normalizeSessionPreviewMessages(input: unknown): MissionControlSessionP
       text: readString(message.text),
       timestamp: message.timestamp === null || message.timestamp === undefined ? null : readNumber(message.timestamp, 0),
     }))
-    .filter((message) => message.text.trim().length > 0);
+    .filter((message) => message.text.trim().length > 0 && !(message.role === 'user' && isInternalContextMessage(message.text)));
 }
 
 function normalizeAgentSessionItem(input: Record<string, unknown> | undefined): MissionControlAgentSessionItem {

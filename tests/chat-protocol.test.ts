@@ -229,6 +229,12 @@ assertDeepEqual(extractTranscript({ messages: [{ role: 'user', text: 'hi' }, nul
 
 assertEqual(isSystemNotification('[IMPORTANT: Background process proc_123 matched watch pattern "ready in"].'), true);
 assertEqual(isSystemNotification('A normal user message'), false);
+const internalContextRows = normalizeTranscript([
+  { canonical_id: 'db:compaction', role: 'user', content: '[CONTEXT COMPACTION — REFERENCE ONLY]\nEarlier context follows…' },
+  { canonical_id: 'db:tasks', role: 'user', content: '[Your active task list was preserved across context compression]\n- verify the patch' },
+  { canonical_id: 'db:real-user', role: 'user', content: 'A normal user message' },
+]);
+assertDeepEqual(internalContextRows.map((message) => message.text), ['A normal user message']);
 const restored = normalizeTranscript([
   { role: 'user', text: '[IMPORTANT: Background process proc_123 matched watch pattern "ready in"].' },
   { role: 'user', text: 'Question' },
