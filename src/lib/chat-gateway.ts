@@ -43,10 +43,10 @@ import {
 import { deriveTodoPlan, normalizeTodoPlanSnapshot, type TodoPlan } from './todo-plan';
 import type { ChatSlashCompletionResponse } from '../components/ChatSlashPopover';
 import { CHAT_PRESENCE_EVENT, getChatPresence, getChatReadState, publishChatPresence } from './chat-presence';
-import { fetchServerLastChat, persistChat, persistChatTitle, readPersistedChat, syncLastChatToServer } from './chat-persistence';
+import { createChatPersistenceScheduler, dropUnchangedCachedMessages, fetchServerLastChat, persistChat, persistChatTitle, readPersistedChat, selectCachedChatMessages, syncLastChatToServer } from './chat-persistence';
 import { canClaimLastChatPointer, createChatBootstrapGuard, serverPointerMatchesRequestedSession, shouldAdoptServerPointer, type LastChatClaimAction, type ServerLastChat } from './chat-bootstrap';
 import { clearPendingChatSubmit, persistPendingChatSubmit, readPendingChatSubmit, type PendingChatSubmit } from './chat-outbox';
-import { applySyncedAssistantMessage, applySyncedChatMessage, applySyncedUserMessage, chatSyncStreamUrl, fetchChatTranscript, publishChatSync, replaceWithCanonicalChatMessages, shouldApplySequencedEvent, type ChatSyncEnvelope } from './chat-sync';
+import { applySyncedAssistantMessage, applySyncedChatMessage, applySyncedUserMessage, chatSyncStreamUrl, eventRequiresCanonicalReconcile, fetchChatTranscript, publishChatSync, replaceWithCanonicalChatMessages, shouldApplySequencedEvent, type ChatSyncEnvelope } from './chat-sync';
 import { getWebSocketUrl, MAX_RECONNECTS, mintWsCredential, nextReconnectDelay, RPC_TIMEOUT_MS } from './chat-transport';
 import { commandOutput, executeReasoningSlashCommand, resultText } from './chat-commands';
 import { setSessionReasoning } from './chat-status-runtime';
@@ -201,9 +201,14 @@ export function useGatewayChat(
   freshSessionId?: string | null,
 ) {
   const initial = useMemo(readPersistedChat, []);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  // Fingerprint of the last applied canonical transcript (session + count):
-  // lets the 2s reconcile tick skip the full re-normalize on long chats.
+  const persistenceScheduler = useMemo(() => createChatPersistenceScheduler(), []);
+  const cachedInitialMessages = useMemo(() => selectCachedChatMessages(
+    initial, initialSessionId?.trim() || initial.sessionId, botProfile?.trim() || initial.profile,
+  ), []);
+  const [messages, setMessages] = useState<ChatMessage[]>(cachedInitialMessages);
+  // Untouched cache entries are only a first-paint view, not new live events.
+  const cachedMessagesRef = useRef<ChatMessage[]>(cachedInitialMessages);
+  // Content fingerprint skips unchanged view merges, never control-state recovery.
   const canonicalFingerprintRef = useRef<string | null>(null);
   const [todoPlan, setTodoPlan] = useState<TodoPlan | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(initial.sessionId);
@@ -225,7 +230,7 @@ export function useGatewayChat(
   const [modelIdentity, setModelIdentity] = useState<ChatModelIdentity | null>(initial.modelIdentity);
   const [contextTokens, setContextTokens] = useState<number | null>(null);
   const [contextMax, setContextMax] = useState<number | null>(null);
-  const [sessionTitle, setSessionTitle] = useState<string | null>(null);
+  const [sessionTitle, setSessionTitle] = useState<string | null>(cachedInitialMessages.length ? initial.sessionTitle : null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modelPickerRefresh, setModelPickerRefresh] = useState(false);
   const [commandPrefill, setCommandPrefill] = useState<string | null>(null);
@@ -268,6 +273,7 @@ export function useGatewayChat(
   const replayHoldRef = useRef<Map<string, GatewayEvent[]> | null>(null);
   const eventReplayInFlightRef = useRef(false);
   const snapshotSyncInFlightRef = useRef(false);
+  const snapshotReconcileTimerRef = useRef<number | null>(null);
   const chatSyncSourceRef = useRef<EventSource | null>(null);
   const chatSyncReconnectTimerRef = useRef<number | null>(null);
   const chatSyncRelaySeqRef = useRef(new Map<string, number>());
@@ -326,8 +332,14 @@ export function useGatewayChat(
     sessionIdRef.current = requested;
     setSessionKey(requested);
     sessionKeyRef.current = requested;
-    setMessages([]);
-    setSessionTitle(null);
+    persistenceScheduler.flush();
+    sessionLifecycleGenerationRef.current += 1;
+    const cached = readPersistedChat();
+    const cachedMessages = selectCachedChatMessages(cached, requested, sessionProfileRef.current);
+    cachedMessagesRef.current = cachedMessages;
+    setMessages(cachedMessages);
+    setSessionTitle(cachedMessages.length ? cached.sessionTitle : null);
+    durableTranscriptRef.current = [];
     setTodoPlan(null);
     transcriptReadyRef.current = false;
     canonicalFingerprintRef.current = null;
@@ -336,12 +348,29 @@ export function useGatewayChat(
     setModelPickerRefresh(false);
     setInteraction(null);
     setActivity(null);
-  }, [botProfile, initialSessionId, freshSessionId]);
+  }, [botProfile, initialSessionId, freshSessionId, persistenceScheduler]);
 
   useEffect(() => {
     if (!transcriptReadyRef.current) return;
-    persistChat(sessionId, sessionKey, sessionTitle, modelIdentity, messages, pointerRevision, sessionProfileRef.current);
-  }, [messages, modelIdentity, pointerRevision, sessionId, sessionKey, sessionTitle]);
+    const generation = sessionLifecycleGenerationRef.current;
+    const profile = sessionProfileRef.current;
+    persistenceScheduler.schedule(() => {
+      if (generation !== sessionLifecycleGenerationRef.current || sessionIdRef.current !== sessionId) return;
+      persistChat(sessionId, sessionKey, sessionTitle, modelIdentity, messages, pointerRevision, profile);
+    });
+  }, [messages, modelIdentity, persistenceScheduler, pointerRevision, sessionId, sessionKey, sessionTitle]);
+
+  useEffect(() => {
+    const flush = () => persistenceScheduler.flush();
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+      flush();
+    };
+  }, [persistenceScheduler]);
 
   const adoptServerPointer = useCallback((serverChat: ServerLastChat) => {
     pointerRef.current = serverChat;
@@ -350,6 +379,20 @@ export function useGatewayChat(
     setPointerRevision(serverChat.revision);
     const currentSessionId = sessionIdRef.current;
     if (currentSessionId !== serverChat.sessionId) {
+      persistenceScheduler.cancel();
+      sessionLifecycleGenerationRef.current += 1;
+      sessionProfileRef.current = serverChat.profile?.trim() || null;
+      const cached = readPersistedChat();
+      const cachedMessages = selectCachedChatMessages(cached, serverChat.sessionId, sessionProfileRef.current);
+      cachedMessagesRef.current = cachedMessages;
+      setMessages(cachedMessages);
+      transcriptReadyRef.current = false;
+      durableTranscriptRef.current = [];
+      canonicalFingerprintRef.current = null;
+      setTodoPlan(null);
+      setInteraction(null);
+      setActivity(null);
+      setSessionTitle(serverChat.sessionTitle?.trim() || null);
       setResumedRuntime(null);
       setSessionId(serverChat.sessionId);
       sessionIdRef.current = serverChat.sessionId;
@@ -364,7 +407,7 @@ export function useGatewayChat(
       sessionKeyRef.current = serverChat.sessionKey;
     }
     if (serverChat.modelIdentity) setModelIdentity(serverChat.modelIdentity);
-  }, []);
+  }, [persistenceScheduler]);
 
   // Resolve a deep-link alias before any resume. The server pointer maps a
   // short-lived runtime ID back to its durable SessionDB key and profile, but
@@ -560,7 +603,6 @@ export function useGatewayChat(
       lifecycleGeneration !== sessionLifecycleGenerationRef.current
       || (resolvedSessionId && sessionIdRef.current !== resolvedSessionId)
     ) {
-      setHydrating(false);
       return { transcript: [], inflight: null };
     }
     const transcript = canonicalTranscript?.messages ?? [];
@@ -581,21 +623,19 @@ export function useGatewayChat(
     durableTranscriptRef.current = rawTranscript;
     transcriptReadyRef.current = canonicalTranscript !== null;
     setHydrating(false);
-    // Periodic reconcile guard: the 2s snapshot tick refetches the FULL
-    // canonical transcript. On a long chat (1600+ rows / 3MB) re-running
-    // normalizeTranscript + replaceWithCanonicalChatMessages every tick
-    // burns CPU even when nothing changed. Skip the merge when the payload
-    // is byte-identical to the previous one for this session.
+    // Compare actual content, not row counts. Equal-size snapshots can contain
+    // edited tool output/status. Never skip todo/open_requests reconciliation.
     if (canonicalTranscript !== null) {
-      const fingerprint = `${resolvedSessionId}:${canonicalTranscript.count}:${canonicalTranscript.messages.length}`;
-      if (canonicalFingerprintRef.current === fingerprint) {
-        return { transcript, inflight };
+      const fingerprint = `${resolvedSessionId}:${JSON.stringify(transcript)}:${inflight ?? ''}`;
+      if (canonicalFingerprintRef.current !== fingerprint) {
+        canonicalFingerprintRef.current = fingerprint;
+        const cachedEntries = cachedMessagesRef.current;
+        cachedMessagesRef.current = [];
+        setMessages((current) => {
+          const next = replaceWithCanonicalChatMessages(dropUnchangedCachedMessages(current, cachedEntries), transcript);
+          return inflightMessage ? [...next, inflightMessage] : next;
+        });
       }
-      canonicalFingerprintRef.current = fingerprint;
-      setMessages((current) => {
-        const next = replaceWithCanonicalChatMessages(current, transcript);
-        return inflightMessage ? [...next, inflightMessage] : next;
-      });
     }
     const resumedTodoPlan = normalizeTodoPlanSnapshot(isRecord(resumed) ? resumed.todo_state : undefined);
     if (resumedTodoPlan) setTodoPlan(resumedTodoPlan);
@@ -629,29 +669,56 @@ export function useGatewayChat(
   }, [storedToken]);
 
   const reconcileSessionSnapshot = useCallback(async (activeSessionId: string) => {
+    const generation = sessionLifecycleGenerationRef.current;
+    const key = sessionKeyRef.current ?? activeSessionId;
+    const profile = sessionProfileRef.current;
     try {
       const resumed = await request<unknown>('session.resume', addChatProfile({
         session_id: activeSessionId,
         cols: 80,
         eager_build: true,
         source: 'mission-control',
-      }, sessionProfileRef.current));
-      await hydrateSessionSnapshot(resumed, activeSessionId, sessionKeyRef.current ?? activeSessionId);
+      }, profile));
+      if (generation !== sessionLifecycleGenerationRef.current || activeSessionId !== sessionIdRef.current) return;
+      await hydrateSessionSnapshot(resumed, activeSessionId, key);
     } catch {
       // A disconnected or busy gateway is retried by the next reconciliation tick.
     }
   }, [hydrateSessionSnapshot, request]);
 
+  const queueSnapshotReconcile = useCallback(function queueSnapshotReconcile() {
+    if (snapshotReconcileTimerRef.current !== null) return;
+    const session = sessionIdRef.current;
+    const generation = sessionLifecycleGenerationRef.current;
+    snapshotReconcileTimerRef.current = window.setTimeout(() => {
+      snapshotReconcileTimerRef.current = null;
+      if (!session || session !== sessionIdRef.current || generation !== sessionLifecycleGenerationRef.current
+        || previewModeRef.current || document.visibilityState === 'hidden'
+        || wsRef.current?.readyState !== WebSocket.OPEN) return;
+      if (snapshotSyncInFlightRef.current) { queueSnapshotReconcile(); return; }
+      snapshotSyncInFlightRef.current = true;
+      void reconcileSessionSnapshot(session).finally(() => { snapshotSyncInFlightRef.current = false; });
+    }, 250);
+  }, [reconcileSessionSnapshot]);
+
+  useEffect(() => () => {
+    if (snapshotReconcileTimerRef.current !== null) window.clearTimeout(snapshotReconcileTimerRef.current);
+    snapshotReconcileTimerRef.current = null;
+  }, [queueSnapshotReconcile, open]);
+
   useEffect(() => {
     if (!open || previewMode || connectionState !== 'connected') return;
     const timer = window.setInterval(() => {
       const activeSessionId = sessionIdRef.current;
-      if (!activeSessionId || snapshotSyncInFlightRef.current) return;
+      // WS/SSE carry live updates. Keep a slow safety net for rows written by
+      // Discord/other surfaces that do not publish into this browser's relay.
+      if (document.visibilityState === 'hidden'
+        || !activeSessionId || snapshotSyncInFlightRef.current) return;
       snapshotSyncInFlightRef.current = true;
       void reconcileSessionSnapshot(activeSessionId).finally(() => {
         snapshotSyncInFlightRef.current = false;
       });
-    }, 2000);
+    }, 30_000);
     return () => window.clearInterval(timer);
   }, [connectionState, open, previewMode, reconcileSessionSnapshot]);
 
@@ -722,6 +789,7 @@ export function useGatewayChat(
           }
           if (relayedActivity.state === 'error') setRunning(false);
         }
+        if (eventRequiresCanonicalReconcile(relayedEvent)) queueSnapshotReconcile();
         setMessages((current) => applyLiveGatewayEvent(current, relayedEvent));
         return;
       }
@@ -773,7 +841,7 @@ export function useGatewayChat(
       if (chatSyncReconnectTimerRef.current !== null) window.clearTimeout(chatSyncReconnectTimerRef.current);
       chatSyncReconnectTimerRef.current = null;
     };
-  }, [connectionState, open, previewMode, sessionId, storedToken]);
+  }, [connectionState, open, previewMode, queueSnapshotReconcile, sessionId, storedToken]);
 
   const adoptModel = useCallback((result: unknown) => {
     const next = extractSessionModel(result);
@@ -931,13 +999,20 @@ export function useGatewayChat(
     const createdSessionId = extractSessionId(created);
     if (!createdSessionId) throw new Error('Gateway did not return a session id.');
     const createdSessionKey = extractSessionKey(created);
+    persistenceScheduler.cancel();
+    cachedMessagesRef.current = [];
+    canonicalFingerprintRef.current = null;
+    durableTranscriptRef.current = [];
+    transcriptReadyRef.current = false;
+    setMessages([]);
+    setTodoPlan(null);
     setSessionId(createdSessionId);
     sessionIdRef.current = createdSessionId;
     setSessionKey(createdSessionKey);
     sessionKeyRef.current = createdSessionKey;
     setRunning(false);
     return createdSessionId;
-  }, [adoptModel, hydrateSessionSnapshot, initialSessionId, request, storedToken]);
+  }, [adoptModel, hydrateSessionSnapshot, initialSessionId, persistenceScheduler, request, storedToken]);
 
   const clearPendingPrompt = useCallback(() => {
     pendingPromptRef.current = null;
@@ -1296,6 +1371,7 @@ export function useGatewayChat(
             void refreshReasoning(activeSessionId);
           }
         }
+        if (eventRequiresCanonicalReconcile(parsed.event)) queueSnapshotReconcile();
         setMessages((current) => applyLiveGatewayEvent(current, parsed.event));
       });
 
@@ -1355,7 +1431,7 @@ export function useGatewayChat(
       setStatusText('Connection failed');
       setError(err instanceof Error ? err.message : 'Chat connection failed.');
     }
-  }, [adoptModel, bootstrapPointer, ensureSession, finishEventReplay, initialSessionId, open, prepareEventReplay, refreshContext, refreshModel, refreshReasoning, rejectPending, replayPendingPrompt, scheduleReconnect, storedToken]);
+  }, [adoptModel, bootstrapPointer, ensureSession, finishEventReplay, initialSessionId, open, prepareEventReplay, queueSnapshotReconcile, refreshContext, refreshModel, refreshReasoning, rejectPending, replayPendingPrompt, scheduleReconnect, storedToken]);
 
   useEffect(() => {
     connectRef.current = connect;
@@ -1824,10 +1900,12 @@ export function useGatewayChat(
   const reset = useCallback(async () => {
     // Invalidate every in-flight resume/create/hydration before changing state.
     // A late canonical transcript must never repopulate the new chat.
+    persistenceScheduler.cancel();
     sessionLifecycleGenerationRef.current += 1;
     pointerBootstrapGuardRef.current.invalidate();
     pointerBootstrapPromiseRef.current = null;
 
+    cachedMessagesRef.current = [];
     setMessages([]);
     setTodoPlan(null);
     transcriptReadyRef.current = false;
@@ -1859,7 +1937,7 @@ export function useGatewayChat(
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create a new chat.');
     }
-  }, [claimLastChatPointer, clearPendingPrompt, ensureSession, pointerRevision, request]);
+  }, [claimLastChatPointer, clearPendingPrompt, ensureSession, persistenceScheduler, pointerRevision, request]);
 
   return {
     messages,

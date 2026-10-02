@@ -48,6 +48,63 @@ export function readPersistedChat(): PersistedChat {
   }
 }
 
+/** Restore only the exact session/profile's display cache. It is NOT durable readiness. */
+export function selectCachedChatMessages(
+  cached: PersistedChat,
+  reference: string | null | undefined,
+  profile: string | null | undefined,
+): ChatMessage[] {
+  const owner = (value: string | null | undefined) => value?.trim() || 'default';
+  if (!reference || (reference !== cached.sessionId && reference !== cached.sessionKey)
+    || owner(profile) !== owner(cached.profile)) return [];
+  if (!cached.messages.every((message) => message && typeof message.id === 'string'
+    && typeof message.text === 'string' && ['user', 'assistant', 'tool', 'system'].includes(message.role))) return [];
+  return cached.messages;
+}
+
+/** Drop display-only cache rows even when replay cloned/settled their objects.
+ * Keep rows with genuinely new live content; status/source alone are not content.
+ */
+export function dropUnchangedCachedMessages(current: ChatMessage[], cached: ChatMessage[]): ChatMessage[] {
+  if (cached.length === 0) return current;
+  const contentKey = (message: ChatMessage) => JSON.stringify(Object.fromEntries(
+    Object.entries(message).filter(([key]) => key !== 'status' && key !== 'source').sort(([a], [b]) => a.localeCompare(b)),
+  ));
+  const cachedById = new Map(cached.map((message) => [message.id, message]));
+  return current.filter((message) => {
+    const prior = cachedById.get(message.id);
+    return !prior || (message !== prior && contentKey(message) !== contentKey(prior));
+  });
+}
+
+/** Coalesce stream updates without serializing every delta or starving continuous streams. */
+export function createChatPersistenceScheduler(
+  setTimer: (callback: () => void, delay: number) => number = (callback, delay) => window.setTimeout(callback, delay),
+  clearTimer: (handle: number) => void = (handle) => window.clearTimeout(handle),
+) {
+  let timer: number | null = null;
+  let pending: (() => void) | null = null;
+  const flush = () => {
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+    const write = pending;
+    pending = null;
+    write?.();
+  };
+  return {
+    schedule(write: () => void) {
+      pending = write;
+      if (timer === null) timer = setTimer(flush, 1000);
+    },
+    flush,
+    cancel() {
+      if (timer !== null) clearTimer(timer);
+      timer = null;
+      pending = null;
+    },
+  };
+}
+
 export function persistChat(
   sessionId: string | null,
   sessionKey: string | null,

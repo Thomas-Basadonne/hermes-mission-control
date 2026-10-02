@@ -283,6 +283,11 @@ export function replaceWithCanonicalChatMessages(local: ChatMessage[], canonical
     .map(({ message }) => message);
 }
 
+/** Reconcile durable IDs once a turn settles, never once per token or tool. */
+export function eventRequiresCanonicalReconcile(event: GatewayEvent): boolean {
+  return ['run.completed', 'run.finished', 'run.done', 'error', 'session.interrupted'].includes(event.type);
+}
+
 export function shouldApplySequencedEvent(watermarks: Map<string, number>, event: GatewayEvent): boolean {
   const sid = event.session_id;
   const seq = event.seq;
