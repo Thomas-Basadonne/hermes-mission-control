@@ -7,11 +7,16 @@ type DiagnosticPayload = Record<string, unknown>;
 
 type NavigationEntry = PerformanceNavigationTiming & { type?: string };
 
+export function resolveReloadDiagnosticToken(storedToken: string | null | undefined, environmentToken: string): string {
+  return storedToken?.trim() || environmentToken.trim();
+}
+
 function getToken(): string {
+  const environmentToken = (typeof import.meta.env !== 'undefined' && import.meta.env.VITE_MISSION_CONTROL_TOKEN) || '';
   try {
-    return window.localStorage.getItem('mission-control-token')?.trim() || '';
+    return resolveReloadDiagnosticToken(window.localStorage.getItem('mission-control-token'), environmentToken);
   } catch {
-    return '';
+    return environmentToken.trim();
   }
 }
 
