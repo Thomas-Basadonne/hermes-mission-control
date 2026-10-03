@@ -10,6 +10,7 @@
     "dev:telemetry": "./scripts/run-local-telemetry.sh",
     "dev:full": "concurrently -k -n telemetry,vite -c blue,green \"pnpm dev:telemetry\" \"pnpm dev\"",
     "build": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "python3 -m unittest discover -s tests -p 'test_*.py' && pnpm test:server",
     "test:server": "python3 -c \"import websockets\" && python3 -m unittest discover -s server/tests -p 'test_*.py'",
     "test:rooms": "node --experimental-strip-types tests/group-chat-drawer.test.ts && node --experimental-strip-types tests/group-room-view.test.ts && node --experimental-strip-types tests/room-persistence.test.ts && node --experimental-strip-types tests/room-recovery.test.ts && node --experimental-strip-types tests/room-tool-card.test.ts",

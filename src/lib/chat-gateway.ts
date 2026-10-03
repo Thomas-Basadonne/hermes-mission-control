@@ -1487,7 +1487,7 @@ export function useGatewayChat(
     };
   }, [connect, open, rejectPending]);
 
-  const appendChatMessage = useCallback((message: ChatMessage, kind: 'user_message' | 'system_message' = 'system_message') => {
+  const appendChatMessage = useCallback((message: ChatMessage, kind: 'user_message' | 'system_message' | 'assistant_message' = 'system_message') => {
     setMessages((current) => current.some((candidate) => candidate.id === message.id) ? current : [...current, message]);
     const activeSessionId = sessionIdRef.current;
     if (activeSessionId) void publishChatSync(storedToken, activeSessionId, kind, message as unknown as Record<string, unknown>);

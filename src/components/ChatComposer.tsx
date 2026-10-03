@@ -12,7 +12,7 @@ import { ListTodo, Loader2, Paperclip, Pause, Send, X } from 'lucide-react';
 import { ChatSlashPopover, type ChatSlashPopoverHandle, type ChatSlashCompletionResponse } from './ChatSlashPopover';
 import { ChatMentionPopover, type ChatMentionPopoverHandle } from './ChatMentionPopover';
 import { AttachmentIcon } from './chat-messages';
-import type { PendingAttachment } from '../lib/chat-gateway?mc=resume-v2';
+import type { PendingAttachment } from '../lib/chat-gateway';
 import type { BotMentionCandidate } from '../lib/bot-mentions';
 
 export type ChatComposerProps = {

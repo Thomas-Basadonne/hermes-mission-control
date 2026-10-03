@@ -1984,13 +1984,15 @@ function deriveRecentSignals(
 
 export async function loadMissionControlSnapshot(accessToken?: string): Promise<MissionControlSnapshot> {
   try {
-    const [status, modelInfo, configRaw, machine, cron] = await Promise.all([
+    const [status, modelInfo, configRaw, machineRaw, cron] = await Promise.all([
       maybeFetchLocalJson<OfficialStatusPayload>('/status', accessToken).then((r) => r.payload),
       maybeFetchLocalJson<OfficialModelInfoPayload>('/model/info', accessToken).then((r) => r.payload),
       maybeFetchLocalJson<Record<string, unknown>>('/config', accessToken).then((r) => r.payload),
       loadLocalMissionControlMachineStatus(accessToken),
       loadMissionControlCron(accessToken),
     ]);
+    // /system can fail on its own; the derive* helpers read machine.health unconditionally.
+    const machine = normalizeMachineStatus(machineRaw ?? undefined);
 
     const sessions = fallbackSessions;
     const knowledgeSharing = fallbackKnowledge;
@@ -2124,11 +2126,9 @@ export async function loadMissionControlSessions(accessToken?: string): Promise<
       });
     }
 
-    const [legacyPayload, status] = await Promise.all([
-      fetchMissionControlAgentSessions(accessToken, 50),
-      maybeFetchLocalJson<OfficialStatusPayload>('/status', accessToken).then((r) => r.payload),
-    ]);
-    return deriveSessionsSnapshot(legacyPayload, status);
+    // Agent sessions are unavailable: fall back to the gateway's active-session count.
+    const { payload: status } = await maybeFetchLocalJson<OfficialStatusPayload>('/status', accessToken);
+    return deriveSessionsSnapshot(null, status);
   } catch (error) {
     if (error instanceof MissionControlAuthError) {
       throw error;
@@ -2509,7 +2509,7 @@ export async function loadMissionControlLogs(
   const query = params.toString();
   const path = `/logs${query ? '?' + query : ''}`;
   const { payload } = await maybeFetchLocalJson<MissionControlLogsSnapshot>(path, accessToken);
-  return normalizeLogs(payload);
+  return normalizeLogs(payload ?? undefined);
 }
 
 export async function saveMissionControlConfig(accessToken: string | undefined, content: string, expectedHash?: string | null): Promise<MissionControlConfigSnapshot> {
