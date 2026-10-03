@@ -60,7 +60,7 @@ import {
   readFileAsDataUrl,
   useGatewayChat,
   type PendingAttachment,
-} from '../lib/chat-gateway?mc=resume-v2';
+} from '../lib/chat-gateway';
 import { markChatPresenceRead } from '../lib/chat-presence';
 import { normalizeClarifyInteraction } from '../lib/chat-interactions';
 import { previewText, isInternalContextMessage, type ChatAttachmentUpload, type ChatMessage, type GatewayInteractionRequest } from '../lib/chat-protocol';
@@ -975,25 +975,26 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
               </ToolRunSummary>
             );
           }
+          const handoffEntry = item.kind === 'other' && item.entry.kind === 'handoff' ? item.entry : null;
           return item.kind === 'other' && item.entry.kind === 'message' ? (
             <ChatMessageCard key={item.entry.id} message={item.entry.message} mentionHandles={mentionHandles} />
-          ) : item.kind === 'other' ? (
+          ) : handoffEntry ? (
             <BotHandoffMessage
-            key={item.entry.id}
-            handle={item.entry.handoff.handle}
-            displayName={item.entry.handoff.displayName}
-            model={botRoster.find((bot) => bot.handle === item.entry.handoff.handle)?.model}
-            provider={botRoster.find((bot) => bot.handle === item.entry.handoff.handle)?.provider}
-            request={item.entry.handoff.request}
-            status={item.entry.handoff.status}
-            reply={item.entry.handoff.reply}
-            error={item.entry.handoff.error}
-            reason={item.entry.handoff.reason}
-            trace={handoffTraces[item.entry.handoff.id] ?? null}
-            traceExpanded={Boolean(expandedTraces[item.entry.handoff.id])}
-            onToggleTrace={() => toggleHandoffTrace(item.entry.handoff)}
-            onRetry={item.entry.handoff.status === 'failed' && (item.entry.handoff.retryable !== false) ? async () => {
-              const handoff = item.entry.handoff;
+            key={handoffEntry.id}
+            handle={handoffEntry.handoff.handle}
+            displayName={handoffEntry.handoff.displayName}
+            model={botRoster.find((bot) => bot.handle === handoffEntry.handoff.handle)?.model}
+            provider={botRoster.find((bot) => bot.handle === handoffEntry.handoff.handle)?.provider}
+            request={handoffEntry.handoff.request}
+            status={handoffEntry.handoff.status}
+            reply={handoffEntry.handoff.reply}
+            error={handoffEntry.handoff.error}
+            reason={handoffEntry.handoff.reason}
+            trace={handoffTraces[handoffEntry.handoff.id] ?? null}
+            traceExpanded={Boolean(expandedTraces[handoffEntry.handoff.id])}
+            onToggleTrace={() => toggleHandoffTrace(handoffEntry.handoff)}
+            onRetry={handoffEntry.handoff.status === 'failed' && (handoffEntry.handoff.retryable !== false) ? async () => {
+              const handoff = handoffEntry.handoff;
               const handle = handoff.handle;
               rememberActiveBotTarget({
                 handle,
