@@ -22,7 +22,10 @@ except ModuleNotFoundError as exc:
         def test_hermes_core_dependency_is_available(self):
             pass
 else:
-    def test_load_chat_message_timestamps_reads_resolved_sessiondb_rows(tmp_path, monkeypatch):
+    import pytest
+
+    @pytest.mark.parametrize("profile_kwargs", [{}, {"profile": "fixture-bot"}], ids=["default", "explicit-profile"])
+    def test_load_chat_message_timestamps_reads_resolved_sessiondb_rows(tmp_path, monkeypatch, profile_kwargs):
         db_path = tmp_path / "state.db"
         writable = SessionDB(db_path=db_path)
         writable.create_session("session-parent", "tui", session_key="chat-key")
@@ -31,19 +34,24 @@ else:
         writable.append_message("session-parent", role="user", content="repeat", timestamp=200.0)
         writable.close()
 
-        def open_fixture_db():
+        requested_profiles = []
+
+        def open_fixture_db(profile: str | None = None):
+            requested_profiles.append(profile)
             return SessionDB(db_path=db_path, read_only=True)
 
         monkeypatch.setattr(mission_control_agents, "_try_get_session_db", open_fixture_db)
-        payload = mission_control_agents.load_chat_message_timestamps(session_key="chat-key")
+        payload = mission_control_agents.load_chat_message_timestamps(session_key="chat-key", **profile_kwargs)
 
+        assert requested_profiles == [profile_kwargs.get("profile")]
         assert payload["sessionId"] == "session-parent"
         assert payload["sessionKey"] == "chat-key"
         assert [row["timestamp"] for row in payload["messages"]] == [100.0, 101.0, 200.0]
         assert [row["content"] for row in payload["messages"]] == ["repeat", "same answer", "repeat"]
 
 
-    def test_load_chat_transcript_returns_complete_stable_rows_for_large_repeated_history(tmp_path, monkeypatch):
+    @pytest.mark.parametrize("profile_kwargs", [{}, {"profile": "fixture-bot"}], ids=["default", "explicit-profile"])
+    def test_load_chat_transcript_returns_complete_stable_rows_for_large_repeated_history(tmp_path, monkeypatch, profile_kwargs):
         db_path = tmp_path / "state.db"
         writable = SessionDB(db_path=db_path)
         writable.create_session("session-large", "tui", session_key="large-key")
@@ -56,12 +64,16 @@ else:
             )
         writable.close()
 
-        def open_fixture_db():
+        requested_profiles = []
+
+        def open_fixture_db(profile: str | None = None):
+            requested_profiles.append(profile)
             return SessionDB(db_path=db_path, read_only=True)
 
         monkeypatch.setattr(mission_control_agents, "_try_get_session_db", open_fixture_db)
-        payload = mission_control_agents.load_chat_transcript(session_key="large-key")
+        payload = mission_control_agents.load_chat_transcript(session_key="large-key", **profile_kwargs)
 
+        assert requested_profiles == [profile_kwargs.get("profile")]
         assert payload["complete"] is True
         assert payload["count"] == 240
         assert len(payload["messages"]) == 240
