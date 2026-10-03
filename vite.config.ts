@@ -71,11 +71,18 @@ export default defineConfig(({ mode }) => {
       // reloads (especially when a nested worktree is removed).
       // Mission Control is also served to iOS through Tailscale Funnel. Vite's
       // HMR WebSocket is not reliable across mobile sleep/network transitions
-      // and can reset the whole React tree. The live app is refreshed by launchd
-      // when source/config changes, so keep the remote surface stable.
+      // and can reset the whole React tree, so HMR stays off: a page reload
+      // picks up source changes, as long as the file watcher below sees them.
       hmr: false,
       watch: {
         ignored: ['**/.worktrees/**', '**/.hermes/**', '**/dist/**'],
+        // Under launchd (ai.hermes.mission-control) the FSEvents-backed
+        // watcher delivers no events: Vite kept serving stale modules, both
+        // MC sources and plugin UIs, until a manual restart. The same Vite
+        // started from a terminal works. Polling works in both contexts at
+        // ~0.6% CPU (measured 2026-10-03).
+        usePolling: true,
+        interval: 1000,
       },
       // Vite's built-in CORS middleware already answers OPTIONS preflights for
       // /api/* — but its default allowlist only covers localhost, so clients
