@@ -70,8 +70,13 @@ class KanbanBridgeTest(unittest.TestCase):
         for _name in self._kanban_env_backup:
             os.environ.pop(_name, None)
         os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="mc-kanban-test-")
-        # Fresh DB per test: connect auto-inits the schema.
+        # Kanban is a shared cross-profile bus: HERMES_HOME alone need not
+        # isolate its shared root/current board. Pin the exact private DB.
+        private_db = Path(os.environ["HERMES_HOME"]) / "kanban.db"
+        os.environ["HERMES_KANBAN_DB"] = str(private_db)
         self.conn = connect()
+        actual = Path(self.conn.execute("PRAGMA database_list").fetchone()[2]).resolve()
+        self.assertEqual(actual, private_db.resolve(), "refuse any non-private test DB")
         try:
             yield_conn = True
         except Exception:

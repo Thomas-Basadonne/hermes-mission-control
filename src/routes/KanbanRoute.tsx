@@ -23,6 +23,7 @@ import {
 } from '../lib/hermes-api';
 import { useMissionControl } from '../lib/mission-control-store';
 import { useI18n } from '../lib/i18n';
+import { getKanbanPriority, getKanbanPriorityOptions, getKanbanCardState } from '../lib/kanban-card-view';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -61,14 +62,6 @@ const COLUMN_HINTS: Record<string, string> = {
   done: 'Completed',
 };
 
-const PRIORITY_COLORS: Record<number, { bg: string; text: string; label: string }> = {
-  0: { bg: 'bg-surface-sunken', text: 'text-text-subtle', label: 'P0' },
-  1: { bg: 'bg-red-500/15', text: 'text-red-400', label: 'P1' },
-  2: { bg: 'bg-amber-500/15', text: 'text-amber-400', label: 'P2' },
-  3: { bg: 'bg-sky-500/15', text: 'text-sky-400', label: 'P3' },
-  4: { bg: 'bg-surface-sunken', text: 'text-text-subtle', label: 'P4' },
-  5: { bg: 'bg-surface-sunken', text: 'text-text-subtle', label: 'P5' },
-};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -144,13 +137,14 @@ function BoardColumn({
       {/* Task cards */}
       <div className="flex flex-col gap-2 overflow-y-auto overflow-x-hidden pb-1" role="list">
         {tasks.map((task) => {
-          const pri = PRIORITY_COLORS[task.priority ?? 0] ?? PRIORITY_COLORS[0];
-          const age = formatAge(task.created_at);
+          const pri = getKanbanPriority(task.priority);
+          const activity = getKanbanCardState(task);
           return (
             <button
               key={task.id}
               type="button"
               role="listitem"
+              data-task-id={task.id}
               draggable
               onDragStart={(e) => e.dataTransfer.setData('text/plain', task.id)}
               onClick={() => onOpenTask(task.id)}
@@ -159,16 +153,23 @@ function BoardColumn({
               {/* Priority badge + ID + age */}
               <div className="flex items-center justify-between gap-1">
                 <div className="flex items-center gap-1.5">
-                  {task.priority != null && task.priority > 0 ? (
+                  {pri ? (
                     <span className={`inline-flex items-center rounded px-1 py-px text-[9px] font-semibold ${pri.bg} ${pri.text}`}>{pri.label}</span>
                   ) : null}
                   <span className="text-[9px] tabular-nums text-text-subtle font-mono">{shortId(task.id)}</span>
                 </div>
-                {age ? <span className="text-[9px] text-text-subtle">{age}</span> : null}
+                {activity.age ? <span className="text-[9px] text-text-subtle" title={t(activity.ageKey)}>{t(activity.ageKey)} · {activity.age}</span> : null}
               </div>
 
               {/* Title */}
               <div className="mt-1 text-xs font-medium text-text line-clamp-2">{task.title}</div>
+
+              {/* State-specific evidence; React text nodes keep untrusted summaries inert. */}
+              {activity.lines.map((line, index) => (
+                <div key={`${line.key}:${index}`} className={"mt-1 min-w-0 break-words text-[10px] leading-relaxed line-clamp-2 " + (task.status === 'blocked' ? 'text-red-400' : 'text-text-muted')} title={line.value}>
+                  <span className="text-text-subtle">{t(line.key)}{line.value ? ': ' : ''}</span>{line.value}
+                </div>
+              ))}
 
               {/* Bottom row: assignee + progress + comments */}
               <div className="mt-1.5 flex items-center gap-2 text-[10px] text-text-subtle">
@@ -213,17 +214,21 @@ function BoardColumn({
 function TaskDrawer({
   taskId,
   board,
+  refreshKey,
   onClose,
   onChanged,
 }: {
   taskId: string;
   board?: string;
+  refreshKey: MissionControlKanbanBoard | null;
   onClose: () => void;
   onChanged?: () => void;
 }) {
   const { storedToken } = useMissionControl();
   const { t } = useI18n();
   const [detail, setDetail] = useState<MissionControlKanbanTaskDetail | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const assigneeBaseline = useRef('');
   const [workerLog, setWorkerLog] = useState<{ exists: boolean; content: string; size_bytes: number; truncated: boolean } | null>(null);
   const [logLoading, setLogLoading] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
@@ -261,7 +266,7 @@ function TaskDrawer({
       await patchKanbanTask(storedToken || undefined, taskId, input, board);
       const refreshed = await loadKanbanTaskDetail(storedToken || undefined, taskId, board);
       setDetail(refreshed);
-      setAssigneeDraft(refreshed.assignee || '');
+      if ('assignee' in input) setAssigneeDraft(refreshed.assignee || '');
       onChanged?.();
     } catch (e) { setLogError(e instanceof Error ? e.message : 'Metadata update failed.'); }
     finally { setActionBusy(false); }
@@ -294,24 +299,29 @@ function TaskDrawer({
   };
 
   useEffect(() => {
-    if (detail) setAssigneeDraft(detail.assignee || '');
+    if (!detail) return;
+    const previous = assigneeBaseline.current;
+    const next = detail.assignee || '';
+    // Preserve operator edits while polling updates the server baseline.
+    setAssigneeDraft((draft) => draft === previous ? next : draft);
+    assigneeBaseline.current = next;
   }, [detail?.id, detail?.assignee]);
 
   useEffect(() => {
-    let cancelled = false;
-    setDetail(null);
-    setWorkerLog(null);
-    setLogError(null);
+    if (actionBusy || postingComment) return;
+    const controller = new AbortController();
+    // Each successful board snapshot refreshes the open drawer too. Do not
+    // clear detail or drafts; cleanup aborts requests and fences late responses/local writes.
     setLogLoading(true);
-    loadKanbanTaskDetail(storedToken || undefined, taskId, board)
-      .then((d) => { if (!cancelled) setDetail(d); })
-      .catch(() => { if (!cancelled) setDetail(null); });
-    loadKanbanTaskLog(storedToken || undefined, taskId, board)
-      .then((log) => { if (!cancelled) setWorkerLog(log); })
-      .catch((e) => { if (!cancelled) setLogError(e instanceof Error ? e.message : 'Worker log unavailable.'); })
-      .finally(() => { if (!cancelled) setLogLoading(false); });
-    return () => { cancelled = true; };
-  }, [storedToken, taskId, board]);
+    loadKanbanTaskDetail(storedToken || undefined, taskId, board, controller.signal)
+      .then((d) => { if (!controller.signal.aborted) { setDetail(d); setDetailError(null); } })
+      .catch((e) => { if (!controller.signal.aborted) setDetailError(e instanceof Error ? e.message : 'Task unavailable.'); });
+    loadKanbanTaskLog(storedToken || undefined, taskId, board, controller.signal)
+      .then((log) => { if (!controller.signal.aborted) { setWorkerLog(log); setLogError(null); } })
+      .catch((e) => { if (!controller.signal.aborted) setLogError(e instanceof Error ? e.message : 'Worker log unavailable.'); })
+      .finally(() => { if (!controller.signal.aborted) setLogLoading(false); });
+    return () => { controller.abort(); };
+  }, [storedToken, taskId, board, refreshKey, actionBusy, postingComment]);
 
   const postComment = async () => {
     const body = commentDraft.trim();
@@ -327,22 +337,26 @@ function TaskDrawer({
     }
   };
 
+  const drawerPriority = getKanbanPriority(detail?.priority);
+  const drawerActivity = detail ? getKanbanCardState(detail) : null;
+
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={`Task ${detail?.title ?? taskId}`} onClick={onClose}>
       <div
         className="kanban-drawer w-full sm:w-[min(920px,92vw)] max-h-[88dvh] overflow-y-auto rounded-t-xl sm:rounded-xl border border-border-subtle bg-surface p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
+        {detailError ? <p role="alert" className="mb-2 text-xs text-red-400">{detailError}</p> : null}
         {!detail ? (
-          <p className="text-sm text-text-muted py-8 text-center">{t('kanban.loadingTask')}</p>
+          <p className="text-sm text-text-muted py-8 text-center">{detailError ? t('kanban.card.retryOnRefresh') : t('kanban.loadingTask')}</p>
         ) : (
           <>
             {/* Header */}
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  {detail.priority != null && detail.priority > 0 ? (
-                    <span className={`inline-flex items-center rounded px-1.5 py-px text-[10px] font-semibold ${(PRIORITY_COLORS[detail.priority] ?? PRIORITY_COLORS[0]).bg} ${(PRIORITY_COLORS[detail.priority] ?? PRIORITY_COLORS[0]).text}`}>P{detail.priority}</span>
+                  {drawerPriority ? (
+                    <span className={`inline-flex items-center rounded px-1.5 py-px text-[10px] font-semibold ${drawerPriority.bg} ${drawerPriority.text}`}>{drawerPriority.label}</span>
                   ) : null}
                   <span className="text-[10px] font-mono text-text-subtle">{shortId(detail.id)}</span>
                 </div>
@@ -350,7 +364,7 @@ function TaskDrawer({
                 <div className="mt-0.5 flex items-center gap-2 text-[10px] text-text-subtle">
                   <span className="uppercase tracking-wide">{detail.status}</span>
                   {detail.assignee ? <span>{'@' + detail.assignee}</span> : null}
-                  {formatAge(detail.created_at) ? <span>{formatAge(detail.created_at)}</span> : null}
+                  {drawerActivity?.age ? <span>{t(drawerActivity.ageKey)} · {drawerActivity.age}</span> : null}
                 </div>
               </div>
               <Button variant="ghost" size="sm" aria-label={t('kanban.closeTask')} onClick={onClose}>
@@ -367,6 +381,10 @@ function TaskDrawer({
               <Button variant="ghost" size="sm" disabled={actionBusy} onClick={() => void runAction('archive')}>{t('kanban.archive')}</Button>
             </div>
 
+            {['running', 'blocked', 'scheduled'].includes(detail.status ?? '') ? drawerActivity?.lines.map((line, index) => (
+              <p key={`${line.key}:${index}`} className="mt-2 break-words text-xs text-text-muted">{t(line.key)}{line.value ? `: ${line.value}` : ''}</p>
+            )) : null}
+
             {/* Editable metadata */}
             <section className="mt-3 grid grid-cols-2 gap-3 rounded-lg border border-border-subtle bg-surface-sunken p-2.5">
               <label className="block">
@@ -378,7 +396,8 @@ function TaskDrawer({
               </label>
               <label className="block">
                 <span className="text-[10px] font-semibold uppercase tracking-wide text-text-subtle">Priority</span>
-                <div className="mt-1"><Dropdown value={String(detail.priority ?? 0)} onChange={(v) => void saveMetadata({ priority: Number(v) })} ariaLabel="Edit task priority" dropUp options={[{ value: '0', label: 'Normal' }, { value: '1', label: 'P1 — High' }, { value: '2', label: 'P2 — Medium' }, { value: '3', label: 'P3 — Low' }, { value: '-1', label: 'P4 — Lowest' }]} /></div>
+                <div className="mt-1"><Dropdown value={String(detail.priority ?? 0)} onChange={(v) => void saveMetadata({ priority: Number(v) })} ariaLabel={t('kanban.taskPriority')} dropUp options={getKanbanPriorityOptions(detail.priority).map((p) => ({ value: p.value, label: `P${p.priority} — ${t(p.labelKey)}` }))} /></div>
+                <p className="mt-1 text-[10px] text-text-subtle">{t('kanban.priorityHint')}</p>
               </label>
             </section>
 
@@ -403,7 +422,7 @@ function TaskDrawer({
             ) : null}
 
             {/* Result / final summary */}
-            {(detail.result || detail.latest_summary) ? (
+            {detail.status === 'done' && (detail.result || detail.latest_summary) ? (
               <section className="mt-4 rounded-lg border border-border-subtle bg-surface-sunken p-3">
                 <h3 className="text-[10px] font-semibold uppercase tracking-wide text-text-subtle">{detail.result ? 'Result' : 'Final result (run summary)'}</h3>
                 <p className="mt-1 whitespace-pre-wrap text-xs text-text-muted leading-relaxed">{detail.result || detail.latest_summary}</p>
@@ -470,7 +489,7 @@ function TaskDrawer({
             <details className="mt-4" open={detail.status === 'running'}>
               <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wide text-text-subtle">Worker log{workerLog?.size_bytes ? ` (${workerLog.size_bytes} B)` : ''}</summary>
               <div className="mt-1.5">
-                {logLoading ? <p className="text-xs text-text-subtle">Loading log…</p> : logError ? <p className="text-xs text-red-400">{logError}</p> : workerLog?.exists ? <pre className="max-h-64 overflow-auto rounded-md border border-border-subtle bg-black/30 p-2 font-mono text-[10px] leading-relaxed text-text-muted">{workerLog.content || '(empty)'}</pre> : <p className="text-xs italic text-text-subtle">— no worker log yet —</p>}
+                {logLoading && !workerLog ? <p className="text-xs text-text-subtle">Loading log…</p> : logError ? <p className="text-xs text-red-400">{logError}</p> : workerLog?.exists ? <pre className="max-h-64 overflow-auto rounded-md border border-border-subtle bg-black/30 p-2 font-mono text-[10px] leading-relaxed text-text-muted">{workerLog.content || '(empty)'}</pre> : <p className="text-xs italic text-text-subtle">— no worker log yet —</p>}
                 {workerLog?.truncated ? <p className="mt-1 text-[10px] text-text-subtle">Showing the last 100 KB.</p> : null}
               </div>
             </details>
@@ -910,15 +929,10 @@ export function KanbanRoute() {
                     onChange={(v) => setNewTaskPriority(Number(v))}
                     ariaLabel="Task priority"
                     dropUp
-                    options={[
-                      { value: '0', label: 'Normal' },
-                      { value: '1', label: 'P1 — High' },
-                      { value: '2', label: 'P2 — Medium' },
-                      { value: '3', label: 'P3 — Low' },
-                      { value: '-1', label: 'P4 — Lowest' },
-                    ]}
+                    options={getKanbanPriorityOptions(newTaskPriority).map((p) => ({ value: p.value, label: `P${p.priority} — ${t(p.labelKey)}` }))}
                   />
                 </div>
+                <p className="mt-1 text-[10px] text-text-subtle">{t('kanban.priorityHint')}</p>
               </label>
             </div>
             <label className="mt-3 block">
@@ -1070,7 +1084,7 @@ export function KanbanRoute() {
       ) : null}
 
       {/* Task Drawer */}
-      {openTaskId ? <TaskDrawer taskId={openTaskId} board={activeBoard} onClose={() => setOpenTaskId(null)} onChanged={() => void refresh(activeBoard)} /> : null}
+      {openTaskId ? <TaskDrawer key={`${activeBoard}:${openTaskId}`} taskId={openTaskId} board={activeBoard} refreshKey={board} onClose={() => setOpenTaskId(null)} onChanged={() => void refresh(activeBoard)} /> : null}
     </div>
   );
 }

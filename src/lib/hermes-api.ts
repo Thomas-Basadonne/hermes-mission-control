@@ -1511,11 +1511,13 @@ async function fetchOfficialJson<T>(path: string, accessToken?: string): Promise
 async function maybeFetchLocalJson<T>(
   path: string,
   accessToken?: string,
+  signal?: AbortSignal,
 ): Promise<{ payload: T | null; response: Response | null }> {
   try {
     const response = await fetch(localApiUrl(path), {
       headers: buildHeaders(accessToken),
       cache: 'no-store',
+      signal,
     });
 
     if (response.status === 401) {
@@ -1528,7 +1530,7 @@ async function maybeFetchLocalJson<T>(
 
     return { payload: await response.json() as T, response };
   } catch (error) {
-    if (error instanceof MissionControlAuthError) throw error;
+    if (signal?.aborted || error instanceof MissionControlAuthError) throw error;
     return { payload: null, response: null };
   }
 }
@@ -2644,6 +2646,18 @@ export type MissionControlKanbanTask = {
   priority: number;
   assignee?: string | null;
   created_at?: number | null;
+  started_at?: number | null;
+  completed_at?: number | null;
+  tenant?: string | null;
+  session_id?: string | null;
+  current_run_id?: number | null;
+  current_run?: MissionControlKanbanRun | null;
+  last_heartbeat_at?: number | null;
+  latest_summary?: string | null;
+  result_preview?: string | null;
+  block_kind?: string | null;
+  block_reason?: string | null;
+  schedule_reason?: string | null;
   comment_count?: number;
   parents?: string[];
   children?: string[];
@@ -2680,6 +2694,7 @@ export type MissionControlKanbanRun = {
   error?: string | null;
   started_at: number;
   ended_at?: number | null;
+  last_heartbeat_at?: number | null;
 };
 
 export type MissionControlKanbanEventEntry = {
@@ -2729,21 +2744,21 @@ export async function loadKanbanBoards(accessToken?: string): Promise<{ boards: 
   return payload;
 }
 
-export async function loadKanbanTaskLog(accessToken?: string, taskId?: string, board?: string): Promise<MissionControlKanbanTaskLog> {
+export async function loadKanbanTaskLog(accessToken?: string, taskId?: string, board?: string, signal?: AbortSignal): Promise<MissionControlKanbanTaskLog> {
   if (!taskId) throw new Error('taskId is required');
   const params = new URLSearchParams({ tail: '100000' });
   if (board) params.set('board', board);
-  const { payload } = await maybeFetchLocalJson<MissionControlKanbanTaskLog>(`/kanban/tasks/${encodeURIComponent(taskId)}/log?${params.toString()}`, accessToken);
+  const { payload } = await maybeFetchLocalJson<MissionControlKanbanTaskLog>(`/kanban/tasks/${encodeURIComponent(taskId)}/log?${params.toString()}`, accessToken, signal);
   if (!payload) throw new Error('Worker log unavailable.');
   return payload;
 }
 
-export async function loadKanbanTaskDetail(accessToken?: string, taskId?: string, board?: string): Promise<MissionControlKanbanTaskDetail> {
+export async function loadKanbanTaskDetail(accessToken?: string, taskId?: string, board?: string, signal?: AbortSignal): Promise<MissionControlKanbanTaskDetail> {
   if (!taskId) throw new Error('taskId is required');
   const params = new URLSearchParams();
   if (board) params.set('board', board);
   const qs = params.toString() ? `?${params.toString()}` : '';
-  const { payload } = await maybeFetchLocalJson<MissionControlKanbanTaskDetail>(`/kanban/tasks/${encodeURIComponent(taskId)}${qs}`, accessToken);
+  const { payload } = await maybeFetchLocalJson<MissionControlKanbanTaskDetail>(`/kanban/tasks/${encodeURIComponent(taskId)}${qs}`, accessToken, signal);
   if (!payload) throw new Error('Task unavailable.');
   return payload;
 }

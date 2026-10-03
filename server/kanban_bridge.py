@@ -62,8 +62,67 @@ class KanbanError(Exception):
 # Serialization helpers
 # ---------------------------------------------------------------------------
 
+def _preview(value: Optional[str]) -> Optional[str]:
+    return value[:_CARD_SUMMARY_PREVIEW_CHARS] if value else None
+
+
+def _transition_reason(conn, task_id: str, kind: str) -> Optional[str]:
+    """Use the latest matching transition, never a comment or an older block."""
+    try:
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? "
+            "ORDER BY id DESC LIMIT 1", (task_id, kind),
+        ).fetchone()
+        payload = json.loads(row["payload"]) if row and row["payload"] else None
+        reason = payload.get("reason") if isinstance(payload, dict) else None
+        return _preview(reason) if isinstance(reason, str) else None
+    except (sqlite3.Error, ValueError, TypeError):
+        return None
+
+
+def _task_lifecycle(conn, task) -> Dict[str, Any]:
+    data: Dict[str, Any] = {
+        "current_run": None,
+        "latest_summary": None,
+        "result_preview": _preview(getattr(task, "result", None)),
+        "block_kind": getattr(task, "block_kind", None),
+        "block_reason": None,
+        "schedule_reason": None,
+        "last_heartbeat_at": getattr(task, "last_heartbeat_at", None),
+    }
+    latest = None
+    try:
+        latest = conn.execute(
+            "SELECT * FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (task.id,),
+        ).fetchone()
+        if latest:
+            data["latest_summary"] = _preview(latest["summary"])
+        run_id = getattr(task, "current_run_id", None)
+        if task.status == "running" and run_id is not None:
+            current = latest if latest and latest["id"] == run_id else conn.execute(
+                "SELECT * FROM task_runs WHERE id = ? AND task_id = ?", (run_id, task.id),
+            ).fetchone()
+            if current and current["ended_at"] is None:
+                run = dict(current)
+                data["current_run"] = {key: run.get(key) for key in (
+                    "id", "profile", "status", "outcome", "started_at", "ended_at", "last_heartbeat_at",
+                )}
+    except sqlite3.Error:
+        pass  # Legacy DB without run history: expose unknown, not fabricated run data.
+    if task.status == "blocked":
+        blocked_run = latest if latest and (latest["outcome"] or latest["status"]) == "blocked" else None
+        data["block_reason"] = (
+            _transition_reason(conn, task.id, "blocked")
+            or (_preview(blocked_run["error"] or blocked_run["summary"]) if blocked_run else None)
+            or _preview(getattr(task, "last_failure_error", None))
+        )
+    elif task.status == "scheduled":
+        data["schedule_reason"] = _transition_reason(conn, task.id, "scheduled")
+    return data
+
+
 def _task_dict(task, conn=None) -> Dict[str, Any]:
-    kb = _kb()
     d: Dict[str, Any] = {
         "id": task.id,
         "title": task.title,
@@ -78,6 +137,7 @@ def _task_dict(task, conn=None) -> Dict[str, Any]:
         "current_run_id": getattr(task, "current_run_id", None),
     }
     if conn is not None:
+        d.update(_task_lifecycle(conn, task))
         # comment count + parent/child counts, cheap aggregates
         try:
             row = conn.execute(
@@ -168,7 +228,7 @@ def get_board(board: Optional[str] = None) -> Dict[str, Any]:
 def _latest_summary(conn, task_id: str) -> Optional[str]:
     try:
         row = conn.execute(
-            "SELECT summary FROM task_runs WHERE task_id = ? AND summary IS NOT NULL "
+            "SELECT summary FROM task_runs WHERE task_id = ? "
             "ORDER BY id DESC LIMIT 1",
             (task_id,),
         ).fetchone()
@@ -211,7 +271,7 @@ def get_task_detail(task_id: str, board: Optional[str] = None) -> Dict[str, Any]
         d["body"] = body
         d["result"] = getattr(task, "result", None)
         latest = _latest_summary(conn, task_id)
-        d["latest_summary"] = (latest or "")[:_CARD_SUMMARY_PREVIEW_CHARS * 2] if latest else None
+        d["latest_summary"] = latest
         comments = [
             {
                 "id": c.id,
