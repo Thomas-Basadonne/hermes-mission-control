@@ -115,6 +115,7 @@ The backend manifest is the runtime contract between the plugin and MC:
 | `enabled` | no | Defaults to enabled when omitted. |
 | `routePath` | no | Frontend route, for example `/example`. |
 | `navItem` | no | Sidebar entry. Omit for a hidden/backend-only plugin. |
+| `navItem.label` | yes | Plain text shown in the sidebar and page header. Plugins never add keys to MC's locale catalogs. |
 | `navItem.indicator` | no | Generic host-rendered status dot. The plugin owns a small authenticated GET endpoint returning `{active, count?, tone?, label?}`; MC renders it without knowing the plugin's domain semantics. |
 | `endpoints` | no | HTTP endpoint declarations. |
 | `surfaces.overview` | no | Enables a compact plugin widget in the Overview dashboard grid. |
@@ -238,9 +239,9 @@ Then install the plugin and verify the integration separately. The host CI must 
 
 Curate is the first external plugin:
 
-- repository: [`albidev/mc-curate-plugin`](https://github.com/albidev/mc-curate-plugin) (private);
+- repository: [`albidev/mc-curate-plugin`](https://github.com/albidev/mc-curate-plugin) (public);
 - install path: `~/.hermes/mc-plugins/curate/`;
-- backend: candidate listing, vault listing, approve, and reject endpoints;
-- UI: candidate review route under the plugin's `ui/` directory.
+- backend: candidate listing, vault listing, approve, reject, merge, and AI-advisor endpoints;
+- UI: candidate review route under the plugin's `ui/` directory, with its own en/it strings.
 
 Curate is an example of the contract, not a special case in MC. New plugins must not copy Curate-specific code into Mission Control.
