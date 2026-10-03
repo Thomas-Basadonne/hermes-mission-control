@@ -121,9 +121,10 @@ def _resolve_board(board: Optional[str]) -> Optional[str]:
 
 
 def _conn(board: Optional[str] = None):
-    kb = _kb()
-    board = _resolve_board(board)
-    return kb.connect(board=board)
+    _kb()  # Resolve the installation before importing the canonical connection owner.
+    from hermes_cli.kanban_db_connect import connect
+
+    return connect(board=_resolve_board(board))
 
 
 # ---------------------------------------------------------------------------

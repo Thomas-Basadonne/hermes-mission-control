@@ -9,10 +9,11 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 SERVER_DIR = Path(__file__).resolve().parent.parent / "server"
-CORE_ROOT = Path.home() / ".hermes" / "hermes-agent"
+CORE_ROOT = Path(os.environ.get("MC_TEST_CORE_ROOT", str(Path.home() / ".hermes" / "hermes-agent")))
 
 # These tests exercise the real core kanban_db — they can only run on a
 # machine with the Hermes core checkout (~/.hermes/hermes-agent) AND a
@@ -31,6 +32,7 @@ if _CORE_AVAILABLE:
         import hermes_constants  # type: ignore  # noqa: E402, F401
         import kanban_bridge as kb  # noqa: E402
         from hermes_cli import kanban_db  # type: ignore  # noqa: E402
+        from hermes_cli.kanban_db_connect import connect  # noqa: E402
     except TypeError:
         _CORE_AVAILABLE = False
 
@@ -69,7 +71,7 @@ class KanbanBridgeTest(unittest.TestCase):
             os.environ.pop(_name, None)
         os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="mc-kanban-test-")
         # Fresh DB per test: connect auto-inits the schema.
-        self.conn = kanban_db.connect()
+        self.conn = connect()
         try:
             yield_conn = True
         except Exception:
@@ -95,6 +97,10 @@ class KanbanBridgeTest(unittest.TestCase):
         return kanban_db.create_task(self.conn, title=title, **kwargs)
 
     # ------------------------------------------------------------------
+
+    def test_bridge_does_not_require_facade_connect(self):
+        with patch.object(kanban_db, "connect", create=True, side_effect=AssertionError("removed facade export")):
+            self.assertEqual(kb.get_board()["latestEventId"], self._max_event_id())
 
     def test_board_groups_tasks_by_column(self):
         tid = self._make_task("Alpha")

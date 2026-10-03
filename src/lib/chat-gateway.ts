@@ -51,7 +51,8 @@ import { getWebSocketUrl, MAX_RECONNECTS, mintWsCredential, nextReconnectDelay, 
 import { commandOutput, executeReasoningSlashCommand, resultText } from './chat-commands';
 import { setSessionReasoning } from './chat-status-runtime';
 import {
-  buildClarifyAnswers,
+  cancelledApprovalRequestIds,
+  lockClarifyInteractionAnswer,
   extractClarifyToolContent,
   interactionTitle,
   isBatchClarifyRequest,
@@ -257,6 +258,7 @@ export function useGatewayChat(
   const sessionIdRef = useRef(sessionId);
   const sessionKeyRef = useRef(sessionKey);
   const interactionRef = useRef(interaction);
+  const clarifyLocksInFlightRef = useRef(new Set<string>());
   // Open server→client requests (srq-…): the store lets the response path answer the
   // exact frame the gateway asked with (idempotent, one send) instead of the removed
   // `*.respond` RPCs, and lets `open_requests` replays reuse the same entry.
@@ -1314,10 +1316,28 @@ export function useGatewayChat(
             setInteraction(null);
           }
         }
+        if (parsed.event.type === 'approval.cancelled') {
+          // Scope-safe cleanup for an approval withdrawn on another surface or by timeout.
+          // Only operate on requests that belong to this session; do not auto-answer/deny
+          // approvals owned by an unrelated session.
+          const payload = parsed.event.payload ?? {};
+          const activeSessionRefs = [sessionIdRef.current, sessionKeyRef.current].filter(
+            (value): value is string => Boolean(value),
+          );
+          const requestIds = cancelledApprovalRequestIds(payload, activeSessionRefs, sessionProfileRef.current ?? 'default');
+          for (const id of requestIds) openServerRequestsRef.current.delete(id);
+          const currentRequestId = interactionRef.current?.requestId;
+          if (currentRequestId && requestIds.includes(currentRequestId)) {
+            pendingClarifyContentRef.current = null;
+            interactionRef.current = null;
+            setInteraction(null);
+          }
+        }
         if (parsed.event.type.endsWith('.expire')) {
           const requestId = typeof parsed.event.payload?.request_id === 'string' ? parsed.event.payload.request_id : null;
           if (!requestId || requestId === interactionRef.current?.requestId) {
             pendingClarifyContentRef.current = null;
+            interactionRef.current = null;
             setInteraction(null);
           }
         }
@@ -1844,6 +1864,42 @@ export function useGatewayChat(
           await request('secret.respond', { request_id: pending.requestId, value: answer });
         }
       };
+    if (pending.kind === 'clarify' && pending.requestId && isBatchClarifyRequest(pending.payload)) {
+      const requestId = pending.requestId;
+      if (clarifyLocksInFlightRef.current.has(requestId)) return false;
+      const ownerGeneration = sessionLifecycleGenerationRef.current;
+      const ownerProfile = sessionProfileRef.current;
+      clarifyLocksInFlightRef.current.add(requestId);
+      try {
+        const locked = await lockClarifyInteractionAnswer(pending.payload, requestId, answer, ownerProfile ?? 'default', request);
+        if (ownerGeneration !== sessionLifecycleGenerationRef.current || ownerProfile !== sessionProfileRef.current) return false;
+        // Expiry/resolution elsewhere may have removed the request while its ack was in flight.
+        if (interactionRef.current?.requestId !== requestId
+          || (openRequest && openServerRequestsRef.current.get(requestId) !== openRequest)) return true;
+        if (locked.pending) {
+          const next = { ...pending, payload: locked.payload };
+          interactionRef.current = next;
+          setInteraction(next);
+          setStatusText('Waiting for your input');
+        } else {
+          if (openRequest) openRequest.responded = true;
+          pendingClarifyContentRef.current = null;
+          interactionRef.current = null;
+          setInteraction(null);
+          setStatusText('Connected');
+        }
+        return true;
+      } catch (err) {
+        if (ownerGeneration === sessionLifecycleGenerationRef.current && ownerProfile === sessionProfileRef.current
+          && interactionRef.current?.requestId === requestId
+          && (!openRequest || openServerRequestsRef.current.get(requestId) === openRequest)) {
+          setError(err instanceof Error ? err.message : 'Could not answer Hermes.');
+        }
+        return false;
+      } finally {
+        clarifyLocksInFlightRef.current.delete(requestId);
+      }
+    }
     const dismissOptimistically = pending.kind === 'clarify';
     if (dismissOptimistically) {
       // Do not keep the card mounted while clarify.respond waits for the gateway
@@ -1859,7 +1915,7 @@ export function useGatewayChat(
         const result = pending.kind === 'approval'
           ? { choice: choice || answer || 'deny', ...(resolveAll || choice === 'always' ? { all: true } : {}) }
           : pending.kind === 'clarify'
-            ? (isBatchClarifyRequest(pending.payload) ? { answers: buildClarifyAnswers(pending.payload, answer) } : { answer })
+            ? { answer }
             : { value: answer };
         if (!respondFrame(result)) return false;
       } else if (legacyRpc) {

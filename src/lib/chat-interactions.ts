@@ -36,6 +36,19 @@ function parseJsonRecord(value: unknown): Record<string, unknown> | null {
  */
 export function normalizeClarifyInteraction(payload: Record<string, unknown>): ClarifyInteractionContent {
   const nestedQuestions = Array.isArray(payload.questions) ? payload.questions : [];
+  if (isBatchClarifyRequest(payload)) {
+    const answers = isRecord(payload.answers) ? payload.answers : {};
+    const next = nestedQuestions.find((entry) => isRecord(entry) && typeof entry.qid === 'string'
+      && entry.qid.trim().length > 0 && !Object.hasOwn(answers, entry.qid));
+    if (!isRecord(next)) return { question: '', choices: [], multiSelect: false, questionId: null };
+    return {
+      question: typeof next.question === 'string' ? next.question.trim() : '',
+      choices: stringChoices(next.choices),
+      multiSelect: next.multi_select === true,
+      questionId: next.qid as string,
+    };
+  }
+  // Legacy single-question and structured-result shapes.
   const questionEntry = nestedQuestions.find(isRecord);
   const nestedResponses = Array.isArray(payload.responses) ? payload.responses : [];
   const responseEntry = nestedResponses.find(isRecord);
@@ -88,8 +101,13 @@ export function mergeClarifyInteractionContent(
 
 /**
  * Batch clarify detection on a server-request payload: `questions` (with `qid`s) is the
- * wire shape `tui_gateway/server.py::_clarify_block` sends. A response with neither
- * `answer` nor `answers` is a cancel-all, so single questions answer with `answer`.
+ * wire shape `tui_gateway/server.py::_clarify_block` sends for batch flows. The batch
+ * response uses an `answers` dict; a response with no `answers` is a cancel-all.
+ *
+ * Legacy cores (< Sep 2026) send a single `question`/`choices` pair and answer with
+ * a single `answer` string — kept on the response path, not here, so legacy cores
+ * are not broken. Upstream frozen `bd0affe5e5` always sends `questions` with `qid`
+ * and an `answers` dict (null = skip).
  */
 export function isBatchClarifyRequest(payload: Record<string, unknown>): boolean {
   return Array.isArray(payload.questions)
@@ -102,24 +120,54 @@ export function isBatchClarifyRequest(payload: Record<string, unknown>): boolean
  * (`params.answers`) merged with the answer the user just submitted. A single answer
  * applies to the first unanswered question (the drawer answers one question at a time).
  */
-export function buildClarifyAnswers(payload: Record<string, unknown>, answer: string): Record<string, string> {
-  const answers: Record<string, string> = {};
+export function buildClarifyAnswers(payload: Record<string, unknown>, answer: string): Record<string, string | null> {
+  const answers: Record<string, string | null> = {};
   const locked = payload.answers;
-  if (locked && typeof locked === 'object' && !Array.isArray(locked)) {
-    for (const [qid, value] of Object.entries(locked as Record<string, unknown>)) {
-      if (typeof value === 'string' && qid.trim()) answers[qid] = value;
+  if (isRecord(locked)) {
+    for (const [qid, value] of Object.entries(locked)) {
+      if (qid && (typeof value === 'string' || value === null)) answers[qid] = value;
     }
   }
-  const questions = Array.isArray(payload.questions) ? (payload.questions as unknown[]) : [];
-  const target = questions.find((q) => {
-    const qid = typeof (q as Record<string, unknown>)?.qid === 'string' ? String((q as Record<string, unknown>).qid).trim() : '';
-    return qid && !(qid in answers);
-  });
-  const targetQid = typeof (target as Record<string, unknown> | undefined)?.qid === 'string'
-    ? String((target as Record<string, unknown>).qid).trim()
-    : '';
+  const questions = Array.isArray(payload.questions) ? payload.questions : [];
+  const target = questions.find((q) => isRecord(q) && typeof q.qid === 'string'
+    && q.qid.length > 0 && !Object.hasOwn(answers, q.qid));
+  const targetQid = isRecord(target) && typeof target.qid === 'string' ? target.qid : '';
   if (targetQid && answer.trim()) answers[targetQid] = answer;
   return answers;
+}
+
+export async function lockClarifyInteractionAnswer(
+  payload: Record<string, unknown>,
+  requestId: string,
+  answer: string,
+  profile: string,
+  request: (method: string, params: Record<string, unknown>) => Promise<unknown>,
+): Promise<{ pending: boolean; payload: Record<string, unknown> }> {
+  const questionId = normalizeClarifyInteraction(payload).questionId;
+  if (!questionId) throw new Error('Clarify request has no unanswered question.');
+  const result = await request('clarify.lock', {
+    request_id: requestId, question_id: questionId, answer, profile,
+  });
+  if (!isRecord(result)) throw new Error('Invalid clarify lock response.');
+  if (result.status === 'expired') return { pending: false, payload };
+  if (result.status !== 'ok' || !Array.isArray(result.remaining)
+    || result.remaining.some((qid) => typeof qid !== 'string')) {
+    throw new Error('Invalid clarify lock response.');
+  }
+  return {
+    pending: result.remaining.length > 0,
+    payload: { ...payload, answers: buildClarifyAnswers(payload, answer) },
+  };
+}
+
+export function cancelledApprovalRequestIds(
+  payload: Record<string, unknown>, activeSessionRefs: string[], activeProfile: string,
+): string[] {
+  if (typeof payload.profile === 'string' && payload.profile !== activeProfile) return [];
+  if (!activeSessionRefs.some((ref) => ref === payload.session_id || ref === payload.stored_session_id)) return [];
+  return Array.isArray(payload.request_ids)
+    ? payload.request_ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+    : [];
 }
 
 export function interactionTitle(interaction: GatewayInteractionRequest): string {
