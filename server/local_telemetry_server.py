@@ -64,7 +64,7 @@ def _client_diagnostics_log() -> Path:
 from plugins.loader import resolve_handler, dispatch_plugin_request
 from nous_portal_usage import collect_nous_portal_usage
 from provider_usage_config import apply_provider_display_config, visible_usage_providers
-from provider_usage_contract import normalize_cached_entry, normalize_codexbar_entry
+from provider_usage_contract import normalize_cached_entry, normalize_codexbar_entry, unavailable_provider
 
 from mission_control_agents import (
     load_agent_trace_snapshot,
@@ -535,12 +535,8 @@ def collect_provider_usage() -> Dict[str, Any]:
                     result["error"] = "CodexBar returned a provider error."
                 providers.append(result)
             except (OSError, subprocess.TimeoutExpired) as exc:
-                providers.append({
-                    "provider": provider,
-                    "available": False,
-                    "source": "cli",
-                    "error": "CodexBar unavailable." if isinstance(exc, OSError) else "CodexBar timed out.",
-                })
+                error = "CodexBar unavailable." if isinstance(exc, OSError) else "CodexBar timed out."
+                providers.append(apply_provider_display_config(unavailable_provider(provider, "cli", error)))
 
     if "nous" in visible:
         # Nous is deliberately not sent through CodexBar. The sidecar uses the
