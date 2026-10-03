@@ -1986,6 +1986,33 @@ body.modal-open .route-page-scroll {
   border-radius: 16px;
   background: color-mix(in srgb, var(--color-accent-subtle) 52%, var(--color-surface-raised));
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.08);
+  /* The footer is a fixed-height flex child of the drawer, so an unbounded
+     approval description or command used to push the action row past the
+     viewport bottom and leave mobile users with no reachable buttons.
+     Cap the card and scroll only its body; the action row stays in flow. */
+  max-height: min(55dvh, 30rem);
+  min-height: 0;
+}
+
+/* Scrollable body of an interaction card: every long-text region lives here so
+   the heading and the action row never leave the screen. */
+.chat-interaction-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Inside the body the command must scroll with the description instead of
+   nesting a second scroll area the user has to fight with on a phone.
+   `overflow` has to be reset too: the base rule's `auto` would otherwise keep
+   its own scrollbar and trap tall commands inside the outer scroller. */
+.chat-interaction-scroll .chat-command-preview {
+  max-height: none;
+  overflow: visible;
 }
 
 .chat-interaction-heading {
@@ -4626,10 +4653,19 @@ body.modal-open .route-page-scroll {
   gap: 0.55rem;
 }
 
+/* On mobile a long approval description/command used to grow the interaction
+   card without bound. The drawer is `height: 100dvh; overflow: hidden`, so the
+   Allow/Deny row was pushed below the fold with nothing to scroll and no way to
+   reach it. `min-height: 0` is what lets this flex child actually shrink instead
+   of forcing the drawer to overflow.
+   Do NOT add `overflow` here: the collapsed TODO capsule is absolutely
+   positioned above this box (`bottom: calc(100% + 0.45rem)`) and any scroll
+   container on the footer clips it out of existence. */
 .chat-runtime-footer {
   position: relative;
   z-index: 2;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-height: 0;
   background: transparent;
 }
 

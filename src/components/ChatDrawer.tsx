@@ -1957,8 +1957,10 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
               </div>
               {interaction.kind === 'approval' ? (
                 <>
-                  {approvalDescription ? <p className="chat-interaction-copy">{approvalDescription}</p> : null}
-                  {approvalCommand ? <code className="chat-command-preview">{approvalCommand}</code> : null}
+                  <div className="chat-interaction-scroll">
+                    {approvalDescription ? <p className="chat-interaction-copy">{approvalDescription}</p> : null}
+                    {approvalCommand ? <code className="chat-command-preview">{approvalCommand}</code> : null}
+                  </div>
                   <div className="chat-choice-row">
                     {(interactionChoices.length ? interactionChoices : ['once', 'deny']).map((choice) => (
                       <button key={choice} type="button" className={`chat-choice ${choice === 'deny' ? 'is-danger' : ''}`} onClick={() => void respondInteraction(choice, choice, choice === 'always')}>
@@ -1969,27 +1971,29 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
                 </>
               ) : interaction.kind === 'clarify' ? (
                 <>
-                  <p className="chat-interaction-copy">{interactionQuestion || 'Hermes is asking for a decision.'}</p>
-                  {interactionChoices.length ? (
-                    <div className={`chat-choice-row ${hasLongInteractionChoice ? 'has-long-choice' : ''}`}>
-                      {interactionChoices.map((choice) => {
-                        const selected = selectedChoices.includes(choice);
-                        return (
-                          <button
-                            key={choice}
-                            type="button"
-                            className={`chat-choice ${selected ? 'is-selected' : ''}`}
-                            onClick={() => {
-                              if (multiSelect) setSelectedChoices((current) => selected ? current.filter((item) => item !== choice) : [...current, choice]);
-                              else void respondInteraction(choice);
-                            }}
-                          >
-                            {selected ? <Check size={14} /> : null}{choice}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : null}
+                  <div className="chat-interaction-scroll">
+                    <p className="chat-interaction-copy">{interactionQuestion || 'Hermes is asking for a decision.'}</p>
+                    {interactionChoices.length ? (
+                      <div className={`chat-choice-row ${hasLongInteractionChoice ? 'has-long-choice' : ''}`}>
+                        {interactionChoices.map((choice) => {
+                          const selected = selectedChoices.includes(choice);
+                          return (
+                            <button
+                              key={choice}
+                              type="button"
+                              className={`chat-choice ${selected ? 'is-selected' : ''}`}
+                              onClick={() => {
+                                if (multiSelect) setSelectedChoices((current) => selected ? current.filter((item) => item !== choice) : [...current, choice]);
+                                else void respondInteraction(choice);
+                              }}
+                            >
+                              {selected ? <Check size={14} /> : null}{choice}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                   <div className="chat-interaction-input-row">
                     <input value={interactionDraft} onChange={(event) => setInteractionDraft(event.target.value)} placeholder={t('interaction.typeAnswer')} aria-label={t('interaction.answerHermes')} />
                     <button type="button" className="chat-choice is-primary" disabled={!interactionDraft.trim() && (!multiSelect || selectedChoices.length === 0)} onClick={() => void respondInteraction(interactionDraft.trim() || selectedChoices.join(', '))}>{t('kanban.send')}</button>
@@ -1997,7 +2001,9 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
                 </>
               ) : interaction.kind === 'terminal_read' ? (
                 <>
-                  <p className="chat-interaction-copy">{interactionPrompt || 'Paste the requested terminal output.'}</p>
+                  <div className="chat-interaction-scroll">
+                    <p className="chat-interaction-copy">{interactionPrompt || 'Paste the requested terminal output.'}</p>
+                  </div>
                   <div className="chat-interaction-input-row">
                     <textarea value={interactionDraft} onChange={(event) => setInteractionDraft(event.target.value)} placeholder={t('interaction.pasteOutputPlaceholder')} aria-label={t('interaction.terminalOutputAria')} rows={3} />
                     <button type="button" className="chat-choice is-primary" disabled={!interactionDraft.trim()} onClick={() => void respondInteraction(interactionDraft.trim())}>{t('kanban.send')}</button>
@@ -2006,10 +2012,12 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
               ) : (
                 <>
                   {interaction.kind === 'secret' ? (
-                    <p className="chat-interaction-copy">
-                      {interactionPrompt || 'Hermes needs a secret to continue.'}
-                      {secretEnvVar ? <><br /><code>{secretEnvVar}</code></> : null}
-                    </p>
+                    <div className="chat-interaction-scroll">
+                      <p className="chat-interaction-copy">
+                        {interactionPrompt || 'Hermes needs a secret to continue.'}
+                        {secretEnvVar ? <><br /><code>{secretEnvVar}</code></> : null}
+                      </p>
+                    </div>
                   ) : null}
                   <div className="chat-interaction-input-row">
                     <input type="password" value={interactionDraft} onChange={(event) => setInteractionDraft(event.target.value)} placeholder={interaction.kind === 'sudo' ? 'Password' : secretEnvVar || 'Secret value'} aria-label={interaction.kind === 'sudo' ? 'Sudo password' : interactionPrompt || 'Secret value'} autoComplete="off" />

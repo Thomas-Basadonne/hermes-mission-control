@@ -113,7 +113,7 @@ assertIncludes(styles, '.chat-transcript.is-preview.has-todo-plan .chat-resume-b
 assertIncludes(styles, 'height: 44px;', 'compact TODO capsule keeps a 44px control height');
 assertIncludes(styles, '.chat-plan-capsule .chat-plan-title {', 'compact TODO capsule uses a compact status row');
 assertIncludes(styles, '.chat-plan-complete.is-expanded {', 'completed expanded TODO plan keeps a uniform state border');
-assertIncludes(styles, '.chat-runtime-footer {\n  position: relative;\n  z-index: 2;\n  flex: 0 0 auto;\n  background: transparent;', 'runtime footer stays transparent behind the expanded plan');
+assertIncludes(styles, '.chat-runtime-footer {\n  position: relative;\n  z-index: 2;\n  flex: 0 1 auto;\n  min-height: 0;\n  background: transparent;', 'runtime footer stays transparent behind the expanded plan');
 assertIncludes(styles, '.chat-plan:not(.is-expanded) .chat-plan-capsule {\n  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);\n  background: var(--color-surface-raised);', 'collapsed TODO plan keeps its filled capsule surface');
 assertIncludes(styles, '.chat-plan.is-expanded .chat-plan-expanded {\n  background: transparent;', 'expanded TODO container has no outer fill');
 assertExcludes(todoPlan, 'chat-plan-focus', 'expanded TODO plan does not duplicate current and next task cards');
@@ -148,6 +148,28 @@ assertExcludes(toolMessage, 'browser_vision', 'tool renderer does not add screen
 assertIncludes(styles, '.chat-tool-section pre,\n.chat-tool-live pre {\n  width: 100%;\n  box-sizing: border-box;\n  word-break: break-word;', 'tool payloads cannot widen the chat with unbroken terminal output');
 assertIncludes(styles, '.chat-choice-row.has-long-choice {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr);', 'long clarify choices switch from chips to a single readable column');
 assertIncludes(styles, '.chat-choice-row.has-long-choice .chat-choice {\n  width: 100%;\n  min-height: 44px;', 'long clarify choices preserve a full-width mobile touch target');
+
+// Issue: on mobile a long approval description/command grew the interaction card
+// without bound, pushing the Allow/Deny row below the fold with no way to reach it
+// (the drawer clips overflow, so the footer simply left the screen). The card must
+// cap its own height and scroll its body while the action row stays in flow.
+assertIncludes(styles, '.chat-interaction {\n  display: flex;\n  flex-direction: column;', 'interaction card lays its regions out in one column');
+assertIncludes(styles, 'max-height: min(55dvh, 30rem);', 'interaction card caps its height so the action row cannot leave the viewport');
+assertIncludes(styles, '.chat-interaction-scroll {\n  display: flex;\n  flex-direction: column;\n  gap: 0.7rem;\n  min-height: 0;\n  overflow-y: auto;', 'long interaction text scrolls inside a dedicated body region');
+assertIncludes(styles, 'overscroll-behavior: contain;', 'interaction body scroll does not chain to the transcript');
+assertIncludes(styles, '.chat-interaction-scroll .chat-command-preview {\n  max-height: none;\n  overflow: visible;\n}', 'command preview scrolls with the body instead of nesting a second scroll area');
+assertIncludes(component, 'chat-interaction-scroll', 'approval, clarify, secret and terminal_read bodies all use the scrollable region');
+assertIncludes(component, '<div className="chat-interaction-scroll">\n                    {approvalDescription ?', 'the approval body wraps description and command together');
+assertIncludes(
+  component,
+  '</div>\n                  <div className="chat-choice-row">\n                    {(interactionChoices.length ? interactionChoices : [\'once\', \'deny\'])',
+  'the approval action row stays outside the scrollable body',
+);
+// The footer must be able to shrink inside the fixed-height drawer, and must NOT
+// become a scroll container itself: the collapsed TODO capsule is absolutely
+// positioned above it and any `overflow` on the footer clips it away entirely.
+assertIncludes(styles, '.chat-runtime-footer {\n  position: relative;\n  z-index: 2;\n  flex: 0 1 auto;\n  min-height: 0;\n  background: transparent;\n}', 'runtime footer shrinks inside the drawer and stays clipping-free');
+assertExcludes(styles, '.chat-runtime-footer {\n  position: relative;\n  z-index: 2;\n  flex: 0 1 auto;\n  min-height: 0;\n  max-height: 100%;\n  overflow-y: auto;', 'runtime footer is not a scroll container that would clip the collapsed TODO capsule');
 assertIncludes(messagesComponent, 'function ChatMarkdown', 'chat messages expose one shared Markdown renderer');
 assertIncludes(messagesComponent, '<ChatMarkdown', 'message cards use the shared Markdown renderer');
 assertIncludes(messagesComponent, 'text={message.text}', 'streaming and completed text use Markdown renderer');
