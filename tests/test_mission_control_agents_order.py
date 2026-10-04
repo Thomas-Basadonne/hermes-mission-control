@@ -502,7 +502,7 @@ class MissionControlSessionOrderTests(unittest.TestCase):
                 {
                     "source": "mission-control",
                     "model": "gpt-test",
-                    "title": "/Users/albi/Projects/hermes-mission-control",
+                    "title": "/home/example/Projects/hermes-mission-control",
                     "preview": "~/Projects/hermes-mission-control",
                     "last_active": "2026-08-28T10:00:00+00:00",
                 },

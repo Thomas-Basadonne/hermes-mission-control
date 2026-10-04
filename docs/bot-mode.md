@@ -64,7 +64,7 @@ In brief:
 - Honest empty state when `groups.list` returns zero rooms.
 - Member actions go through the driver: `groups.stop` / `groups.approve` / `groups.retry` / `groups.rename` / `groups.disband`, with an inline rename in the header and a 2-click confirm on disband.
 - **Tool traces** are read from the member profiles' existing `Group: <room_id>` sessions by `server/room_tool_store.py` (Mission Control-owned, read-only SQLite) and served via `/api/local/room/tools`. The collector detects which reasoning columns exist on each member's `messages` schema, so partially-migrated profiles degrade to tool-only instead of failing.
-- Room creation picks the **nightly-synthesis vault** from the Curate vault list; the routing map lives in MC (`server/room_vault_store.py`, served by `/api/local/room/vault`) and is cleared when a room is disbanded. `room_inventory` in the BDH bridge reads it and falls back to the member profiles when untouched.
+- Room creation can store an optional per-room vault destination when a plugin provides a vault list (see [rooms.md](rooms.md#room-creation-and-the-vault-destination)).
 
 ### Cross-device room pointer
 
@@ -93,6 +93,6 @@ The "last room I had open" is shared across devices like the last chat:
 
 ## Tests
 
-Dedicated suite in `tests/`: `bot-chat-routing.test.ts`, `bot-chat-policy.test.ts`, `bot-handoff*.test.ts`, `bot-lineage.test.ts`, `bot-mentions.test.ts`, `bot-create.test.ts`, `bot-gateway.test.ts`, `group-gateway.test.ts`, `group-room*.test.ts`, `chat-ui-contract.test.ts`, plus server-side stores (`server/tests/test_chat_handoff_store.py`, `test_chat_title_store.py`, `test_last_chat_store.py`, `test_last_room_store.py`, `test_room_tool_store.py`).
+Dedicated suite in `tests/`: `bot-chat-routing.test.ts`, `bot-chat-policy.test.ts`, `bot-handoff*.test.ts`, `bot-lineage.test.ts`, `bot-mentions.test.ts`, `bot-create.test.ts`, `group-gateway.test.ts`, `group-room*.test.ts`, `chat-ui-contract.test.ts`, plus server-side stores (`server/tests/test_chat_handoff_store.py`, `test_chat_title_store.py`, `test_last_chat_store.py`, `test_last_room_store.py`, `test_room_tool_store.py`).
 
-> Implemented in PR #51 (merged 2026-09-12, merge commit `bac8ad7`). Feature history (original bot handoff proposal) lives in the vault; this doc is the living reference.
+> Implemented in PR #51 (merged 2026-09-12, merge commit `bac8ad7`). This doc is the living reference.

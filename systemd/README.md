@@ -82,16 +82,15 @@ systemctl --user enable --now hermes-mission-control
 
 ## Operations
 
-Operational scripts (see `scripts/lib/restart-services.sh`) map the Mission
-Control service labels to these units:
+Each unit maps to one Mission Control process:
 
-| Label | Unit |
-|-------|------|
-| `ai.hermes.dashboard-api` | `hermes-dashboard-api.service` |
-| `ai.hermes.mission-control-telemetry` | `hermes-mission-control-telemetry.service` |
-| `ai.hermes.mission-control` | `hermes-mission-control.service` |
+| Unit | Process |
+|------|---------|
+| `hermes-dashboard-api.service` | Hermes dashboard API (`scripts/run-dashboard-api.sh`) |
+| `hermes-mission-control-telemetry.service` | Telemetry sidecar (`scripts/run-local-telemetry.sh`) |
+| `hermes-mission-control.service` | Vite frontend |
 
-Manual equivalents:
+Common operations:
 
 ```bash
 systemctl --user status mission-control.target
@@ -103,8 +102,3 @@ journalctl --user -u hermes-dashboard-api -f
 Health checks: `scripts/check-mission-control-health.sh` probes the telemetry
 and dashboard ports, `/health`, and the authenticated endpoint. See the
 runbook section "Health checks" for the watchdog timer setup.
-
-The restart path in `scripts/reapply-core-mission-control-fixes.sh` uses
-`systemctl --user restart` on Linux. On macOS it keeps the launchd
-`launchctl kickstart -k` path, isolated in the same library file and
-documented as macOS-only.

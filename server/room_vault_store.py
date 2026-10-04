@@ -2,8 +2,9 @@
 
 Group Chat rooms live in state.db (core, transient retention); the vault a
 room must synthesize into belongs to MC-level curation (per-vault nightly).
-Keep the routing map outside core, mirroring chat_title_store.py. The nightly
-room_inventory reads it to pick the BDH vault per room.
+Keep the routing map outside core, mirroring chat_title_store.py. External
+tooling (for example a nightly synthesis job) may read it to pick the vault
+per room.
 """
 from __future__ import annotations
 

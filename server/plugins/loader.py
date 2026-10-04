@@ -108,6 +108,14 @@ class PluginLoader:
             logging.warning("Failed to load plugin %s manifest: %s", plugin_id, exc)
             return False
 
+        # UI-only plugin: no backend endpoints declared, so there is no
+        # endpoints module to import. Register the manifest so the UI can
+        # discover the route and nav item.
+        if not manifest.get("endpoints"):
+            self._manifests[plugin_id] = manifest
+            self._plugin_dirs[plugin_id] = plugin_dir
+            return True
+
         # Determine if this is an external plugin
         is_external = str(plugin_dir).startswith(str(self.external_dir))
 

@@ -645,14 +645,14 @@ assertEqual(toolMessages[0].toolName, 'shell');
 assertEqual(toolMessages[0].status, 'streaming');
 toolMessages = applyGatewayEvent(toolMessages, {
   type: 'tool.complete',
-  payload: { tool_id: 'tool-1', result: '/Users/albi' },
+  payload: { tool_id: 'tool-1', result: '/home/example' },
 }, 2201);
 assertEqual(toolMessages[0].toolInput, 'pwd');
 toolMessages = applyGatewayEvent(toolMessages, {
   type: 'tool.complete',
-  payload: { tool_id: 'tool-1', result_text: '/Users/albi', duration_s: 0.42 },
+  payload: { tool_id: 'tool-1', result_text: '/home/example', duration_s: 0.42 },
 }, 2201);
-assertEqual(toolMessages[0].output, '/Users/albi');
+assertEqual(toolMessages[0].output, '/home/example');
 assertEqual(toolMessages[0].durationS, 0.42);
 assertEqual(toolMessages[0].status, 'complete');
 

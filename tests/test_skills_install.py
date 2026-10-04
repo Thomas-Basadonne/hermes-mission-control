@@ -67,29 +67,6 @@ class SkillsInstallTests(unittest.TestCase):
         self.assertNotIn("shell", kwargs)
         self.assertEqual(kwargs["cwd"], "/tmp/hermes-test")
 
-    def test_knowledge_walker_skips_generated_trees_and_vanishing_directories(self):
-        import os
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as raw_root:
-            root = Path(raw_root)
-            (root / "stable.md").write_text("# Stable", encoding="utf-8")
-            (root / "target").mkdir()
-            (root / "target" / "generated.md").write_text("# Generated", encoding="utf-8")
-            (root / "volatile").mkdir()
-
-            real_scandir = os.scandir
-
-            def flaky_scandir(path):
-                if Path(path).name == "volatile":
-                    raise FileNotFoundError(path)
-                return real_scandir(path)
-
-            with patch.object(local_telemetry_server.os, "scandir", side_effect=flaky_scandir):
-                found = local_telemetry_server._find_knowledge_markdown_files(root)
-
-            self.assertEqual([path.name for path in found], ["stable.md"])
-
     def test_hermes_cli_resolution_falls_back_outside_launchagent_path(self):
         import os
         import tempfile

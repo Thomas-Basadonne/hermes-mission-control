@@ -61,13 +61,18 @@ The frontend calls the sidecar endpoints under `/api/local/kanban/*`:
 | `GET /api/local/kanban/boards` | List boards and current-board state |
 | `GET /api/local/kanban/board` | Load the active board and columns |
 | `GET /api/local/kanban/tasks/:id` | Load task details, comments, runs, and events |
+| `GET /api/local/kanban/tasks/:id/log` | Read the task run log (`tail` query parameter) |
 | `GET /api/local/kanban/events` | Read board events after a cursor |
 | `POST /api/local/kanban/boards` | Create a board |
 | `POST /api/local/kanban/boards/:slug/switch` | Switch the CLI/gateway board |
 | `POST /api/local/kanban/boards/:slug/delete` | Archive or permanently delete a board |
 | `POST /api/local/kanban/tasks` | Create a task |
-| `POST /api/local/kanban/tasks/:id/move` | Move a task between columns |
+| `POST /api/local/kanban/tasks/:id` | Update a task; move it between columns with `{"status": "<column>"}` |
+| `POST /api/local/kanban/tasks/:id/archive` | Archive a task |
+| `POST /api/local/kanban/tasks/:id/links` | Link or unlink a parent task (`{"parent_id", "remove"}`) |
 | `POST /api/local/kanban/tasks/:id/comments` | Add a comment |
+
+Every route accepts an optional `?board=<slug>` query parameter.
 
 The bridge delegates database and task lifecycle operations to the Hermes core `kanban_db`. Orchestration settings remain in the Hermes core configuration and dashboard; Mission Control deliberately does not duplicate that settings panel.
 

@@ -1,94 +1,76 @@
 # Mission Control upgrade compatibility runbook
 
 ## Goal
-Keep Mission Control usable across Hermes updates without touching core internals every release.
+Keep Mission Control usable across Hermes updates. Mission Control never modifies
+Hermes core files and ships no patches for it; it depends on a small set of core
+interfaces, listed below. An upgrade is safe when those interfaces still answer as
+expected.
 
 ## Repos and boundaries
-- `hermes-agent` (main upstream repo): must stay clean before/after update.
-- `hermes-mission-control` (this repo): contains the UI, the telemetry sidecar, contracts, and smoke scripts.
-- Rule: do not couple Mission Control to unstable internal payloads without a fallback path.
+- `hermes-agent` (upstream): must stay clean before and after the update.
+- `hermes-mission-control` (this repo): the UI, the telemetry sidecar, contracts,
+  and smoke scripts.
+- Rule: do not couple Mission Control to unstable internal payloads without a
+  fallback path.
+
+## Hermes interfaces Mission Control depends on
+
+| Interface | Used for | When it breaks |
+|-----------|----------|----------------|
+| Dashboard API REST (`hermes dashboard`, default `127.0.0.1:9119`): `/api/status`, `/api/sessions`, `/api/cron/jobs`, `/api/profiles/*` | Overview, sessions, cron, bot deletion | Those views fall back to sidecar data or show an error |
+| Dashboard API WebSocket `/api/ws` JSON-RPC (`session.*`, `prompt.submit`, `session.events.since`, `profiles.*`, `tools.configure`, `groups.*`) | Chat, Bot Mode, Group Rooms | Chat and Rooms cannot connect |
+| Dashboard session token `HERMES_DASHBOARD_SESSION_TOKEN` | REST auth against `:9119` | Dashboard REST calls return `401` |
+| `hermes_cli.kanban_db` (imported lazily by `server/kanban_bridge.py`) | Kanban | Kanban endpoints return errors |
+| `tools_config.py` in the Hermes checkout | Tools inventory | Tools view is empty |
+| Hermes home layout (`state.db`, `sessions/`, `logs/`, `skills/`, `config.yaml`) | Telemetry views | Individual views degrade |
+
+### Dashboard authentication
+The dashboard API only accepts its own session token. `scripts/run-dashboard-api.sh`
+exports `HERMES_DASHBOARD_SESSION_TOKEN=$MISSION_CONTROL_TOKEN` (unless it is
+already set) before starting `hermes dashboard`, so a single token authenticates
+the sidecar, the browser, and the dashboard REST API. If you start `hermes
+dashboard` yourself, set `HERMES_DASHBOARD_SESSION_TOKEN` to the same value as
+`MISSION_CONTROL_TOKEN`; otherwise REST calls to `:9119` return `401`.
 
 ## Pre-upgrade checklist
-1. Ensure `hermes-agent` working tree is clean
-   - `git status --short`
-2. Ensure Mission Control branch is clean or committed
-   - `git status --short`
-3. Run frontend build
-   - `pnpm build`
-4. Run smoke script
-   - `bash scripts/smoke-upgrade.sh`
+1. `hermes-agent` working tree is clean: `git status --short`.
+2. Mission Control branch is clean or committed: `git status --short`.
+3. `pnpm build` succeeds.
+4. `bash scripts/smoke-upgrade.sh` passes.
 
-## Update flow (safe)
-1. Update `hermes-agent` to target version/commit.
-2. Restart services (gateway + mission-control) if needed.
-3. Run smoke script again.
-4. Open `/agents` and verify:
-   - Live toggle works
-   - Timeline renders
-   - DAG renders
-5. Open `/sessions`, select a session, and use `Trace` to open `/agents?session=<sessionId>`.
-   - Agents is the session trace cockpit; historical source/model filtering stays in Sessions.
+## Update flow
+1. Update `hermes-agent` to the target version.
+2. Restart the dashboard API, the telemetry sidecar, and the frontend
+   (systemd: `systemctl --user restart mission-control.target`; foreground:
+   restart `pnpm dev:full` and the dashboard API).
+3. Run `bash scripts/smoke-upgrade.sh` again. It checks the dashboard API
+   directly (`:9119`) and through the Vite proxy (`:5174`).
+4. Open `/agents` and verify the Live toggle, Timeline, and DAG.
+5. Open `/sessions`, select a session, and use `Trace` to open
+   `/agents?session=<sessionId>`.
+6. Open Chat and send a message; open Rooms if you use Group Rooms.
 
 ## Expected compatibility behavior
-- If `/mission-control/capabilities` is missing (404), frontend uses built-in v1 defaults.
-- If SSE fails, frontend falls back to polling automatically.
-- If trace payload is wrapped (`trace`, `data`, `payload`), frontend unwraps and normalizes it.
-- If `compact=1` is unsupported, frontend can run without compact mode.
+See the [compatibility matrix](../contracts/compatibility-matrix.md).
 
 ## Fast failure diagnosis
 - Blank trace cards: payload contract mismatch.
-- Live mode no updates: SSE unavailable, check polling fallback and gateway logs.
-- 401 lock screen: token missing/invalid.
+- Live mode not updating: SSE unavailable; the UI falls back to polling.
+- 401 lock screen in Mission Control: `MISSION_CONTROL_TOKEN` and
+  `VITE_MISSION_CONTROL_TOKEN` are missing or different.
+- 401 only on dashboard-backed views (sessions, cron, bots):
+  `HERMES_DASHBOARD_SESSION_TOKEN` does not match `MISSION_CONTROL_TOKEN`.
+- HTTP 500 with an empty body on `/api/*` (not `/api/local/*`): the dashboard API
+  on `:9119` is not running, so the Vite proxy has no upstream.
 
 ## Rollback levers
-1. Keep backend version, rely on polling fallback (no immediate rollback required).
-2. Disable live expectations operationally (use Post mode).
-3. If backend breaks contract badly, pin to known-good Hermes commit and rerun smoke.
-
-## Stash/conflict recovery in hermes-agent
-Use this when update/autostash leaves conflicted files:
-1. `git reset --hard HEAD`
-2. `git clean -fd .plans docs/plans tests/gateway website/docs/guides`
-3. Save any applied dirty state safely
-   - `git stash push -u -m "rescue-<label>"`
-4. Keep only one canonical stash
-   - `git stash list`
-   - `git stash drop <duplicate>`
+1. Keep the new backend and rely on the polling fallback.
+2. Use Post mode instead of Live mode on `/agents`.
+3. If the backend breaks a contract, pin Hermes to the last known-good commit and
+   rerun the smoke script.
 
 ## Required artifacts in this repo
 - `docs/contracts/mission-control-capabilities-v1.json`
 - `docs/contracts/mission-control-trace-v1.json`
 - `docs/contracts/compatibility-matrix.md`
-- `patches/hermes-core-mission-control-api_server.patch` (historical, see note below)
-- `scripts/reapply-core-mission-control-fixes.sh`
 - `scripts/smoke-upgrade.sh`
-
-> **Note on the `.patch` file:** `patches/hermes-core-mission-control-api_server.patch`
-> targets the pre-sidecar architecture, when Mission Control routes lived directly on
-> `gateway/platforms/api_server.py` (`_build_mission_control_snapshot`,
-> `_handle_mission_control`, etc.). That code path no longer exists in current
-> `hermes-agent` and the reapply script does **not** apply this patch — it is kept
-> only as a historical reference. `check-documented-paths.sh` still requires the
-> file to exist (documented path check), so don't delete it without also updating
-> that script and this note.
-
-## Canonical backend recovery path
-Mission Control's actual backend dependency on Hermes core today is `hermes_cli/web_server.py`
-(dashboard auth/token acceptance, `allowed_roots` for local file access, and the Knowledge
-core-docs candidate list). If a Hermes core update breaks any of those:
-1. Run `bash scripts/reapply-core-mission-control-fixes.sh` (optionally pass the
-   path to the `hermes-agent` checkout as the first argument; it defaults to
-   `$HOME/.hermes/hermes-agent`).
-2. The script patches `hermes_cli/web_server.py` in place: multi-token bearer auth
-   (`MISSION_CONTROL_TOKEN` / `API_SERVER_KEY` alongside the ephemeral session token),
-   the `allowed_roots` local-file allowlist, and the Knowledge core-docs candidate paths
-   (`SOUL.md`, `USER.md`, `AGENTS.md`, `memories/MEMORY.md`). Each block is idempotent —
-   already-aligned files are left untouched.
-3. It then verifies the Vite proxy points at the dashboard backend (`127.0.0.1:9119`,
-   `/api/local` route) — this is a hard check, not a patch.
-4. Finally it runs syntax checks, restarts `ai.hermes.dashboard-api`,
-   `ai.hermes.mission-control-telemetry`, and `ai.hermes.mission-control`, and
-   smoke-checks Mission Control endpoints on both 9119 and 5174.
-
-Rule: update the reapply script's patch blocks whenever Mission Control's dependency
-on `hermes_cli/web_server.py` changes, instead of relying on git stash recovery.

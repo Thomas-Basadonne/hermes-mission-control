@@ -57,7 +57,7 @@ A plugin repository should have this shape:
 ```text
 mc-example-plugin/
 ├── manifest.json          # required: backend manifest
-├── endpoints.py           # required for backend endpoints
+├── endpoints.py           # required only when manifest declares endpoints
 ├── handlers.py            # optional: business logic
 ├── ui/                    # optional: frontend integration
 │   ├── route.ts           # exports <id>Plugin or default component
@@ -70,7 +70,11 @@ mc-example-plugin/
 └── README.md              # installation and feature documentation
 ```
 
-A backend-only plugin may omit `ui/`. A UI-only plugin may omit `endpoints`.
+A backend-only plugin may omit `ui/`. A UI-only plugin may omit both the
+`endpoints` manifest field and `endpoints.py`: the host then registers the
+manifest without importing any backend module. A plugin that declares
+`endpoints` but whose handlers cannot be resolved is rejected and stays
+invisible.
 
 ### `manifest.json`
 
@@ -99,8 +103,7 @@ The backend manifest is the runtime contract between the plugin and MC:
     {
       "method": "GET",
       "path": "/example/items",
-      "handler": "listItems",
-      "authRequired": true
+      "handler": "listItems"
     }
   ]
 }
@@ -117,11 +120,11 @@ The backend manifest is the runtime contract between the plugin and MC:
 | `navItem` | no | Sidebar entry. Omit for a hidden/backend-only plugin. |
 | `navItem.label` | yes | Plain text shown in the sidebar and page header. Plugins never add keys to MC's locale catalogs. |
 | `navItem.indicator` | no | Generic host-rendered status dot. The plugin owns a small authenticated GET endpoint returning `{active, count?, tone?, label?}`; MC renders it without knowing the plugin's domain semantics. |
-| `endpoints` | no | HTTP endpoint declarations. |
+| `endpoints` | no | HTTP endpoint declarations (`method`, `path`, `handler`). Only `GET` and `POST` are dispatched to plugins. Every plugin endpoint requires the Mission Control bearer token; there is no per-endpoint auth switch. |
 | `surfaces.overview` | no | Enables a compact plugin widget in the Overview dashboard grid. |
 | `surfaces.attention` | no | Enables a contributor inside the global Attention Needed card. |
 
-Endpoint paths are relative to `/api/local`. For example, `"/example/items"` is served at `/api/local/example/items`. The endpoint `handler` must exactly match an exported function in `endpoints.py`.
+Endpoint paths are relative to `/api/local`. For example, `"/example/items"` is served at `/api/local/example/items`. Paths are matched exactly (no path parameters; pass identifiers in the query string or the JSON body). The endpoint `handler` must exactly match an exported function in `endpoints.py`.
 
 A navigation indicator is deliberately agnostic: the host only understands `active` (whether to show the dot), `count` (optional), `tone` (`neutral`, `info`, `success`, or `warning`/`error`), and an accessible `label`. It polls the declared endpoint with the normal Mission Control bearer token and hides the optional dot if the plugin is unavailable. A plugin can request an immediate refresh after a successful mutation by dispatching `window.dispatchEvent(new CustomEvent('mc:plugin-status-changed', { detail: { endpoint: '/example/status' } }))`; omitting `detail.endpoint` refreshes every indicator.
 
@@ -129,7 +132,7 @@ External plugins take precedence over an internal plugin with the same ID. Inter
 
 ### Backend handlers
 
-`endpoints.py` is the HTTP adapter. A handler receives the parsed JSON body, query parameters, and an auth context, and returns a JSON-serializable dictionary:
+`endpoints.py` is the HTTP adapter. A handler receives the parsed JSON body, the query parameters (`dict[str, list[str]]`), and a third `auth` argument that is reserved and currently always `None` (the host has already checked the bearer token). It returns a JSON-serializable dictionary, sent with HTTP 200. Raising an exception with `status_code`, `code`, and `message` attributes (like `PluginError` below) returns that status with `{"error": code, "detail": message}`; any other exception returns 500:
 
 ```python
 from __future__ import annotations

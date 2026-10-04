@@ -89,39 +89,39 @@ class CorsOriginEnforcementTests(unittest.TestCase):
     # --- configured allow-list mode -------------------------------------
 
     def test_configured_origin_is_accepted(self):
-        os.environ["MISSION_CONTROL_ALLOWED_ORIGIN"] = "http://100.84.148.17:5174"
+        os.environ["MISSION_CONTROL_ALLOWED_ORIGIN"] = "http://100.64.0.10:5174"
         self.assertEqual(
-            self._allowed_origin_header("http://100.84.148.17:5174"),
-            "http://100.84.148.17:5174",
+            self._allowed_origin_header("http://100.64.0.10:5174"),
+            "http://100.64.0.10:5174",
         )
 
     def test_rejected_origin_gets_no_cors_headers(self):
-        os.environ["MISSION_CONTROL_ALLOWED_ORIGIN"] = "http://100.84.148.17:5174"
+        os.environ["MISSION_CONTROL_ALLOWED_ORIGIN"] = "http://100.64.0.10:5174"
         self.assertIsNone(self._allowed_origin_header("http://evil.example:5174"))
 
     def test_similar_origin_is_still_rejected(self):
-        os.environ["MISSION_CONTROL_ALLOWED_ORIGIN"] = "http://100.84.148.17:5174"
-        self.assertIsNone(self._allowed_origin_header("http://100.84.148.17:5175"))
-        self.assertIsNone(self._allowed_origin_header("http://100.84.148.17:5174.evil.example"))
-        self.assertIsNone(self._allowed_origin_header("https://100.84.148.17:5174"))
+        os.environ["MISSION_CONTROL_ALLOWED_ORIGIN"] = "http://100.64.0.10:5174"
+        self.assertIsNone(self._allowed_origin_header("http://100.64.0.10:5175"))
+        self.assertIsNone(self._allowed_origin_header("http://100.64.0.10:5174.evil.example"))
+        self.assertIsNone(self._allowed_origin_header("https://100.64.0.10:5174"))
 
     def test_missing_origin_with_allowlist_passes_through(self):
-        os.environ["MISSION_CONTROL_ALLOWED_ORIGIN"] = "http://100.84.148.17:5174"
+        os.environ["MISSION_CONTROL_ALLOWED_ORIGIN"] = "http://100.64.0.10:5174"
         # A non-browser client (no Origin header) is not subject to CORS and
         # must still be served; it just gets no CORS headers.
         self.assertIsNone(self._allowed_origin_header(None))
 
     def test_preflight_with_matching_origin_is_allowed(self):
-        os.environ["MISSION_CONTROL_ALLOWED_ORIGIN"] = "http://100.84.148.17:5174"
+        os.environ["MISSION_CONTROL_ALLOWED_ORIGIN"] = "http://100.64.0.10:5174"
         request = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/local/config", method="OPTIONS")
-        request.add_header("Origin", "http://100.84.148.17:5174")
+        request.add_header("Origin", "http://100.64.0.10:5174")
         request.add_header("Access-Control-Request-Method", "GET")
         with urllib.request.urlopen(request, timeout=5) as response:
             self.assertEqual(response.status, 204)
-            self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), "http://100.84.148.17:5174")
+            self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), "http://100.64.0.10:5174")
 
     def test_preflight_with_wrong_origin_is_rejected(self):
-        os.environ["MISSION_CONTROL_ALLOWED_ORIGIN"] = "http://100.84.148.17:5174"
+        os.environ["MISSION_CONTROL_ALLOWED_ORIGIN"] = "http://100.64.0.10:5174"
         request = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/local/config", method="OPTIONS")
         request.add_header("Origin", "http://evil.example:5174")
         request.add_header("Access-Control-Request-Method", "GET")
@@ -132,7 +132,7 @@ class CorsOriginEnforcementTests(unittest.TestCase):
     # --- dev mode (unset) ------------------------------------------------
 
     def test_unconfigured_dev_mode_mirrors_incoming_origin(self):
-        self.assertEqual(self._allowed_origin_header("http://100.84.148.17:5174"), "http://100.84.148.17:5174")
+        self.assertEqual(self._allowed_origin_header("http://100.64.0.10:5174"), "http://100.64.0.10:5174")
 
     def test_unconfigured_dev_mode_without_origin(self):
         self.assertIsNone(self._allowed_origin_header(None))

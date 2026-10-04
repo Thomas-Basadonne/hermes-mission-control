@@ -6,11 +6,18 @@ Standalone operational dashboard for [Hermes](https://hermes-agent.nousresearch.
 
 ## About
 
-Mission Control is a local-first operator dashboard for Hermes. It combines a React/Vite frontend with a small Python telemetry sidecar, so the dashboard can run independently without coupling the open-source UI to Hermes core internals.
+Mission Control is a local-first operator dashboard for Hermes. It combines a React/Vite frontend with a small Python telemetry sidecar, and it is developed and released separately from Hermes.
 
 **Tags:** `hermes` · `mission-control` · `tldraw` · `whiteboard` · `agentic-ui` · `operations-dashboard` · `telemetry` · `react` · `typescript` · `vite` · `tailwindcss` · `python` · `local-first` · `self-hosted`
 
-> **Satellite by design.** Mission Control has zero runtime dependency on the Hermes core backend. It talks to a small local telemetry sidecar (Python stdlib + psutil) on port `8765`.
+> **Satellite, not a fork.** Mission Control never modifies Hermes core files
+> and ships no patches for it. It does rely on a few documented Hermes
+> interfaces: the dashboard API (`hermes dashboard`, REST and the `/api/ws`
+> JSON-RPC socket), the `hermes_cli.kanban_db` module for Kanban, the core cron
+> module, `tools_config.py` for the tools inventory, and the Hermes home layout
+> (`state.db`, `sessions/`, `logs/`, `skills/`, `config.yaml`). See
+> [docs/runbooks/upgrade-compatibility.md](docs/runbooks/upgrade-compatibility.md)
+> for the full list and what breaks when one of them changes.
 
 ## Features
 
@@ -21,6 +28,7 @@ Mission Control is a local-first operator dashboard for Hermes. It combines a Re
 - Sessions, agents, tools, skills, configuration, logs, and cron visibility
 - Provider usage for Codex, Ollama, OpenRouter, and Nous Portal with quota/billing views
 - Draggable dashboard widgets with persisted layout
+- Browser terminal (PTY over WebSocket) for the machine running the sidecar
 
 ### Kanban operations
 
@@ -35,10 +43,10 @@ Mission Control is a local-first operator dashboard for Hermes. It combines a Re
 
 - External, self-contained plugins: backend, UI, manifest, and tests live in the plugin repository
 - Plugins are installed with `git clone` into `~/.hermes/mc-plugins/<plugin-id>/`
-- Run `scripts/setup-plugins.sh` to link installed plugin UIs for Vite; MC contains no plugin implementation code
-- MC discovers plugin manifests and routes generically at runtime; an uninstalled plugin is invisible and does not affect the host
-- Curate is the first external plugin: [albidev/mc-curate-plugin](https://github.com/albidev/mc-curate-plugin)
-- See [docs/plugins.md](docs/plugins.md) for the complete plugin contract, install flow, and author requirements.
+- Run `scripts/setup-plugins.sh` to link installed plugin UIs for Vite; Mission Control contains no plugin implementation code
+- Mission Control discovers plugin manifests and routes at runtime; an uninstalled plugin is invisible and does not affect the host
+- Example external plugin: [albidev/mc-curate-plugin](https://github.com/albidev/mc-curate-plugin)
+- See [docs/plugins.md](docs/plugins.md) for the plugin contract, install flow, and author requirements
 
 ### Chat and agent workspace
 
@@ -48,7 +56,7 @@ Mission Control is a local-first operator dashboard for Hermes. It combines a Re
 - **Expanded Chat + tldraw Agent Mode**: session-bound whiteboard, authenticated bridge, screenshot-to-chat, agent actions, Mermaid import, board lints, exports, and mobile-safe persistence
 - Responsive layout: side rail on desktop, drawer and bottom sheets on mobile
 
-For Chat details, see [docs/chat.md](docs/chat.md); for Bot Mode, see [docs/bot-mode.md](docs/bot-mode.md); for Group Rooms, see [docs/rooms.md](docs/rooms.md). For localization, see [docs/i18n.md](docs/i18n.md). For telemetry and provider usage, see [docs/telemetry.md](docs/telemetry.md). For Honcho identity, profile isolation, and authenticated access, see [docs/honcho.md](docs/honcho.md).
+Feature docs: [Chat](docs/chat.md) · [Bot Mode](docs/bot-mode.md) · [Group Rooms](docs/rooms.md) · [Localization](docs/i18n.md) · [Telemetry and provider usage](docs/telemetry.md) · [Honcho identity and profile isolation](docs/honcho.md) · [Tools inventory](docs/tools.md) · [HTTP API](docs/api.md).
 
 ## tldraw Agent Mode
 
@@ -61,104 +69,124 @@ Mission Control links the expanded Chat to a tldraw whiteboard using the current
 - PNG/SVG/JSON export and Mermaid flowchart import
 - Mobile-safe open feedback and explicit close/unmount to keep iOS input responsive
 
-For the Chat internals (WebSocket transport, presence pill, persistence, streaming & reasoning), see [docs/chat.md](docs/chat.md). See the [tldraw feature matrix](docs/tldraw-feature-matrix.md) and the [Mission Control tldraw Agent Mode vault note](https://github.com/albidev/hermes-vault/blob/main/wiki/concepts/mission-control-tldraw-agent-mode.md).
+See the [tldraw feature matrix](docs/tldraw-feature-matrix.md).
 
 ## Architecture
 
-| Component | Path | Port | Stack |
-|-----------|------|------|-------|
-| Telemetry server | `server/local_telemetry_server.py` | `8765` | Python stdlib + psutil |
-| Frontend | `src/` | `5174` | React + Vite + TypeScript + Tailwind |
+| Component | Path | Default port | Stack |
+|-----------|------|--------------|-------|
+| Frontend (Vite dev server) | `src/` | `5174` | React + Vite + TypeScript + Tailwind |
+| Telemetry sidecar | `server/local_telemetry_server.py` | `8765` | Python 3.10+, `psutil`, `PyYAML`, `websockets` |
+| Terminal PTY WebSocket (started by the sidecar) | `server/terminal_server.py` | `8766` | `websockets` |
+| Hermes dashboard API (part of Hermes) | `hermes dashboard`, launched by `scripts/run-dashboard-api.sh` | `9119` | Hermes core |
 
-All data flows through `/api/local/*` endpoints. In development, Vite proxies those requests to the telemetry server.
+The Vite dev server proxies three paths:
 
-Group Rooms additionally use the gateway's `groups.*` JSON-RPC surface over `/api/ws` — the gateway owns room state, while Mission Control owns only the last-room pointer, the vault routing map, and the read-only tool-trace collection. See [docs/rooms.md](docs/rooms.md).
+- `/api/local/*` → telemetry sidecar (Mission Control's own API, see [docs/api.md](docs/api.md));
+- `/api/terminal` → terminal WebSocket;
+- every other `/api/*` (including the `/api/ws` JSON-RPC socket used by Chat, Bot Mode, and Group Rooms), plus `/login` and `/auth` → Hermes dashboard API.
 
-See [docs/telemetry.md](docs/telemetry.md) for the full telemetry overview, including the **provider-usage** pipeline (CodexBar/Nous Portal → normalized cache/API → gauges) and its troubleshooting.
+Group Rooms use the gateway's `groups.*` JSON-RPC surface over `/api/ws`. The gateway owns room state; Mission Control owns only the last-room pointer, an optional room → vault routing map, and the read-only tool-trace collection. See [docs/rooms.md](docs/rooms.md).
 
-See [docs/kanban.md](docs/kanban.md) for the Kanban board architecture, supported task/board operations, API endpoints, and desktop/mobile behavior. See [docs/tools.md](docs/tools.md) for the tool inventory source and discovery behavior.
+## Requirements
+
+- **Hermes** installed locally, with its checkout and virtual environment at
+  `~/.hermes/hermes-agent` (override with `HERMES_HOME` or `HERMES_AGENT_DIR`).
+  Without it the dashboard still loads system telemetry, but Chat, Rooms,
+  Kanban, cron, and the tools inventory do not work.
+- **Node.js >= 22.12** (`package.json` `engines`). The TypeScript test suites
+  use Node's native type stripping. CI runs Node 22.
+- **pnpm** (`packageManager: pnpm@10.33.2`).
+- **Python >= 3.10** with `server/requirements.txt` (`psutil`, `PyYAML`,
+  `websockets`). The sidecar launcher prefers the Hermes virtual environment
+  (`~/.hermes/hermes-agent/venv/bin/python`) and falls back to `python3`.
+- Optional: `server/requirements-push.txt` for Web Push.
 
 ## Quick start
 
-From the repository root:
-
 ```bash
+git clone https://github.com/albidev/hermes-mission-control.git
+cd hermes-mission-control
 pnpm install
-python3 -m pip install -r server/requirements.txt
+
+# Sidecar dependencies, into the interpreter that will run it
+~/.hermes/hermes-agent/venv/bin/python -m pip install -r server/requirements.txt
+# (or: python3 -m pip install -r server/requirements.txt)
+
+# One config file for everything (see Configuration below)
+cp .env.example .env
+TOKEN="$(openssl rand -base64 32)"
+sed -i.bak "s|your_token_here|$TOKEN|g" .env && rm .env.bak
+export MISSION_CONTROL_ENV_FILE="$PWD/.env"
+
+# Terminal 1: Hermes dashboard API on :9119 (needed by Chat, Rooms, sessions, cron)
+scripts/run-dashboard-api.sh
+
+# Terminal 2 (export MISSION_CONTROL_ENV_FILE there too): sidecar + UI
 pnpm dev:full
 ```
 
-This starts:
-- Vite UI on `http://localhost:5174`
-- Telemetry server on `http://localhost:8765`
+Open `http://localhost:5174`. `pnpm dev:full` starts the telemetry sidecar
+(`:8765`, plus the terminal socket on `:8766`) and the Vite UI (`:5174`). To run
+them separately: `pnpm dev:telemetry` and `pnpm dev`.
 
-To run them separately:
-
-```bash
-pnpm dev:telemetry   # port 8765
-pnpm dev             # port 5174
-```
+If Hermes already runs its dashboard (`hermes dashboard`), you can skip
+terminal 1, but that dashboard must accept the same token: start it with
+`HERMES_DASHBOARD_SESSION_TOKEN` set to your `MISSION_CONTROL_TOKEN`, otherwise
+the dashboard-backed views return `401`.
 
 ## Configuration
 
-Create `./.env` from `.env.example`:
+### Which file is read by whom
 
-```bash
-VITE_MISSION_CONTROL_LOCAL_API_BASE_URL=/api/local
+| Process | Reads |
+|---------|-------|
+| Vite (`pnpm dev`) | `./.env` in the repository root (plus the process environment) |
+| Telemetry sidecar (`pnpm dev:telemetry`, `scripts/run-local-telemetry.sh`) | `$MISSION_CONTROL_ENV_FILE`, else `~/.hermes/mission-control.env`, else only the exported environment |
+| Dashboard launcher (`scripts/run-dashboard-api.sh`) and smoke scripts | same as the sidecar |
+| systemd units | `~/.hermes/mission-control.env` (`EnvironmentFile=`) |
 
-# Bearer token. The server side reads MISSION_CONTROL_TOKEN; the browser reads
-# the VITE_-prefixed twin (Vite only exposes VITE_* to client code). Set BOTH
-# to the SAME value — they are independent variables and nothing bridges them.
-MISSION_CONTROL_TOKEN=your_token
-VITE_MISSION_CONTROL_TOKEN=your_token
+The launcher scripts never read `./.env` on their own. You can either keep two
+files (`./.env` for Vite, `~/.hermes/mission-control.env` for the rest) or use
+one file by exporting `MISSION_CONTROL_ENV_FILE="$PWD/.env"`, as in the quick
+start. `.env.example` lists every variable.
 
-# Shared Hermes dashboard API endpoint; defaults to 127.0.0.1:9119
-MISSION_CONTROL_DASHBOARD_HOST=127.0.0.1
-MISSION_CONTROL_DASHBOARD_PORT=9119
-# Optional explicit Vite proxy override; takes precedence over host/port
-# HERMES_DASHBOARD_URL=http://127.0.0.1:9119
-# Optional: comma-separated local/Tailscale hostnames or IPs
-MISSION_CONTROL_DEV_HOSTS=
-```
+### Access token
 
-The bearer token is shared between the telemetry server and the UI, but it is
-read under **two different names**: `server/local_telemetry_server.py` reads
-`MISSION_CONTROL_TOKEN`, while the frontend reads `VITE_MISSION_CONTROL_TOKEN`
-from `import.meta.env` (Vite only exposes `VITE_`-prefixed variables to browser
-code). There is no bridge between them, so both must be set to the same value —
-setting only one leaves either the sidecar or the browser unauthenticated.
+One token protects everything:
 
-The dashboard API launcher and Vite proxy use the same dashboard host/port
-variables. Empty values use the defaults; ports must be between 1 and 65535.
+| Variable | Read by | Notes |
+|----------|---------|-------|
+| `MISSION_CONTROL_TOKEN` | telemetry sidecar, terminal socket | Required. `API_SERVER_KEY` is accepted as a fallback name. |
+| `VITE_MISSION_CONTROL_TOKEN` | browser bundle | Optional. Vite bakes it into the JavaScript, so anyone who can load the page can read it. Leave it empty when the UI is reachable from other machines and paste the token into the lock screen instead (stored in the browser's `localStorage`). |
+| `HERMES_DASHBOARD_SESSION_TOKEN` | Hermes dashboard API | `scripts/run-dashboard-api.sh` sets it to `MISSION_CONTROL_TOKEN` unless it is already set. |
 
-Operational scripts (`scripts/run-dashboard-api.sh`, `scripts/smoke-upgrade.sh`,
-`scripts/reapply-core-mission-control-fixes.sh`) load configuration through
-`scripts/lib/env.sh`: they read `<repo-root>/.env` by default, or the file
-pointed to by `MISSION_CONTROL_ENV_FILE`, and otherwise fall back to the
-already-exported environment. No `launchctl` lookup is used, so the same
-scripts run identically on macOS and Linux.
+### Ports and hosts
 
-### Hermes home & active profile resolution
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MISSION_CONTROL_LOCAL_TELEMETRY_HOST` / `_PORT` | `127.0.0.1` / `8765` | Sidecar bind address |
+| `MISSION_CONTROL_TERMINAL_HOST` / `_PORT` | `127.0.0.1` / `8766` | Terminal socket bind (the Vite proxy always targets `127.0.0.1:8766`) |
+| `MISSION_CONTROL_DASHBOARD_HOST` / `_PORT` | `127.0.0.1` / `9119` | Dashboard API, used by the launcher and the Vite proxy |
+| `HERMES_DASHBOARD_URL` | — | Explicit Vite proxy target for the dashboard API |
+| `MISSION_CONTROL_LOCAL_TELEMETRY_URL` | `http://127.0.0.1:8765` | Vite proxy target for the sidecar |
+| `MISSION_CONTROL_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Vite `allowedHosts` base list |
+| `MISSION_CONTROL_DEV_HOSTS` | — | Extra Vite `allowedHosts` (Tailscale/LAN names or IPs) |
+| `MISSION_CONTROL_ALLOWED_ORIGIN` | — (mirror) | Restrict sidecar CORS to one origin |
+| `MISSION_CONTROL_READ_ONLY` | off | `1` rejects every mutating sidecar request |
 
-Mission Control resolves all Hermes state (state DB, sessions, logs, skills,
-config, cache, vault-brain candidates) through the **same profile-aware
-Hermes home used by the running Hermes installation** — see
-`server/hermes_paths.py` (and the bash twin `resolve_hermes_home` in
-`scripts/lib/env.sh`). Precedence:
+Ports must be between 1 and 65535; an invalid value aborts startup.
 
-1. `HERMES_HOME` set and already profile-shaped (`<root>/profiles/<name>`) → used verbatim.
-2. Sticky active profile (`<root>/active_profile` contains a name other than `default`) → `<root>/profiles/<name>`.
-3. `HERMES_HOME` set (non profile-shaped) → used verbatim.
-4. Platform default → `~/.hermes`.
+### Hermes home
 
-This mirrors the Hermes core launcher exactly, so Mission Control keeps
-reading the correct database, sessions, logs, skills, and configuration even
-when Hermes runs from a non-default home or a named profile.
+Mission Control reads Hermes state from `HERMES_HOME` when it is set (a
+profile-shaped path such as `~/.hermes/profiles/<name>` scopes it to that
+profile), otherwise from `~/.hermes`. The sticky `active_profile` marker written
+by `hermes profile use` is deliberately ignored: a running service must not
+silently switch to whatever profile was last selected in a terminal. Details in
+[docs/telemetry.md](docs/telemetry.md#hermes-home-and-profile-resolution).
 
 ### Provider usage preferences
-
-Provider usage visibility is local configuration. Use the external environment
-file selected by `MISSION_CONTROL_ENV_FILE` (by default `~/.hermes/mission-control.env`):
 
 ```bash
 MISSION_CONTROL_USAGE_PROVIDERS=codex,ollama,nous
@@ -166,7 +194,8 @@ MISSION_CONTROL_USAGE_PROVIDERS=codex,ollama,nous
 
 The allowlist above hides OpenRouter. If the variable is unset or blank, all
 built-in provider sources are enabled. To customize fields within a provider,
-create `~/.hermes/mission-control-usage.json`:
+create `~/.hermes/mission-control-usage.json` (or point
+`MISSION_CONTROL_USAGE_CONFIG_FILE` at another file):
 
 ```json
 {
@@ -185,13 +214,21 @@ create `~/.hermes/mission-control-usage.json`:
 
 `hidden` removes field IDs from the local telemetry response. `featured` gives
 matching fields prominent rendering in the Overview card. These preferences are
-read by the telemetry sidecar and do not modify Hermes Core or CodexBar.
+read by the telemetry sidecar and do not modify Hermes or CodexBar.
 
-## Linux (systemd --user)
+## Running as a service
 
-On Linux the services are supervised by the systemd user session instead of
-macOS launchd. Example units live in [`systemd/`](systemd/README.md) and the
-full walkthrough (clean checkout, secrets, operations, health checks) is in
+### macOS
+
+There are no packaged launchd units. Run the stack in the foreground (quick
+start above), or write your own LaunchAgents that run
+`scripts/run-dashboard-api.sh`, `scripts/run-local-telemetry.sh`, and `pnpm dev`
+from the repository root with `MISSION_CONTROL_ENV_FILE` in their environment.
+
+### Linux (systemd --user)
+
+Example units live in [`systemd/`](systemd/README.md) and the full walkthrough
+(clean checkout, secrets, operations, health checks) is in
 [`docs/runbooks/linux-deployment.md`](docs/runbooks/linux-deployment.md):
 
 - `hermes-dashboard-api.service` — dashboard API (`:9119` by default; configurable)
@@ -210,33 +247,31 @@ loginctl enable-linger "$USER"
 ```
 
 Secrets and environment values live in `~/.hermes/mission-control.env`
-(outside the repository; see the runbook for a template). Services restart on
-failure with a bounded rate and fail visibly when dependencies are missing.
+(outside the repository; template in
+[`deploy/systemd/env.template`](deploy/systemd/env.template)). Services restart
+on failure with a bounded rate and fail visibly when dependencies are missing.
 Health checks: `scripts/check-mission-control-health.sh`.
 
-`scripts/reapply-core-mission-control-fixes.sh` restarts the stack with
-`systemctl --user restart` on Linux (macOS keeps its `launchctl` path, isolated
-in `scripts/lib/restart-services.sh` and documented as macOS-only).
+After a Hermes update, follow
+[docs/runbooks/upgrade-compatibility.md](docs/runbooks/upgrade-compatibility.md).
 
 ## Tailscale / LAN access
 
-By default the telemetry server binds to loopback (`127.0.0.1`) and Vite serves locally. To expose Mission Control to Tailscale peers or your LAN you must opt in explicitly:
+By default the telemetry sidecar binds to loopback (`127.0.0.1`). The Vite dev
+server listens on all interfaces but only answers hosts in its allow-list. To
+expose Mission Control to Tailscale peers or your LAN:
 
-- Set `MISSION_CONTROL_LOCAL_TELEMETRY_HOST=0.0.0.0` (telemetry sidecar) — see `.env.example` and `docs/telemetry.md`.
-- List the peer addresses in `MISSION_CONTROL_DEV_HOSTS` (Vite `allowedHosts`, e.g. `100.84.148.17,192.168.1.63`).
-- Optionally harden CORS with `MISSION_CONTROL_ALLOWED_ORIGIN=http://<peer>:5174` so only that origin can read responses.
+- List the peer hostnames or IPs in `MISSION_CONTROL_DEV_HOSTS` (for example
+  `100.x.y.z,192.168.x.y`).
+- Keep the sidecar on loopback: the browser reaches it through the Vite proxy.
+  Set `MISSION_CONTROL_LOCAL_TELEMETRY_HOST=0.0.0.0` only if another machine
+  must call the sidecar directly.
+- Optionally restrict CORS with `MISSION_CONTROL_ALLOWED_ORIGIN=http://<host>:5174`.
+- Leave `VITE_MISSION_CONTROL_TOKEN` empty (see [Access token](#access-token)).
 
-Both processes accept Tailscale peer IPs once configured. A reverse proxy (`tailscale serve`, Caddy, nginx) is the recommended alternative: it exposes the dashboard without widening the telemetry bind.
-
-## Requirements
-
-- **Node.js >= 22.6** (declared in `package.json` `engines`). The TypeScript
-  test suites run with Node's native type stripping, which does not exist before
-  Node 22.6 — on Node 20 they fail with `node: bad option:
-  --experimental-strip-types`. CI runs the frontend job on Node 22.
-- **Python >= 3.10** for the telemetry sidecar (`hermes_state.py` uses 3.10+
-  syntax) plus `psutil` and `websockets`.
-- **pnpm** (`packageManager: pnpm@10.33.2`).
+A reverse proxy (`tailscale serve`, Caddy, nginx) in front of the frontend is
+the recommended alternative. Remember that a valid token also opens the browser
+terminal: treat it like a shell credential.
 
 ## Building
 
@@ -244,54 +279,52 @@ Both processes accept Tailscale peer IPs once configured. A reverse proxy (`tail
 pnpm build
 ```
 
-Static output lands in `dist/` and can be served by any static host.
+Static output lands in `dist/`. Serving `dist/` requires a reverse proxy that
+reproduces the three `/api` routes listed in [Architecture](#architecture).
 
 ## Testing
 
+What CI runs (`.github/workflows/ci.yml`):
+
 ```bash
+# Frontend job (Node 22)
+pnpm install --frozen-lockfile
+pnpm typecheck
 pnpm build
-pnpm test            # Python suites (repo + server)
+pnpm test:frontend        # every tests/*.test.{ts,mjs} file
+pnpm test:vite-config
+pnpm test:rooms
+pnpm test:chat-profile
+pnpm test:mobile-route-layout
+pnpm test:cron-model-selection
+pnpm test:cron-schedule-input
+pnpm test:system-health-ui
+
+# Python job (3.11)
+python -m pip install -r server/requirements.txt
+python -m unittest discover -s tests -p 'test_*.py'
+python -m unittest discover -s server/tests -p 'test_*.py'
+
+# Paths job
+bash scripts/check-documented-paths.sh
 ```
 
-`pnpm test` runs the **Python** suites only. The JavaScript/TypeScript suites are
-separate scripts, and CI runs a subset of them:
+`pnpm test` runs both Python suites locally. `tests/test_kanban_bridge.py`
+imports the Hermes core `kanban_db`; run it with the Hermes interpreter
+(`~/.hermes/hermes-agent/venv/bin/python`) so the core's dependencies are
+available.
 
-| Script | Covers | In CI |
-|--------|--------|-------|
-| `test:vite-config` | Vite dev-server config contract | yes |
-| `test:rooms` | Room persistence, recovery, tool cards, drawer token | yes |
-| `test:mobile-route-layout` | Mobile route layout contract | yes |
-| `test:system-health-ui` | System health UI contract | yes |
-| `test:server` | Server-side stores (needs `websockets`) | yes (Python job) |
-| `test:chat` | Chat bootstrap, protocol, timeline, handoff, lineage | no |
-| `test:ui` | Chat UI contract | no |
-| `test:provider-usage-ui` | Provider usage UI contract | no |
-| `test:smoke` | Live sidecar smoke test — needs a running telemetry server + token | no |
-| `check:paths` | Documented-path check (run directly by CI) | yes (paths job) |
-
-Run any of them explicitly, e.g. `pnpm test:rooms`.
-
-For a live telemetry sidecar, start `pnpm dev:telemetry` in one terminal, export
-`MISSION_CONTROL_TOKEN`, then run:
-
-```bash
-pnpm test:smoke
-```
-
-> `test:chat` and `test:ui` currently **fail** on `main` and are not wired into
-> CI. They assert on source text via `readFileSync` + `includes`, so they break
-> whenever the code they describe is refactored (`test:ui` looks for a literal
-> `const handoffRequestIds = new Set(` that the chat drawer no longer contains)
-> and pass when the wiring is subtly wrong. New tests should call the logic
-> under test instead — see the pure modules `src/lib/room-recovery.ts` and
-> `src/lib/room-tool-message.ts`.
-
-CI runs the frontend build and the Python test suites on pushes and pull requests.
+For a live sidecar smoke test, start `pnpm dev:telemetry`, export
+`MISSION_CONTROL_TOKEN`, then run `pnpm test:smoke`.
 
 ## Security notes
 
 - Never commit `.env`.
-- The telemetry server requires a bearer token for every `/api/local/*` request.
+- Every `/api/local/*` request needs the bearer token, except
+  `GET /api/local/health` and `GET /health`.
+- The token grants shell access through the browser terminal and can trigger
+  state changes (cron, Kanban, skills install, gateway restart). See
+  [SECURITY.md](SECURITY.md) and [docs/api.md](docs/api.md).
 - Mission Control is a local tool: bind only to trusted networks.
 
 ## Contributing

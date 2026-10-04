@@ -2,7 +2,34 @@
 
 ## Scope
 
-Mission Control is a local-first dashboard. The telemetry sidecar can expose system metrics, Hermes session metadata, logs, and selected knowledge files. Treat it as a trusted-network application, not as a public internet service.
+Mission Control is a local-first dashboard. Its telemetry sidecar can read
+system metrics, Hermes session metadata, transcripts, logs, and configuration,
+and it can change state on the host (see below). Treat it as a trusted-network
+application, never as a public internet service.
+
+## What the access token can do
+
+Anyone holding `MISSION_CONTROL_TOKEN` can:
+
+- open an **interactive shell** as the user running the sidecar, through the
+  browser terminal (`/api/local/terminal/ticket` + the WebSocket on `:8766`);
+- replace Hermes `config.yaml` (`PUT /api/local/config`, with an automatic
+  backup) and enable or disable skills;
+- install skills (`hermes skills install`), create, edit, run, or delete cron
+  jobs, and create or modify Kanban boards and tasks;
+- restart the Hermes gateway (`POST /api/local/gateway/restart`);
+- send Web Push notifications to every subscribed device;
+- call any endpoint of an installed plugin.
+
+Treat the token as a shell credential. The complete route list is in
+[docs/api.md](docs/api.md).
+
+Routes that need no token: `GET /health` and `GET /api/local/health` (liveness
+only, no secrets).
+
+`MISSION_CONTROL_READ_ONLY=1` rejects mutating HTTP requests on the sidecar.
+It does **not** disable the browser terminal: a token holder can still open a
+shell. Do not rely on read-only mode to contain an untrusted token holder.
 
 ## Supported versions
 
@@ -24,7 +51,13 @@ You should receive an acknowledgement within seven days. Please allow time for a
 ## Deployment guidance
 
 - Never commit `.env` or bearer tokens.
-- Bind the telemetry server only to trusted interfaces or protect it behind a private network such as Tailscale.
-- Use a strong random `MISSION_CONTROL_TOKEN`.
-- Do not expose port `8765` directly to the public internet.
-- Review the knowledge-file allowlist before deploying on a shared machine.
+- Use a strong random `MISSION_CONTROL_TOKEN` (`openssl rand -base64 32`).
+- Keep the telemetry sidecar (`:8765`) and the terminal socket (`:8766`) on
+  loopback; let browsers reach them through the Vite proxy or a reverse proxy.
+- Do not expose any Mission Control port directly to the public internet. Use a
+  private network such as Tailscale.
+- Leave `VITE_MISSION_CONTROL_TOKEN` empty when the UI is reachable from other
+  machines: Vite embeds it in the JavaScript bundle served to every visitor.
+- Set `MISSION_CONTROL_ALLOWED_ORIGIN` when the frontend has a fixed origin.
+- Install only plugins you trust: plugin backends run inside the sidecar
+  process with its privileges.

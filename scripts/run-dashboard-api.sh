@@ -7,9 +7,10 @@ set -euo pipefail
 #   - Token/config is loaded from an explicit env file (see scripts/lib/env.sh).
 #     Default: ~/.hermes/mission-control.env, override with $MISSION_CONTROL_ENV_FILE.
 #     No launchctl lookup — works identically on Linux and macOS.
-#   - The dashboard must run from the Hermes core checkout. The core is
-#     resolved profile-aware: $HERMES_HOME, then the sticky active profile,
-#     then ~/.hermes (scripts/lib/env.sh resolve_hermes_home, issue #12).
+#   - The dashboard must run from the Hermes core checkout: $HERMES_AGENT_DIR,
+#     else <hermes home>/hermes-agent, where the home is $HERMES_HOME or
+#     ~/.hermes (scripts/lib/env.sh resolve_hermes_home). The sticky
+#     active_profile is deliberately ignored.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091 # path is runtime-computed via SCRIPT_DIR

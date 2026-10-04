@@ -84,7 +84,6 @@ MISSION_CONTROL_DASHBOARD_PORT=9119
 # loopback-only). See .env.example and docs/telemetry.md for the full list.
 # MISSION_CONTROL_LOCAL_TELEMETRY_HOST=0.0.0.0
 # MISSION_CONTROL_ALLOWED_ORIGIN=http://<host>:5174
-# MISSION_CONTROL_VAULT_PATH=/path/to/vault
 EOF
 chmod 600 ~/.hermes/mission-control.env
 ```
@@ -232,9 +231,5 @@ systemctl --user daemon-reload
 
 ## 10. Reference (macOS)
 
-The equivalent macOS deployment uses launchd LaunchAgents
-(`ai.hermes.dashboard-api`, `ai.hermes.mission-control-telemetry`,
-`ai.hermes.mission-control`). The operational scripts under `scripts/`
-(`scripts/lib/restart-services.sh`, `scripts/reapply-core-mission-control-fixes.sh`)
-detect the platform and use `systemctl --user` on Linux and `launchctl` on
-macOS.
+There are no packaged launchd units. On macOS run the stack in the foreground
+with `pnpm dev:full`; see the README section "macOS".
