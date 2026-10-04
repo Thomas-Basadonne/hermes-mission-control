@@ -1,7 +1,7 @@
 """Centralized Hermes home / active-profile resolution for Mission Control.
 
 All Mission Control code that touches Hermes state (state DB, sessions,
-logs, skills, config, cache, vault-brain candidates, core checkout) must
+logs, skills, config, cache, core checkout) must
 resolve paths through this module — never through hardcoded ``~/.hermes``
 (issue #12).
 
@@ -10,8 +10,7 @@ Profiles are NOT ambient state here — they enter only as an explicit scope
 (a selected bot, a room roster, an explicitly requested profile), never from a
 user-level preference file. The sticky ``active_profile`` is the interactive
 CLI's "where I am working now" marker; honouring it here would silently move a
-whole serving process (its state DB, cron store, vault-brain candidates,
-credentials) to whatever profile the user last selected in a terminal.
+whole serving process (its state DB, cron store, credentials) to whatever profile the user last selected in a terminal.
 
 The core makes exactly this distinction for the same reason
 (``hermes_cli/main.py``, ``_under_gateway_supervisor``): a supervised child must
@@ -42,7 +41,6 @@ from the running installation.
 from __future__ import annotations
 
 import os
-import platform
 from pathlib import Path
 
 _HERMES_DIR_NAME = ".hermes"
@@ -192,23 +190,3 @@ def hermes_cache_dir() -> Path:
 def hermes_config_path() -> Path:
     """Hermes configuration file (``<home>/config.yaml``)."""
     return get_hermes_home() / "config.yaml"
-
-
-def hermes_vault_brain_dir() -> Path:
-    """Nightly-brain candidate store (``<home>/vault-brain``)."""
-    return get_hermes_home() / "vault-brain"
-
-
-def hermes_vault_dir() -> Path:
-    """Return the configured Obsidian vault directory.
-
-    ``MISSION_CONTROL_VAULT_PATH`` is canonical; the older
-    ``HERMES_OBSIDIAN_VAULT`` name remains supported. Without an override,
-    use the platform-native default used by Mission Control knowledge views.
-    """
-    override = os.environ.get("MISSION_CONTROL_VAULT_PATH") or os.environ.get("HERMES_OBSIDIAN_VAULT")
-    if override:
-        return Path(os.path.expanduser(override)).resolve()
-    if platform.system().lower() == "darwin":
-        return (_user_home() / "Documents" / "Hermes").resolve()
-    return (_user_home() / "wiki").resolve()

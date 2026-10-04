@@ -7,7 +7,7 @@ The invariant under test: Mission Control is a SERVICE whose home is fixed at
 the default root. Profiles enter only as an EXPLICIT scope (a profile-shaped
 HERMES_HOME); the sticky ``active_profile`` file — the interactive CLI's "where
 I am working now" marker — must never move a serving process's state DB, cron
-store, vault-brain candidates or credentials.
+store or credentials.
 
 The core makes the same distinction for the same reason
 (``hermes_cli/main.py::_under_gateway_supervisor``).
@@ -88,7 +88,7 @@ class HermesPathsResolutionTests(unittest.TestCase):
 
         Before this invariant, a non-default ``active_profile`` made MC resolve
         ``<root>/profiles/<name>`` for EVERYTHING: state DB, sessions, cron,
-        vault-brain candidates, auth.json. A single ``hermes profile use`` in a
+        auth.json. A single ``hermes profile use`` in a
         terminal would therefore have silently moved the whole service — and the
         rooms subsystem (which anchors to the root) would have been reading a
         different DB from the rest of MC.
@@ -105,9 +105,6 @@ class HermesPathsResolutionTests(unittest.TestCase):
         )
         self.assertEqual(hermes_paths.get_active_profile(), "default")
         self.assertEqual(hermes_paths.hermes_state_db(), root / "state.db")
-        self.assertEqual(
-            hermes_paths.hermes_vault_brain_dir(), root / "vault-brain"
-        )
 
         # The marker is still readable for diagnostics — it just has no
         # authority over path resolution.
@@ -167,9 +164,6 @@ class HermesPathsResolutionTests(unittest.TestCase):
         self.assertEqual(hermes_paths.hermes_config_path(), root / "config.yaml")
         self.assertEqual(
             hermes_paths.hermes_core_dir(), root / "hermes-agent"
-        )
-        self.assertEqual(
-            hermes_paths.hermes_vault_brain_dir(), root / "vault-brain"
         )
 
     def test_state_paths_follow_an_explicit_profile_scope(self):

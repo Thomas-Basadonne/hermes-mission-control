@@ -49,7 +49,7 @@ mc_env_file() {
 # selected bot, a room roster, an explicitly requested profile). The sticky
 # active_profile is the interactive CLI's "where I am working now" marker;
 # honouring it would silently move a serving process (state DB, cron store,
-# vault-brain candidates, credentials) to whatever profile the user last
+# credentials) to whatever profile the user last
 # selected in a terminal. The core draws the same line for the same reason
 # (hermes_cli/main.py, _under_gateway_supervisor).
 #

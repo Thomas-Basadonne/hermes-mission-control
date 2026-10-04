@@ -112,21 +112,12 @@ proxies `/api/ws` to the dashboard API):
 | `MISSION_CONTROL_GATEWAY_ROOT_URL` | `http://127.0.0.1:5174/api/gateway-root` |
 | `MISSION_CONTROL_WS_RECONNECT_DELAY` | `5` (seconds) |
 
-### BDH candidate curation (optional, opt-in)
+### Plugins
 
-Curate is activated by plugin presence, not by an environment variable: install
-it at `~/.hermes/mc-plugins/curate/` (see `scripts/setup-plugins.sh`). There is
-no `MC_ENABLE_BDH_CURATOR` flag — a per-plugin feature flag inside the host
-would make the host know about that plugin.
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `VB_CANDIDATES` | `~/.hermes/vault-brain/candidates` | Candidate payloads directory. |
-| `VB_VAULT` | `~/Documents/Hermes` | Vault root the curator reads/writes. |
-| `VB_QUARANTINE_DAYS` | `1` | Days a promoted candidate waits in quarantine before promotion. |
-
-No secrets here, but paths should match the vault-brain installation on the
-host.
+Plugins (for example an external Curate plugin) are activated by presence, not
+by an environment variable: install them under `~/.hermes/mc-plugins/<id>/`
+(see [docs/plugins.md](../../docs/plugins.md)). Any environment a plugin needs
+is documented by that plugin.
 
 ## Where the file is consumed
 

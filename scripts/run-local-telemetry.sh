@@ -41,7 +41,7 @@ export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$HERMES_ROOT/hermes-agent"
 # The server resolves Hermes state through the same profile-aware home.
 export HERMES_HOME="${HERMES_HOME:-$HERMES_ROOT}"
 
-# Curate (BDH candidate curation) is activated by plugin presence alone —
-# install it at ~/.hermes/mc-plugins/curate/. There is no core feature flag.
+# Plugins are activated by presence alone (~/.hermes/mc-plugins/<id>/);
+# there are no per-plugin feature flags in the host. See docs/plugins.md.
 
 exec "$PYTHON_BIN" "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/server/local_telemetry_server.py"

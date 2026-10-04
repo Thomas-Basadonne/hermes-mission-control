@@ -13,7 +13,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
-import candidates as candidates_module  # noqa: E402
 
 fake_psutil = types.SimpleNamespace(
     cpu_percent=lambda interval=None: 7.5,
@@ -158,59 +157,6 @@ class TelemetryPathResolutionTests(unittest.TestCase):
             local_telemetry_server._client_diagnostics_log(),
             self._hermes_home / "logs" / "mission-control-client.log",
         )
-
-    def test_list_vaults_exposes_routing_vaults_and_capabilities(self):
-        curate_file = self._hermes_home / "vault-brain" / "curate-vaults.yaml"
-        curate_file.parent.mkdir(parents=True, exist_ok=True)
-        curate_file.write_text(
-            "vaults:\n"
-            "  core:\n"
-            "    label: Core\n"
-            "  example-bot:\n"
-            "    label: Example Bot\n"
-            "    candidates_dir: /tmp/example-bot-candidates\n",
-            encoding="utf-8",
-        )
-        (self._hermes_home / "vault-routing.yaml").write_text(
-            "vaults:\n"
-            "  core:\n"
-            "    writable: true\n"
-            "    routes:\n"
-            "      decision: projects\n"
-            "  episodic:\n"
-            "    writable: true\n"
-            "    routes:\n"
-            "      review_inbox: memory/inbox\n"
-            "  example-bot:\n"
-            "    name: Example Bot\n"
-            "    writable: true\n"
-            "    routes:\n"
-            "      bdh_candidate: memory/learned\n"
-            "  morning-signal:\n"
-            "    writable: false\n"
-            "    routes: {}\n",
-            encoding="utf-8",
-        )
-        with patch.dict(os.environ, {"VB_CANDIDATES": str(self._tmp / "core-candidates")}):
-            vaults = candidates_module.list_vaults()
-        self.assertEqual(
-            [vault["id"] for vault in vaults],
-            ["core", "episodic", "example-bot", "morning-signal"],
-        )
-        by_id = {vault["id"]: vault for vault in vaults}
-        self.assertEqual(by_id["core"]["mode"], "candidates")
-        self.assertTrue(by_id["core"]["candidate_enabled"])
-        self.assertEqual(by_id["episodic"]["mode"], "review_only")
-        self.assertTrue(by_id["episodic"]["review_enabled"])
-        self.assertFalse(by_id["episodic"]["candidate_enabled"])
-        self.assertEqual(by_id["example-bot"]["mode"], "candidates")
-        self.assertEqual(by_id["morning-signal"]["mode"], "read_only")
-        self.assertTrue(by_id["morning-signal"]["read_only"])
-        self.assertTrue(candidates_module.can_curate("core"))
-        self.assertTrue(candidates_module.can_curate("example-bot"))
-        self.assertFalse(candidates_module.can_curate("episodic"))
-        self.assertFalse(candidates_module.can_curate("morning-signal"))
-        self.assertEqual(candidates_module.list_candidates(vault="episodic"), [])
 
 
 class GatewayStatusCompatibilityTests(unittest.TestCase):
