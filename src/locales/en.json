@@ -722,7 +722,7 @@
   "kanban.boardDescription": "Description (optional)",
   "kanban.boardDescriptionPlaceholder": "What goes on this board?",
   "kanban.projectDirectory": "Project directory (recommended)",
-  "kanban.projectDirectoryPlaceholder": "/Users/albi/Projects/my-project",
+  "kanban.projectDirectoryPlaceholder": "~/Projects/my-project",
   "kanban.projectDirectoryHint": "Sets the default location for task files so project output is preserved.",
   "kanban.icon": "Icon (single character or emoji)",
   "kanban.iconPlaceholder": "📦",

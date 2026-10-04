@@ -1037,7 +1037,7 @@ export function KanbanRoute() {
               <input
                 value={newBoardWorkdir}
                 onChange={(e) => setNewBoardWorkdir(e.target.value)}
-                placeholder="/Users/albi/Projects/my-project"
+                placeholder="~/Projects/my-project"
                 spellCheck={false}
                 className="mt-1 w-full rounded-lg border border-border-subtle bg-surface-sunken px-2.5 py-2 font-mono text-xs text-text placeholder:text-text-subtle focus:border-border focus:outline-none"
               />

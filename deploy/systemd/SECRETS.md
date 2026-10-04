@@ -8,18 +8,22 @@ Mission Control deployment and how to obtain each secret it contains.
 template contains placeholders only. The real file lives outside the repo, on
 the deployment host, at:
 
-    ~/.config/mission-control/env
+    ~/.hermes/mission-control.env
+
+This is the path the systemd units (`EnvironmentFile=-%h/.hermes/mission-control.env`)
+and the launcher scripts (`scripts/lib/env.sh`) read by default. Set
+`MISSION_CONTROL_ENV_FILE` to use another path with the launcher scripts.
 
 ## Creating the environment file
 
 On the deployment host (Linux/macOS alike):
 
 ```bash
-install -d -m 700 "$HOME/.config/mission-control"
-install -m 600 deploy/systemd/env.template "$HOME/.config/mission-control/env"
+install -d -m 700 "$HOME/.hermes"
+install -m 600 deploy/systemd/env.template "$HOME/.hermes/mission-control.env"
 ```
 
-Then edit `~/.config/mission-control/env` and replace every
+Then edit `~/.hermes/mission-control.env` and replace every
 `change_me_*` placeholder and empty optional value.
 
 Requirements enforced by the deployment (systemd user units and launcher
@@ -27,20 +31,20 @@ scripts):
 
 | Requirement | Command |
 |---|---|
-| File location | `~/.config/mission-control/env` (outside the repo) |
+| File location | `~/.hermes/mission-control.env` (outside the repo) |
 | Ownership | the deploying user (the user that runs the services) |
 | Permissions | `600` (`-rw-------`) |
-| Directory permissions | `700` on `~/.config/mission-control` |
+| Directory permissions | `700` on `~/.hermes` recommended |
 
 ```bash
-chown "$USER:$USER" ~/.config/mission-control/env
-chmod 600 ~/.config/mission-control/env
+chown "$USER:$USER" ~/.hermes/mission-control.env
+chmod 600 ~/.hermes/mission-control.env
 ```
 
 Verify:
 
 ```bash
-ls -l ~/.config/mission-control/env   # -rw------- 1 albi albi ...
+ls -l ~/.hermes/mission-control.env   # -rw------- 1 <user> <group> ...
 ```
 
 ## Why 600 and outside the repo
@@ -62,13 +66,14 @@ ls -l ~/.config/mission-control/env   # -rw------- 1 albi albi ...
 | Variable | Required | How to generate / obtain |
 |---|---|---|
 | `MISSION_CONTROL_TOKEN` | yes | `openssl rand -base64 32`. This is the bearer token for every `/api/local/*` telemetry endpoint. |
-| `API_SERVER_KEY` | yes | Same value as `MISSION_CONTROL_TOKEN` (the dashboard API accepts it as fallback credential; the telemetry server accepts it when `MISSION_CONTROL_TOKEN` is unset). |
-| `VITE_MISSION_CONTROL_TOKEN` | yes | Same value as `MISSION_CONTROL_TOKEN`. Used by the frontend to bootstrap auth into `localStorage` on first visit. |
+| `HERMES_DASHBOARD_SESSION_TOKEN` | no | Token the Hermes dashboard API accepts. `scripts/run-dashboard-api.sh` defaults it to `MISSION_CONTROL_TOKEN`; keep them equal. |
+| `VITE_MISSION_CONTROL_TOKEN` | no | Same value as `MISSION_CONTROL_TOKEN`. Bootstraps the browser's `localStorage` on first visit. It is baked into the client bundle, so leave it empty when the UI is reachable from other machines and enter the token on the lock screen. |
+| `API_SERVER_KEY` | no | Legacy fallback name read by the telemetry server and terminal only when `MISSION_CONTROL_TOKEN` is unset. The dashboard API does not read it. |
 
-
-All three should be the same random value for a single-host deployment. Treat
-the value as a password: never log it, never commit it, rotate it with
-`openssl rand -base64 32` if it leaks, and update all three keys together.
+Use one random value for every token variable you set. Treat it as a password
+and as a shell credential (it opens the browser terminal): never log it, never
+commit it, rotate it with `openssl rand -base64 32` if it leaks, and update
+every copy together.
 
 ### Telemetry server (no secrets — operational knobs)
 
@@ -121,18 +126,20 @@ is documented by that plugin.
 
 ## Where the file is consumed
 
-- **systemd user units** (`deploy/systemd/*.service`): loaded via
-  `EnvironmentFile=%h/.config/mission-control/env`.
-- **Launcher scripts** (`scripts/run-local-telemetry.sh`): source
-  `<repo>/.env` if present — for Linux deployments the systemd
-  `EnvironmentFile` path above is the canonical source.
+- **systemd user units** (`systemd/*.service`): loaded via
+  `EnvironmentFile=-%h/.hermes/mission-control.env`.
+- **Launcher scripts** (`scripts/run-local-telemetry.sh`,
+  `scripts/run-dashboard-api.sh`, smoke scripts): source
+  `$MISSION_CONTROL_ENV_FILE`, or `~/.hermes/mission-control.env` when it is
+  unset. They never read `<repo>/.env`.
+- **Vite**: reads `<repo>/.env` and the process environment only.
 
 ## Rotation checklist
 
 1. `openssl rand -base64 32` → new `MISSION_CONTROL_TOKEN`.
-2. Update `API_SERVER_KEY` and `VITE_MISSION_CONTROL_TOKEN` to the same value.
+2. Update every other copy (`HERMES_DASHBOARD_SESSION_TOKEN`, `VITE_MISSION_CONTROL_TOKEN`, `API_SERVER_KEY`) that you set.
 3. `chmod 600` / `chown` if the file was touched by a different user.
-4. Restart services: `systemctl --user restart mission-control-*`.
+4. Restart services: `systemctl --user restart mission-control.target`.
 5. Browsers with an old `localStorage` token will 401 until the new token is
    re-entered or the page is hard-refreshed with the new
    `VITE_MISSION_CONTROL_TOKEN` baked in.

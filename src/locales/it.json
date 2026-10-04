@@ -722,7 +722,7 @@
   "kanban.boardDescription": "Descrizione (opzionale)",
   "kanban.boardDescriptionPlaceholder": "Cosa va su questa bacheca?",
   "kanban.projectDirectory": "Cartella di progetto (consigliata)",
-  "kanban.projectDirectoryPlaceholder": "/Users/albi/Projects/my-project",
+  "kanban.projectDirectoryPlaceholder": "~/Projects/my-project",
   "kanban.projectDirectoryHint": "Imposta la posizione predefinita per i file delle attività così l'output del progetto viene conservato.",
   "kanban.icon": "Icona (singolo carattere o emoji)",
   "kanban.iconPlaceholder": "📦",

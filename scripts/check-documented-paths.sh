@@ -34,6 +34,8 @@ required_paths=(
   "systemd/mission-control.target"
   "docs/runbooks/upgrade-compatibility.md"
   "docs/plugins.md"
+  "docs/api.md"
+  "SECURITY.md"
   "docs/rooms.md"
   "docs/contracts/compatibility-matrix.md"
   "docs/contracts/mission-control-capabilities-v1.json"

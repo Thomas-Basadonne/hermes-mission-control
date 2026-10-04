@@ -40,7 +40,7 @@ Two transports, cleanly split:
 | Recovery | `src/lib/room-recovery.ts` | `isRoomNotFound` / `pickFallbackRoom` (pure) |
 | Pointer | `src/lib/room-persistence.ts` | Cross-device last-room claim with bounded 409 retry |
 | Last-room store | `server/last_room_store.py` | Revisioned CAS pointer on disk |
-| Vault map | `server/room_vault_store.py` | Room → nightly-synthesis vault routing |
+| Vault map | `server/room_vault_store.py` | Optional room → vault routing (see below) |
 | Trace collector | `server/room_tool_store.py` | Read-only SQLite read of member `Group:` sessions |
 | Migration | `server/hosted_rooms_migrate.py` | One-shot `state.db` → `shared-state.db` room move |
 
@@ -107,7 +107,9 @@ Both helpers are pure and dependency-free in `room-recovery.ts`, re-exported thr
 
 ## Room creation and the vault destination
 
-Creating a room picks the **nightly-synthesis vault** that the room's work should land in, from the Curate vault list. The routing map lives in Mission Control (`server/room_vault_store.py`, served by `/api/local/room/vault`) and is cleared when the room is disbanded. `room_inventory` in the BDH bridge reads the map and falls back to the member profiles when it is untouched.
+*Optional integration.* When a plugin serves `GET /api/local/candidates/vaults` (for example the external Curate plugin), the create-room form offers a vault picker and the chosen vault is stored per room. Without such a plugin the picker stays empty and rooms work normally.
+
+The routing map lives in Mission Control (`server/room_vault_store.py`, persisted to the git-ignored `server/room_vaults.json`, served by `/api/local/room/vault`) and is cleared when the room is disbanded. External tooling (for example a nightly synthesis job) can read it to decide where a room's work should land.
 
 ## Member and driver actions
 
@@ -157,6 +159,6 @@ Server suites (`pnpm test:server`):
 3. The last-room pointer is CAS; every claim site retries on 409.
 4. A missing room is permanent, a transport error is transient — never conflate them.
 5. A settled tool trace renders each payload exactly once.
-6. No Hermes core modification (zero-core rule).
+6. No Hermes core modification: Mission Control only uses the gateway's public `groups.*` RPC surface.
 
-> Implemented in PR #52 (merged 2026-09-13, merge commit `7037e97`). This doc is the living reference; the vault holds the feature history.
+> Implemented in PR #52 (merged 2026-09-13, merge commit `7037e97`). This doc is the living reference; the PR holds the feature history.

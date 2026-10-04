@@ -9,7 +9,7 @@ Mission Control is a local-first dashboard: all of its data comes from a small l
 | Telemetry server | `server/local_telemetry_server.py` | `8765` | Python stdlib + psutil |
 | Frontend | `src/` | `5174` | React + Vite + TypeScript + Tailwind |
 
-All data flows through `/api/local/*`. In development, Vite proxies those requests to the telemetry server. The telemetry server binds to `127.0.0.1` (loopback) by default and requires a bearer token on every request (see [`SECURITY.md`](../SECURITY.md)).
+All data flows through `/api/local/*`. In development, Vite proxies those requests to the telemetry server. The telemetry server binds to `127.0.0.1` (loopback) by default and requires a bearer token on every `/api/local/*` request except `GET /api/local/health` (`GET /health` is also open); see [`SECURITY.md`](../SECURITY.md).
 
 The sidecar does **not** hot-reload: restart it after any backend change.
 
@@ -53,7 +53,7 @@ Examples:
 MISSION_CONTROL_ALLOWED_ORIGIN=
 
 # Hardened: only this exact frontend origin may read responses
-MISSION_CONTROL_ALLOWED_ORIGIN=http://100.84.148.17:5174
+MISSION_CONTROL_ALLOWED_ORIGIN=http://<frontend-host>:5174
 ```
 
 The comparison is exact — scheme, host, and port must all match. Requests without an `Origin` header (curl, same-origin fetches, non-browser clients) are not subject to CORS and pass through as usual; CORS never protects data without authentication, it only tells the browser which origins may read the response.
@@ -86,7 +86,7 @@ The browser message `Fetch API ... due to access control checks` is ambiguous. D
 loadEnv(.env) → process.env / service-manager environment overrides → Vite config
 ```
 
-Therefore a LaunchAgent/systemd environment can override a value in `.env`.
+Therefore a service-manager environment (systemd, launchd) can override a value in `.env`.
 A process started manually from a shell may have a different allow-list than
 the supervised process. Check the actual owner and working directory before
 editing files:
@@ -101,11 +101,10 @@ After changing host configuration, restart the supervised process rather than
 only killing its child:
 
 ```bash
-# macOS LaunchAgent
-launchctl kickstart -k gui/$(id -u)/ai.hermes.mission-control
-
 # Linux systemd --user
 systemctl --user restart hermes-mission-control.service
+
+# Foreground (pnpm dev / pnpm dev:full): stop it and start it again.
 ```
 
 Verify both access forms when Tailscale is in use:
@@ -152,40 +151,29 @@ post-operation integrity/count checks.
 ## Hermes home and profile resolution
 
 The sidecar resolves every Hermes state path (state DB, sessions, logs,
-skills, config, cache, vault-brain candidates) through
-`server/hermes_paths.py`, which mirrors the Hermes core launcher:
+skills, config, cache) through `server/hermes_paths.py`:
 
-1. `HERMES_HOME` set and already profile-shaped (`<root>/profiles/<name>`) → used verbatim.
-2. Sticky active profile (`<root>/active_profile` contains a name other than `default`) → `<root>/profiles/<name>`.
-3. `HERMES_HOME` set (non profile-shaped) → used verbatim.
-4. Platform default → `~/.hermes`.
+1. `HERMES_HOME` set → used verbatim (a profile-shaped path such as
+   `~/.hermes/profiles/<name>` scopes the sidecar to that profile).
+2. Otherwise → `~/.hermes`.
+
+The sticky `<root>/active_profile` marker written by `hermes profile use` is
+deliberately **ignored**: Mission Control is a service with a fixed identity,
+and following the marker would silently move a running sidecar (state DB, cron
+store, credentials) to whatever profile was last selected in a terminal.
+Profiles enter only as an explicit scope (a selected bot, a room roster, an
+explicitly requested profile).
 
 The bash launchers (`scripts/run-local-telemetry.sh`,
 `scripts/run-dashboard-api.sh`) use the twin `resolve_hermes_home` from
-`scripts/lib/env.sh` with the same precedence, so the server process is
-launched with the same home the server itself resolves. This keeps Mission
-Control reading the correct Hermes state when Hermes runs from a non-default
-home or a named profile.
+`scripts/lib/env.sh` with the same rules, so the server process is launched
+with the same home the server itself resolves.
 
 ## Endpoints
 
-The telemetry server exposes a set of read-only `/api/local/*` endpoints. Representative routes:
-
-- `/api/local/health` — liveness
-- `/api/local/system` — system metrics (CPU, disk, thermal)
-- `/api/local/sessions` / `/api/local/sessions/usage` — session & usage
-- `/api/local/agents` and `/api/local/agents/trace` — agent traces
-- `/api/local/provider-usage` — **provider usage via CodexBar** (see below)
-- `/api/local/status`, `/api/local/model/info` — agent runtime state
-- `/api/local/cron/jobs`, `/api/local/config`, `/api/local/tools`, `/api/local/skills`
-- `/api/local/logs`
-- `/api/local/chat/last`, `/api/local/chat/whiteboard` — chat + tldraw bridge
-- `/api/local/room/last` — cross-device **last-room pointer** (GET; POST claims it with a `expectedRevision` CAS and answers 409 on conflict)
-- `/api/local/room/vault` — room → nightly-synthesis vault routing map (GET by `room_id` or the whole map; POST to set; DELETE by `room_id` to clear)
-- `/api/local/room/tools` — per-turn tool/reasoning traces for a room, collected read-only from the member profiles' `Group: <room_id>` sessions (`?room_id=...&max_age=<1-60>`)
-- `/api/local/knowledge`, `/api/local/knowledge/file` — vault knowledge (see below)
-
-The frontend consumes these through `src/lib/hermes-api.ts` (`loadProviderUsage`, etc.) and `src/lib/mission-control-store.tsx`.
+The full endpoint list (methods, authentication, side effects) is in
+[docs/api.md](api.md). The frontend consumes them through `src/lib/hermes-api.ts`
+and `src/lib/mission-control-store.tsx`.
 
 ## Thermal telemetry
 
@@ -195,13 +183,13 @@ The frontend consumes these through `src/lib/hermes-api.ts` (`loadProviderUsage`
 
 Fallback order in `_collect_linux_thermal_snapshot()`:
 
-1. **`/sys/class/thermal`** — kernel thermal zones (`thermal_zone*`). Purely passive sysfs reads, no privileges. The lowest zone temperature (in °C) is reported as `thermalPressure`.
-2. **`lm-sensors`** — when sysfs has no usable zone, the `sensors -u` binary is invoked without sudo. The lowest `temp*_input` value is reported.
+1. **`/sys/class/thermal`** — kernel thermal zones (`thermal_zone*`). Purely passive sysfs reads, no privileges. The highest (hottest) zone temperature in °C is reported as `thermalPressure`.
+2. **`lm-sensors`** — when sysfs has no usable zone, the `sensors -u` binary is invoked without sudo. The highest `temp*_input` value is reported.
 3. **Unavailable** — no supported sensor at all → a structured `unavailable` state (`source: "unavailable"`), never a backend failure.
 
 | Field | Meaning |
 |-------|---------|
-| `thermalPressure` | Lowest temperature in °C (Linux), or 0–100 pressure index (macOS). `null` when unavailable. |
+| `thermalPressure` | Highest temperature in °C (Linux), or 0–100 pressure index (macOS). `null` when unavailable. |
 | `thermalLevel` | Text level (macOS only: `nominal`…`extreme`). `null` on Linux. |
 | `levelSource` | Backend that produced `thermalLevel` (`powermetrics`), `null` otherwise. |
 | `source` | `sysfs-thermal`, `lm-sensors`, `powermetrics`, `unavailable`, or `null` when no data was read. |
@@ -212,26 +200,6 @@ The Overview UI distinguishes the states: `source === 'unavailable'` renders "Un
 ### macOS (unchanged)
 
 `powermetrics` needs passwordless sudo and on macOS 26 / Apple Silicon only exposes thermal pressure as a text level (`Nominal`/`Low`/`Moderate`/`Heavy`/`Extreme`), mapped to a normalised 0–100 index. Returns nulls when powermetrics/sudo is unavailable.
-
-## Knowledge vault
-
-The Knowledge page scans a local Markdown vault and exposes it through `/api/local/knowledge` (snapshot) and `/api/local/knowledge/file` (single note content).
-
-### Vault path resolution
-
-The vault root is resolved by one canonical function (`_knowledge_vault_root()` in `server/local_telemetry_server.py`), used for scanning, display, fallback payloads, and file reads:
-
-1. `MISSION_CONTROL_VAULT_PATH` (canonical; supports `~` expansion);
-2. `HERMES_OBSIDIAN_VAULT` (legacy alias, kept for compatibility);
-3. platform default: `~/Documents/Hermes` on macOS, `~/wiki` on Linux.
-
-On Linux the default is `~/wiki`; set `MISSION_CONTROL_VAULT_PATH` in the
-external `~/.hermes/mission-control.env` file (or export it) to point at an
-existing vault when the default does not match your layout.
-
-### Path safety
-
-API responses never include absolute home paths: `sourcePath` and `vaultPath` are rendered home-relative (`~/wiki/notes.md`). When the vault is unavailable the fallback payload still reports a valid display path for the platform — it never fabricates a macOS path on Linux. File reads are restricted to the vault root and `~/.hermes` core files; anything outside returns 403.
 
 ## Web Push (optional)
 
