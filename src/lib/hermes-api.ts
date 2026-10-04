@@ -192,48 +192,6 @@ export type MissionControlAlertsSnapshot = {
   items: MissionControlAlert[];
 };
 
-export type MissionControlKnowledgeItem = {
-  id: string;
-  title: string;
-  path: string;
-  sourcePath?: string;
-  updatedAt: string | null;
-  excerpt: string;
-  highlights: string[];
-  contentPreview?: string;
-};
-
-export type MissionControlKnowledgeSection = {
-  id: string;
-  title: string;
-  items: MissionControlKnowledgeItem[];
-};
-
-export type MissionControlKnowledgeSnapshot = {
-  available: boolean;
-  vaultPath: string;
-  title: string;
-  path: string;
-  updatedAt: string | null;
-  excerpt: string;
-  highlights: string[];
-  primary: MissionControlKnowledgeItem;
-  items: MissionControlKnowledgeItem[];
-  sections: MissionControlKnowledgeSection[];
-};
-
-export type MissionControlKnowledgeFilePayload = {
-  success: boolean;
-  title: string;
-  path: string;
-  sourcePath: string;
-  updatedAt: string | null;
-  excerpt: string;
-  highlights: string[];
-  content: string;
-  contentLength: number;
-};
-
 export type MissionControlToolsetItem = {
   name: string;
   description: string;
@@ -372,7 +330,6 @@ export type MissionControlSnapshot = {
     detail: string;
     tone: 'good' | 'warn' | 'bad';
   }>;
-  knowledgeSharing: MissionControlKnowledgeSnapshot;
   machine: MissionControlMachineStatus;
   sessions: MissionControlSessionsSnapshot;
   cron: MissionControlCronSnapshot;
@@ -526,50 +483,6 @@ const fallbackAlerts: MissionControlAlertsSnapshot = {
       title: 'Dashboard is using fallback data',
       detail: 'Real backend endpoints were not reachable, so the cockpit is showing cached defaults.',
       endpoint: '/api/status',
-    },
-  ],
-};
-
-const fallbackKnowledge: MissionControlKnowledgeSnapshot = {
-  available: false,
-  // Platform-neutral placeholder: the real vault path always comes from the
-  // telemetry server (MISSION_CONTROL_VAULT_PATH or the platform default).
-  // Do not fabricate a macOS-style path here.
-  vaultPath: '~/wiki',
-  title: 'Knowledge Sharing',
-  path: 'Knowledge Sharing.md',
-  updatedAt: null,
-  excerpt: 'Create ~/.hermes/SOUL.md, ~/.hermes/USER.md, ~/.hermes/AGENTS.md and vault notes to surface them here.',
-  highlights: [],
-  primary: {
-    id: 'knowledge-sharing',
-    title: 'Knowledge Sharing',
-    path: 'Knowledge Sharing.md',
-    updatedAt: null,
-    excerpt: 'Create ~/.hermes/SOUL.md, ~/.hermes/USER.md, ~/.hermes/AGENTS.md and vault notes to surface them here.',
-    highlights: [],
-  },
-  items: [],
-  sections: [
-    {
-      id: 'soul',
-      title: '~/.hermes/SOUL.md',
-      items: [],
-    },
-    {
-      id: 'user',
-      title: '~/.hermes/USER.md',
-      items: [],
-    },
-    {
-      id: 'agents',
-      title: '~/.hermes/AGENTS.md',
-      items: [],
-    },
-    {
-      id: 'vault-notes',
-      title: 'Vault knowledge',
-      items: [],
     },
   ],
 };
@@ -752,7 +665,6 @@ const fallbackSnapshot: MissionControlSnapshot = {
     { label: 'Alerts', detail: 'No critical incidents. Just the usual existential drift.', tone: 'warn' },
     { label: 'Machine', detail: fallbackMachine.summary, tone: 'warn' },
   ],
-  knowledgeSharing: fallbackKnowledge,
   machine: fallbackMachine,
   sessions: fallbackSessions,
   cron: fallbackCron,
@@ -1165,46 +1077,6 @@ function normalizeAlerts(input: Partial<MissionControlAlertsSnapshot> | undefine
   };
 }
 
-function normalizeKnowledgeItem(input: Partial<MissionControlKnowledgeItem> | undefined): MissionControlKnowledgeItem {
-  return {
-    id: input?.id ?? input?.title ?? 'knowledge-item',
-    title: input?.title ?? 'Untitled note',
-    path: redactHomePath(input?.path ?? 'Knowledge Sharing.md') ?? 'Knowledge Sharing.md',
-    sourcePath: redactHomePath(input?.sourcePath ?? undefined) ?? undefined,
-    updatedAt: input?.updatedAt ?? null,
-    excerpt: input?.excerpt ?? '',
-    highlights: input?.highlights ?? [],
-    contentPreview: input?.contentPreview ?? '',
-  };
-}
-
-function normalizeKnowledgeSection(input: Partial<MissionControlKnowledgeSection> | undefined): MissionControlKnowledgeSection {
-  return {
-    id: input?.id ?? 'section',
-    title: input?.title ?? 'Section',
-    items: (input?.items ?? []).map((item) => normalizeKnowledgeItem(item)),
-  };
-}
-
-function normalizeKnowledge(input: Partial<MissionControlKnowledgeSnapshot> | undefined): MissionControlKnowledgeSnapshot {
-  const primary = normalizeKnowledgeItem(input?.primary ?? input?.items?.[0] ?? fallbackKnowledge.primary);
-  const items = (input?.items ?? fallbackKnowledge.items).map((item) => normalizeKnowledgeItem(item));
-  const sections = (input?.sections ?? fallbackKnowledge.sections).map((section) => normalizeKnowledgeSection(section));
-
-  return {
-    available: input?.available ?? fallbackKnowledge.available,
-    vaultPath: redactHomePath(input?.vaultPath ?? fallbackKnowledge.vaultPath) ?? fallbackKnowledge.vaultPath,
-    title: input?.title ?? primary.title ?? fallbackKnowledge.title,
-    path: redactHomePath(input?.path ?? primary.path ?? fallbackKnowledge.path) ?? fallbackKnowledge.path,
-    updatedAt: input?.updatedAt ?? primary.updatedAt ?? fallbackKnowledge.updatedAt,
-    excerpt: input?.excerpt ?? primary.excerpt ?? fallbackKnowledge.excerpt,
-    highlights: input?.highlights ?? primary.highlights ?? fallbackKnowledge.highlights,
-    primary,
-    items,
-    sections,
-  };
-}
-
 function normalizeToolset(input: Partial<MissionControlToolsetItem> | undefined): MissionControlToolsetItem {
   return {
     name: input?.name ?? 'toolset',
@@ -1351,7 +1223,6 @@ function normalizeSnapshot(input: Partial<MissionControlSnapshot>): MissionContr
     queuedJobs: input.queuedJobs ?? fallbackSnapshot.queuedJobs,
     toolCallsToday: input.toolCallsToday ?? fallbackSnapshot.toolCallsToday,
     recentSignals: input.recentSignals ?? fallbackSnapshot.recentSignals,
-    knowledgeSharing: normalizeKnowledge(input.knowledgeSharing),
     machine: normalizeMachineStatus(input.machine),
     sessions: normalizeSessions(input.sessions),
     cron: normalizeCron(input.cron),
@@ -1995,7 +1866,6 @@ export async function loadMissionControlSnapshot(accessToken?: string): Promise<
     const machine = normalizeMachineStatus(machineRaw ?? undefined);
 
     const sessions = fallbackSessions;
-    const knowledgeSharing = fallbackKnowledge;
     const alerts = deriveAlerts(status, machine, sessions, cron);
     return normalizeSnapshot({
       backendHealth: deriveBackendHealth(status, machine),
@@ -2007,7 +1877,6 @@ export async function loadMissionControlSnapshot(accessToken?: string): Promise<
       queuedJobs: cron.queuedJobs,
       toolCallsToday: sessions.toolCallsToday,
       recentSignals: deriveRecentSignals(status, modelInfo, sessions, cron, alerts, machine),
-      knowledgeSharing,
       machine,
       sessions,
       cron,
@@ -2286,83 +2155,6 @@ export async function loadMissionControlAlerts(accessToken?: string): Promise<Mi
   }
 }
 
-export async function loadMissionControlKnowledge(accessToken?: string): Promise<MissionControlKnowledgeSnapshot> {
-  try {
-    const { payload, response } = await maybeFetchLocalJson<Partial<MissionControlKnowledgeSnapshot>>('/knowledge', accessToken);
-    if (payload) {
-      return normalizeKnowledge(payload);
-    }
-    if (response && response.status < 500 && response.status !== 404) {
-      return normalizeKnowledge(fallbackKnowledge);
-    }
-
-    // No official backend available; return fallback knowledge
-    return normalizeKnowledge(fallbackKnowledge);
-  } catch (error) {
-    if (error instanceof MissionControlAuthError) {
-      throw error;
-    }
-
-    return normalizeKnowledge(fallbackKnowledge);
-  }
-}
-
-export async function loadMissionControlKnowledgeFile(
-  sourcePath: string,
-  accessToken?: string,
-): Promise<MissionControlKnowledgeFilePayload> {
-  try {
-    const { payload, response } = await maybeFetchLocalJson<MissionControlKnowledgeFilePayload>(
-      `/knowledge/file?path=${encodeURIComponent(sourcePath)}`,
-      accessToken,
-    );
-
-    if (payload) {
-      return {
-        ...payload,
-        path: redactHomePath(payload.path) ?? payload.path,
-        sourcePath: redactHomePath(payload.sourcePath) ?? payload.sourcePath,
-      };
-    }
-
-    if (response) {
-      if (response.status === 403) {
-        throw new Error('Knowledge file API returned 403');
-      }
-      if (response.status < 500 && response.status !== 404) {
-        throw new Error(`Knowledge file API returned ${response.status}`);
-      }
-    }
-  } catch (error) {
-    if (error instanceof MissionControlAuthError) {
-      throw error;
-    }
-    if (error instanceof Error && /Knowledge file API returned/.test(error.message)) {
-      throw error;
-    }
-  }
-
-  const response = await fetch(apiUrl(`/knowledge/file?path=${encodeURIComponent(sourcePath)}`), {
-    headers: buildHeaders(accessToken),
-    cache: 'no-store',
-  });
-
-  if (response.status === 401) {
-    throw new MissionControlAuthError();
-  }
-
-  if (!response.ok) {
-    throw new Error(`Knowledge file API returned ${response.status}`);
-  }
-
-  const payload = await response.json() as MissionControlKnowledgeFilePayload;
-  return {
-    ...payload,
-    path: redactHomePath(payload.path) ?? payload.path,
-    sourcePath: redactHomePath(payload.sourcePath) ?? payload.sourcePath,
-  };
-}
-
 export async function loadMissionControlTools(accessToken?: string): Promise<MissionControlToolsSnapshot> {
   const { payload } = await maybeFetchLocalJson<MissionControlToolsSnapshot>('/tools', accessToken);
   if (payload) return normalizeTools(payload);
@@ -2532,10 +2324,6 @@ export async function saveMissionControlConfig(accessToken: string | undefined, 
 
 export function getFallbackSnapshot(): MissionControlSnapshot {
   return fallbackSnapshot;
-}
-
-export function getFallbackKnowledge(): MissionControlKnowledgeSnapshot {
-  return fallbackKnowledge;
 }
 
 export function getFallbackTools(): MissionControlToolsSnapshot {

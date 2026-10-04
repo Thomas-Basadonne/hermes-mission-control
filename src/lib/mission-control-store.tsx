@@ -1,13 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   getFallbackConfig,
-  getFallbackKnowledge,
   getFallbackSkills,
   getFallbackSnapshot,
   getFallbackTools,
   loadMissionControlAlerts,
   loadMissionControlConfig,
-  loadMissionControlKnowledge,
   loadMissionControlMachineStatus,
   loadMissionControlCron,
   loadMissionControlSessions,
@@ -18,7 +16,6 @@ import {
   MissionControlAuthError,
   MISSION_CONTROL_TOKEN_STORAGE_KEY,
   type MissionControlConfigSnapshot,
-  type MissionControlKnowledgeSnapshot,
   type MissionControlSessionsSnapshot,
   type MissionControlSkillsSnapshot,
   type MissionControlSnapshot,
@@ -45,7 +42,6 @@ type MissionControlActionResult = {
 
 type MissionControlContextValue = {
   snapshot: MissionControlSnapshot;
-  knowledge: MissionControlKnowledgeSnapshot;
   tools: MissionControlToolsSnapshot;
   skills: MissionControlSkillsSnapshot;
   config: MissionControlConfigSnapshot;
@@ -123,7 +119,6 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   const initialTheme = typeof window === 'undefined' ? 'system' : (readStoredValue('mission-control-theme', 'system') as ThemeMode);
 
   const [snapshot, setSnapshot] = useState<MissionControlSnapshot>(getFallbackSnapshot());
-  const [knowledge, setKnowledge] = useState<MissionControlKnowledgeSnapshot>(getFallbackKnowledge());
   const [tools, setTools] = useState<MissionControlToolsSnapshot>(getFallbackTools());
   const [skills, setSkills] = useState<MissionControlSkillsSnapshot>(getFallbackSkills());
   const [config, setConfig] = useState<MissionControlConfigSnapshot>(getFallbackConfig());
@@ -192,16 +187,10 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const refreshReferenceData = useCallback(async (token?: string) => {
-    const [knowledgeRes, toolsRes, skillsRes] = await Promise.allSettled([
-      loadMissionControlKnowledge(token),
+    const [toolsRes, skillsRes] = await Promise.allSettled([
       loadMissionControlTools(token),
       loadMissionControlSkills(token),
     ]);
-
-    if (knowledgeRes.status === 'fulfilled') {
-      const nextKnowledge = knowledgeRes.value;
-      setKnowledge((previous) => (nextKnowledge.available ? nextKnowledge : previous));
-    }
 
     if (toolsRes.status === 'fulfilled') {
       const nextTools = toolsRes.value;
@@ -300,7 +289,6 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
             queuedJobs: dashboard.queuedJobs,
             toolCallsToday: dashboard.toolCallsToday,
             recentSignals: dashboard.recentSignals,
-            knowledgeSharing: dashboard.knowledgeSharing,
           }));
         } catch (error) {
           if (error instanceof MissionControlAuthError) {
@@ -320,7 +308,6 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         // Auth failures should lock the UI and scrub live state.
         setSnapshot(getFallbackSnapshot());
         if (includeReference) {
-          setKnowledge(getFallbackKnowledge());
           setTools(getFallbackTools());
           setSkills(getFallbackSkills());
         }
@@ -359,7 +346,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     const interval = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return;
       ticks += 1;
-      const includeReference = ticks % 4 === 0 || !tools.available || !skills.available || !knowledge.available;
+      const includeReference = ticks % 4 === 0 || !tools.available || !skills.available;
       const includeSnapshot = ticks % 4 === 0 || snapshot.activeModel === 'gpt-5.4-mini';
       const includeConfig = ticks % 4 === 0 || !config.available;
       recordReloadDiagnostic('mc-refresh-poll', { ticks, includeReference, includeSnapshot, includeConfig, includeCron: false });
@@ -376,7 +363,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     }, 15000);
 
     return () => window.clearInterval(interval);
-  }, [authRequired, config.available, knowledge.available, refreshAll, refreshConfig, skills.available, snapshot.activeModel, storedToken, tools.available]);
+  }, [authRequired, config.available, refreshAll, refreshConfig, skills.available, snapshot.activeModel, storedToken, tools.available]);
 
 
   const unlock = useCallback(async (token: string) => {
@@ -401,7 +388,6 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     setAuthRequired(true);
     setAuthError('Logged out. Re-enter the access token to unlock the cockpit.');
     setSnapshot(getFallbackSnapshot());
-    setKnowledge(getFallbackKnowledge());
     setTools(getFallbackTools());
     setSkills(getFallbackSkills());
     setConfig(getFallbackConfig());
@@ -490,7 +476,6 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<MissionControlContextValue>(() => ({
     snapshot,
-    knowledge,
     tools,
     skills,
     config,
@@ -522,7 +507,6 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     authRequired,
     config,
     gatewayActions,
-    knowledge,
     lastUpdatedAt,
     linkStatus,
     loading,

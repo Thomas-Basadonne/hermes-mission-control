@@ -154,7 +154,6 @@ class TelemetryPathResolutionTests(unittest.TestCase):
 
     def test_runtime_home_follows_central_resolver(self):
         self.assertEqual(local_telemetry_server._get_hermes_home(), self._hermes_home)
-        self.assertEqual(local_telemetry_server._knowledge_core_root(), self._hermes_home.resolve())
         self.assertEqual(
             local_telemetry_server._client_diagnostics_log(),
             self._hermes_home / "logs" / "mission-control-client.log",

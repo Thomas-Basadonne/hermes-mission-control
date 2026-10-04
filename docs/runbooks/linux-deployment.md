@@ -84,7 +84,6 @@ MISSION_CONTROL_DASHBOARD_PORT=9119
 # loopback-only). See .env.example and docs/telemetry.md for the full list.
 # MISSION_CONTROL_LOCAL_TELEMETRY_HOST=0.0.0.0
 # MISSION_CONTROL_ALLOWED_ORIGIN=http://<host>:5174
-# MISSION_CONTROL_VAULT_PATH=/path/to/vault
 EOF
 chmod 600 ~/.hermes/mission-control.env
 ```

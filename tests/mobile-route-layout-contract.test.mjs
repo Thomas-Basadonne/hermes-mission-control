@@ -9,7 +9,6 @@ const routeFiles = [
   'KanbanRoute.tsx',
   'AgentsRoute.tsx',
   'UsageRoute.tsx',
-  'KnowledgeRoute.tsx',
   'ToolsRoute.tsx',
   'CronRoute.tsx',
   'SkillsRoute.tsx',

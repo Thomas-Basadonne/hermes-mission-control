@@ -12,22 +12,11 @@ class HermesApiRegressionTests(unittest.TestCase):
 
     def test_local_fetches_use_configurable_local_api_url_helper(self):
         self.assertIn("fetch(localApiUrl('/system')", self.source)
-        self.assertIn("maybeFetchLocalJson<Partial<MissionControlKnowledgeSnapshot>>('/knowledge'", self.source)
-        self.assertIn("maybeFetchLocalJson<MissionControlKnowledgeFilePayload>(\n      `/knowledge/file?path=${encodeURIComponent(sourcePath)}`", self.source)
         self.assertNotIn("fetch('/api/local/system'", self.source)
-        self.assertNotIn("fetch('/api/local/knowledge'", self.source)
-        self.assertNotIn("fetch(`/api/local/knowledge/file?path=${encodeURIComponent(sourcePath)}`", self.source)
 
-    def test_knowledge_file_loader_catches_local_fetch_errors_before_core_fallback(self):
-        marker = "export async function loadMissionControlKnowledgeFile("
-        start = self.source.index(marker)
-        end = self.source.index("export async function loadMissionControlTools(", start)
-        function_body = self.source[start:end]
-
-        self.assertIn("try {", function_body)
-        self.assertIn("catch (error)", function_body)
-        self.assertIn("if (error instanceof MissionControlAuthError)", function_body)
-        self.assertIn("const response = await fetch(apiUrl(`/knowledge/file?path=${encodeURIComponent(sourcePath)}`)", function_body)
+    def test_removed_knowledge_api_is_not_called(self):
+        self.assertNotIn("'/knowledge", self.source)
+        self.assertNotIn("`/knowledge", self.source)
 
 
 if __name__ == "__main__":
