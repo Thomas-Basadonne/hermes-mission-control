@@ -37,6 +37,7 @@ import {
 import { loadBotProfiles, loadBotModelOptions, type BotProfileSummary, type BotModelProviderOption } from '../lib/bot-gateway';
 import { cronModelOptions, cronProviderOptions, isCronModelPairValid, modelSelectionPayload } from '../lib/cron-model-selection';
 import { cronScheduleInput } from '../lib/cron-form';
+import { filterCronJobs, isCronPaused, type CronStatusFilter } from '../lib/cron-status-filter';
 
 function formatDate(value: string | null | undefined): string {
   if (!value) return '—';
@@ -56,10 +57,6 @@ function formatRelative(value: string | null | undefined): string {
   if (hours < 24) return `${hours}h ${delta >= 0 ? 'from now' : 'ago'}`;
   const days = Math.round(hours / 24);
   return `${days}d ${delta >= 0 ? 'from now' : 'ago'}`;
-}
-
-function isCronPaused(job: MissionControlCronJob): boolean {
-  return !job.enabled || job.state === 'paused';
 }
 
 function statusVariant(job: MissionControlCronJob): 'positive' | 'warning' | 'negative' | 'default' {
@@ -430,6 +427,7 @@ export function CronRoute() {
   const [editingJob, setEditingJob] = useState<MissionControlCronJob | null | undefined>(undefined);
   const [actionJobId, setActionJobId] = useState<string | null>(null);
   const [profileFilter, setProfileFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState<CronStatusFilter>('active');
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const refresh = useCallback(async (silent = false) => {
@@ -467,10 +465,8 @@ export function CronRoute() {
   }), [jobs]);
 
   const orderedJobs = useMemo(
-    () => [...jobs]
-      .filter((job) => profileFilter === 'all' || (job.profile || 'default') === profileFilter)
-      .sort((left, right) => Number(isCronPaused(left)) - Number(isCronPaused(right))),
-    [jobs, profileFilter],
+    () => filterCronJobs(jobs, statusFilter, profileFilter),
+    [jobs, statusFilter, profileFilter],
   );
 
   const runAction = async (job: MissionControlCronJob, action: 'run' | 'pause' | 'resume' | 'delete') => {
@@ -555,17 +551,34 @@ export function CronRoute() {
         </div>
       </Card>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <label className="flex items-center gap-2 text-xs text-text-muted">
-          <span>{t('cron.form.profile')}</span>
-          <select className="mc-input h-9 min-w-36" value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)}>
-            <option value="all">{t('cron.profileAll')}</option>
-            {[...new Set(jobs.map((job) => job.profile || 'default'))].sort().map((profile) => <option key={profile} value={profile}>{profile}</option>)}
-          </select>
-        </label>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 text-xs text-text-muted">
+            <span>{t('cron.filter.status')}</span>
+            <div className="min-w-36">
+              <Dropdown
+                value={statusFilter}
+                options={[
+                  { value: 'active', label: t('cron.filter.active') },
+                  { value: 'paused', label: t('cron.filter.paused') },
+                  { value: 'all', label: t('cron.filter.all') },
+                ]}
+                onChange={(value) => setStatusFilter(value as CronStatusFilter)}
+                ariaLabel={t('cron.filter.status')}
+              />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-text-muted">
+            <span>{t('cron.form.profile')}</span>
+            <select className="mc-input h-9 min-w-36" value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)}>
+              <option value="all">{t('cron.profileAll')}</option>
+              {[...new Set(jobs.map((job) => job.profile || 'default'))].sort().map((profile) => <option key={profile} value={profile}>{profile}</option>)}
+            </select>
+          </label>
+        </div>
       </div>
       <Card padding="none">
         <div className="border-b border-border-subtle px-4 pb-3 pt-4"><span className="eyebrow">{t('cron.list.eyebrow')}</span><h3 className="mt-0.5 text-sm font-semibold text-text">{t('cron.list.title')}</h3></div>
-        {loading ? <div className="px-4 py-10 text-center text-sm text-text-muted">{t('cron.loading')}</div> : jobs.length === 0 ? <div className="px-4 py-10 text-center text-sm text-text-muted">{t('cron.empty')}</div> : <div className="divide-y divide-border-subtle">{orderedJobs.map((job) => {
+        {loading ? <div className="px-4 py-10 text-center text-sm text-text-muted">{t('cron.loading')}</div> : orderedJobs.length === 0 ? <div className="px-4 py-10 text-center text-sm text-text-muted">{t(jobs.length === 0 ? 'cron.empty' : 'cron.filter.empty')}</div> : <div className="divide-y divide-border-subtle">{orderedJobs.map((job) => {
           const busy = actionJobId === job.id;
           const paused = isCronPaused(job);
           return <div key={job.id} className="cron-job-row flex flex-col gap-3 px-4 py-4 xl:flex-row xl:items-center xl:gap-5">
