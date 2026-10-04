@@ -232,9 +232,5 @@ systemctl --user daemon-reload
 
 ## 10. Reference (macOS)
 
-The equivalent macOS deployment uses launchd LaunchAgents
-(`ai.hermes.dashboard-api`, `ai.hermes.mission-control-telemetry`,
-`ai.hermes.mission-control`). The operational scripts under `scripts/`
-(`scripts/lib/restart-services.sh`, `scripts/reapply-core-mission-control-fixes.sh`)
-detect the platform and use `systemctl --user` on Linux and `launchctl` on
-macOS.
+There are no packaged launchd units. On macOS run the stack in the foreground
+with `pnpm dev:full`; see the README section "macOS".
