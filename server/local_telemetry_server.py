@@ -2135,7 +2135,9 @@ class Handler(BaseHTTPRequestHandler):
             offset = _parse_int((params.get("offset") or [None])[0], default=0, minimum=0, maximum=100000)
             session_id = (params.get("session_id") or [None])[0] or None
             profile = (params.get("profile") or [None])[0] or None
-            self._json(200, load_agents_sessions_snapshot(limit=limit, offset=offset, session_id=session_id, filters=_session_filter_params(params), profile=profile))
+            include_facets = _parse_bool((params.get("include_facets") or [None])[0], default=True)
+            include_recent_messages = _parse_bool((params.get("include_recent_messages") or [None])[0], default=True)
+            self._json(200, load_agents_sessions_snapshot(limit=limit, offset=offset, session_id=session_id, include_facets=include_facets, include_recent_messages=include_recent_messages, filters=_session_filter_params(params), profile=profile))
             return
         if parsed.path == "/api/local/sessions":
             if not _is_authorized(self):
@@ -2144,7 +2146,9 @@ class Handler(BaseHTTPRequestHandler):
             limit = _parse_int((params.get("limit") or [None])[0], default=100, minimum=1, maximum=500)
             offset = _parse_int((params.get("offset") or [None])[0], default=0, minimum=0, maximum=100000)
             profile = (params.get("profile") or [None])[0] or None
-            self._json(200, load_agents_sessions_snapshot(limit=limit, offset=offset, filters=_session_filter_params(params), profile=profile))
+            include_facets = _parse_bool((params.get("include_facets") or [None])[0], default=True)
+            include_recent_messages = _parse_bool((params.get("include_recent_messages") or [None])[0], default=True)
+            self._json(200, load_agents_sessions_snapshot(limit=limit, offset=offset, include_facets=include_facets, include_recent_messages=include_recent_messages, filters=_session_filter_params(params), profile=profile))
             return
         if parsed.path == "/api/local/sessions/usage":
             if not _is_authorized(self):
