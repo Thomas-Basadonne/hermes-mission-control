@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
 import threading
 import types
 import unittest
@@ -36,10 +37,13 @@ class ProviderUsageApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self._old_values = {
             key: os.environ.get(key)
-            for key in ("MISSION_CONTROL_TOKEN", "MISSION_CONTROL_READ_ONLY")
+            for key in ("MISSION_CONTROL_TOKEN", "MISSION_CONTROL_READ_ONLY", "HERMES_HOME")
         }
         os.environ["MISSION_CONTROL_TOKEN"] = "synthetic-provider-test-token"
         os.environ.pop("MISSION_CONTROL_READ_ONLY", None)
+        self._tmp = tempfile.TemporaryDirectory(prefix="mc-provider-api-")
+        os.environ["HERMES_HOME"] = self._tmp.name
+        telemetry.reset_provider_usage_catalog_cache()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), telemetry.Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -49,6 +53,7 @@ class ProviderUsageApiTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
+        self._tmp.cleanup()
         for key, value in self._old_values.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -65,6 +70,22 @@ class ProviderUsageApiTests(unittest.TestCase):
         request = urllib.request.Request(
             f"{self.base_url}/api/local/provider-usage/catalog",
             headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=3) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read())
+
+    def _put(self, payload: object, *, token: bool = True):
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = "Bearer synthetic-provider-test-token"
+        request = urllib.request.Request(
+            f"{self.base_url}/api/local/provider-usage/selection",
+            data=json.dumps(payload).encode(),
+            headers=headers,
+            method="PUT",
         )
         try:
             with urllib.request.urlopen(request, timeout=3) as response:
@@ -115,6 +136,38 @@ class ProviderUsageApiTests(unittest.TestCase):
         self.assertEqual(payload["error"], "CodexBar provider catalog is unavailable.")
         self.assertEqual([item["provider"] for item in payload["providers"]], ["nous"])
 
+    def test_selection_route_validates_and_persists_only_catalog_ids(self) -> None:
+        with patch.object(telemetry, "discover_codexbar_catalog", return_value=[
+            {
+                "provider": "deepseek",
+                "displayName": "DeepSeek",
+                "enabled": True,
+                "defaultEnabled": False,
+                "source": "codexbar",
+            },
+        ]):
+            status, payload = self._put({"selectedProviders": ["deepseek", "deepseek", "nous"]})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["selectedProviders"], ["deepseek", "nous"])
+        persisted = json.loads((Path(self._tmp.name) / "mission-control-usage.json").read_text())
+        self.assertEqual(persisted["selectedProviders"], ["deepseek", "nous"])
+
+    def test_selection_route_rejects_unknown_ids_and_requires_auth(self) -> None:
+        with patch.object(telemetry, "discover_codexbar_catalog", return_value=[]):
+            unauth_status, _ = self._put({"selectedProviders": []}, token=False)
+            invalid_status, payload = self._put({"selectedProviders": ["not-in-catalog"]})
+
+        self.assertEqual(unauth_status, 401)
+        self.assertEqual(invalid_status, 400)
+        self.assertEqual(payload["error"], "bad_request")
+
+    def test_selection_route_rejects_non_object_json_without_server_error(self) -> None:
+        with patch.object(telemetry, "discover_codexbar_catalog", return_value=[]):
+            status, payload = self._put([{}])
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "bad_request")
 
 if __name__ == "__main__":
     unittest.main()

@@ -44,10 +44,31 @@ def _provider_ceiling() -> set[str] | None:
     return {item.strip().lower() for item in raw.split(",") if _PROVIDER_ID.fullmatch(item.strip().lower())}
 
 
+def usage_provider_selectable(provider: str, *, enabled: bool, source: str) -> bool:
+    """Whether MC may collect this provider under CodexBar and admin policy."""
+    ceiling = _provider_ceiling()
+    return (source == "mission-control" or enabled) and (ceiling is None or provider in ceiling)
+
+
+def stored_usage_providers() -> tuple[str, ...]:
+    """Return saved IDs without catalog validation, for last-known-good display."""
+    config = _load_config()
+    saved = config.get("selectedProviders")
+    configured = (
+        [provider for provider in saved if isinstance(provider, str) and _PROVIDER_ID.fullmatch(provider)]
+        if isinstance(saved, list)
+        else list(_LEGACY_DEFAULT_PROVIDERS)
+    )
+    ceiling = _provider_ceiling()
+    if ceiling is not None:
+        configured = [provider for provider in configured if provider in ceiling]
+    return tuple(dict.fromkeys(configured))
+
+
 def selected_usage_providers(catalog: list[dict[str, Any]]) -> tuple[str, ...]:
     """Resolve persisted MC selection against the current catalog and ceiling."""
     available: list[str] = []
-    enabled: set[str] = set()
+    collectable: set[str] = set()
     for item in catalog:
         if not isinstance(item, dict):
             continue
@@ -56,16 +77,11 @@ def selected_usage_providers(catalog: list[dict[str, Any]]) -> tuple[str, ...]:
             continue
         available.append(provider)
         if item.get("enabled") is True:
-            enabled.add(provider)
+            collectable.add(provider)
+        elif item.get("source") == "mission-control":
+            collectable.add(provider)
 
-    config = _load_config()
-    if isinstance(config.get("selectedProviders"), list):
-        configured = {
-            provider for provider in config["selectedProviders"]
-            if isinstance(provider, str) and provider in available
-        }
-    else:
-        configured = (set(_LEGACY_DEFAULT_PROVIDERS) | enabled) & set(available)
+    configured = set(stored_usage_providers()) & collectable
 
     ceiling = _provider_ceiling()
     if ceiling is not None:

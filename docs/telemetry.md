@@ -238,15 +238,18 @@ the client), `/api/local/push/subscriptions` (store/list/delete), and
 
 ## Provider usage (CodexBar + Nous Portal)
 
-The **Provider usage** overview card shows live cloud limits and balances for Codex, Ollama Cloud, OpenRouter, and Nous Portal. CodexBar supplies the first three providers; the telemetry sidecar reads Nous Portal account data through the already-authenticated Hermes access token.
+The **Provider usage** overview card shows limits, balances, and safe numeric counters for the providers selected in Mission Control. CodexBar supplies its dynamically discovered providers; the telemetry sidecar reads Nous Portal account data through the already-authenticated Hermes access token.
 
 ### Data flow
 
 ```
-CodexBar (codexbar usage --provider <p>)
-        │  --json --no-color
+CodexBar catalog (codexbar config providers --json)
+        │  sanitized metadata; cached for 5 minutes
         ▼
-provider-usage writer OR telemetry fallback
+Mission Control provider selection
+        │  one `usage --provider <id>` call per selected CodexBar provider
+        ▼
+provider-usage writer / asynchronous sidecar refresh
         │  normalized → providers[]
         ├──────────────────────────────┐
         │                              │
@@ -263,17 +266,17 @@ GET /api/local/provider-usage  (telemetry :8765)
 src/components/overview/ProviderUsagePanel.tsx
 ```
 
-The frontend polls `loadProviderUsage()` every **60s** (`ProviderUsagePanel` `useEffect` + `setInterval`).
+The frontend polls `loadProviderUsage()` every **60s** (`ProviderUsagePanel` `useEffect` + `setInterval`). A cache miss or stale snapshot schedules a background refresh; the `GET /api/local/provider-usage` handler does not run CodexBar synchronously.
 
 ### Local provider visibility
 
-Provider visibility is a local operator preference, not a provider implementation detail. Set an optional comma-separated allowlist in the external Mission Control environment file (`~/.hermes/mission-control.env`, or the file selected by `MISSION_CONTROL_ENV_FILE`):
+`MISSION_CONTROL_USAGE_PROVIDERS` is an optional **administrator ceiling**, not the user's provider selection. Set a comma-separated ID allowlist in the external Mission Control environment file (`~/.hermes/mission-control.env`, or the file selected by `MISSION_CONTROL_ENV_FILE`):
 
 ```bash
 MISSION_CONTROL_USAGE_PROVIDERS=codex,ollama,nous
 ```
 
-The example above hides OpenRouter. Unset or blank means all built-in providers (`codex`, `ollama`, `openrouter`, `nous`) are visible. The telemetry sidecar applies the allowlist both to CodexBar collection and to the `/api/local/provider-usage` response, so hidden providers are not rendered or fetched.
+The example above prevents OpenRouter from being selected or collected. Unset or blank imposes no administrator ceiling. On first run, Mission Control selects only the legacy providers (`codex`, `ollama`, `openrouter`, and native `nous`) that are currently collectable; newly discovered providers are not auto-selected or queried. Subsequent selections are stored in `mission-control-usage.json` and can be changed from **Providers** in the overview panel. CodexBar catalog entries that are disabled remain visible in the chooser but cannot be selected until enabled in CodexBar. Mission Control-native providers, such as Nous Portal, are listed separately. Browser-only display preferences (hidden cards/fields and ordering) remain separate from this server-side collection selection.
 
 Field presentation can be customized independently in `~/.hermes/mission-control-usage.json` (or the path set by `MISSION_CONTROL_USAGE_CONFIG_FILE`):
 
@@ -296,9 +299,9 @@ Field presentation can be customized independently in `~/.hermes/mission-control
 
 ### Data sources and cache behavior
 
-1. **CodexBar providers:** the telemetry server reads `~/.hermes/cache/mission-control-provider-usage.json` (`collect_provider_usage`). If the file is present and valid, it uses the cached CodexBar entries; otherwise it invokes CodexBar for `codex`, `ollama`, and `openrouter`.
+1. **CodexBar providers:** discovery runs `codexbar config providers --json` and caches sanitized catalog metadata for five minutes. The collector invokes CodexBar only for selected, enabled IDs, one provider per command; newly discovered or disabled providers are never activated automatically. The usage cache is `~/.hermes/cache/mission-control-provider-usage.json`; refreshes run asynchronously and preserve the last-known-good snapshot on failure.
 2. **Nous Portal:** the sidecar reads the current `providers.nous.access_token` from the active/profile-aware `auth.json` and performs a read-only `GET /api/oauth/account`. If the access token is expired, it delegates refresh to the existing `hermes portal info` command and then re-reads `auth.json`; the sidecar never implements the OAuth refresh exchange or rotates refresh tokens itself.
-3. **Provider-agnostic boundary:** every entry returned by `/api/local/provider-usage` exposes `windows`, `balances`, and `metrics`. The frontend does not depend on CodexBar's raw provider-specific fields.
+3. **Provider-agnostic boundary:** every entry returned by `/api/local/provider-usage` exposes `windows`, `balances`, and `metrics`. Known quota windows and balances are normalized explicitly. CodexBar's generic detail rows contribute only bounded numeric/boolean metrics with sanitized labels; arbitrary strings, identity fields, chart payloads, and raw provider JSON are not forwarded.
 
 The standalone cache writer is still useful for refreshing the CodexBar entries outside request time:
 
@@ -344,7 +347,7 @@ Each provider is reduced to the same small, UI-safe contract:
 
 - `windows` contains quota/period usage such as CodexBar's session/weekly windows or Nous's monthly subscription allowance.
 - `balances` contains monetary or credit balances.
-- `metrics` contains provider counters such as Codex reset credits.
+- `metrics` contains provider counters such as Codex reset credits and safe numeric/boolean rows from CodexBar's generic details.
 - On error, `available` is `false`, the arrays remain present, and `error` carries a short (≤240 character) message.
 - Nous's `stale` flag is `true` only when the Portal request failed but a previous valid in-process snapshot is being served.
 

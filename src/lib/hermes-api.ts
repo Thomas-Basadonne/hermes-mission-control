@@ -1406,6 +1406,17 @@ async function maybeFetchLocalJson<T>(
   }
 }
 
+async function putLocalJson<T>(path: string, payload: unknown, accessToken?: string): Promise<T> {
+  const response = await fetch(localApiUrl(path), {
+    method: 'PUT',
+    headers: { ...buildHeaders(accessToken), 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+  });
+  if (response.status === 401) throw new MissionControlAuthError();
+  return await parseResponse<T>(response, path.replace(/^\//, ''));
+}
+
 async function maybeFetchOfficialJson<T>(path: string, accessToken?: string): Promise<T | null> {
   try {
     return await fetchOfficialJson<T>(path, accessToken);
@@ -1554,8 +1565,53 @@ export type MissionControlProviderUsageSnapshot = {
   success: boolean;
   available: boolean;
   updatedAt?: string;
+  stale?: boolean;
+  refreshing?: boolean;
   providers: MissionControlProviderUsage[];
 };
+
+export type MissionControlProviderCatalogEntry = {
+  provider: string;
+  displayName: string;
+  enabled: boolean;
+  defaultEnabled: boolean;
+  source: 'codexbar' | 'mission-control';
+  selectable: boolean;
+};
+
+export type MissionControlProviderCatalogSnapshot = {
+  available: boolean;
+  stale?: boolean;
+  error?: string;
+  providers: MissionControlProviderCatalogEntry[];
+  selectedProviders: string[];
+};
+
+const fallbackProviderCatalog: MissionControlProviderCatalogSnapshot = {
+  available: false,
+  providers: [],
+  selectedProviders: [],
+};
+
+export async function loadProviderUsageCatalog(accessToken?: string): Promise<MissionControlProviderCatalogSnapshot> {
+  try {
+    const { payload: local } = await maybeFetchLocalJson<MissionControlProviderCatalogSnapshot>('/provider-usage/catalog', accessToken);
+    return local ?? fallbackProviderCatalog;
+  } catch {
+    return fallbackProviderCatalog;
+  }
+}
+
+export async function saveProviderUsageSelection(
+  selectedProviders: string[],
+  accessToken?: string,
+): Promise<{ selectedProviders: string[] }> {
+  return await putLocalJson<{ selectedProviders: string[] }>(
+    '/provider-usage/selection',
+    { selectedProviders },
+    accessToken,
+  );
+}
 
 const fallbackProviderUsage: MissionControlProviderUsageSnapshot = {
   success: false,

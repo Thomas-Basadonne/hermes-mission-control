@@ -1,9 +1,13 @@
 import { useI18n } from '../../lib/i18n';
 import { useEffect, useState } from 'react';
-import { Cloud, RefreshCw } from 'lucide-react';
+import { Cloud, RefreshCw, Search, Settings2 } from 'lucide-react';
 import { Card } from '../ui/Card';
+import { Modal } from '../Modal';
 import {
   loadProviderUsage,
+  loadProviderUsageCatalog,
+  saveProviderUsageSelection,
+  type MissionControlProviderCatalogSnapshot,
   type MissionControlProviderUsage,
   type MissionControlProviderUsageBalance,
   type MissionControlProviderUsageSnapshot,
@@ -101,9 +105,9 @@ function UsageGauge({
   );
 }
 
-export function ProviderCard({ provider }: { provider: MissionControlProviderUsage }) {
+export function ProviderCard({ provider, displayName }: { provider: MissionControlProviderUsage; displayName?: string }) {
   const { t } = useI18n();
-  const label = PROVIDER_LABELS[provider.provider] ?? provider.provider;
+  const label = displayName ?? PROVIDER_LABELS[provider.provider] ?? provider.provider;
   const unavailable = !provider.available;
   const balances = (Array.isArray(provider.balances) ? provider.balances : []).filter((balance) => typeof balance.value === 'number');
   const primaryBalance = balances.find((balance) => balance.id === 'total_spendable' || balance.id === 'balance') ?? balances[0];
@@ -201,7 +205,25 @@ export function ProviderUsagePanel() {
   const { t } = useI18n();
   const { storedToken } = useMissionControl();
   const [snapshot, setSnapshot] = useState<MissionControlProviderUsageSnapshot | null>(null);
+  const [providerCatalog, setProviderCatalog] = useState<MissionControlProviderCatalogSnapshot | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [customizeOpen, setCustomizeOpen] = useState(false);
+  const [draftSelection, setDraftSelection] = useState<string[]>([]);
+  const [providerSearch, setProviderSearch] = useState('');
+  const [savingSelection, setSavingSelection] = useState(false);
+  const [selectionError, setSelectionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCatalogLoading(true);
+    void loadProviderUsageCatalog(storedToken || undefined).then((catalog) => {
+      if (!cancelled) setProviderCatalog(catalog);
+    }).finally(() => {
+      if (!cancelled) setCatalogLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [storedToken]);
 
   useEffect(() => {
     let cancelled = false;
@@ -221,23 +243,40 @@ export function ProviderUsagePanel() {
     };
   }, [storedToken]);
 
-  if (!snapshot?.available) {
-    return (
-      <Card padding="none">
-        <div className="px-3 pt-3 pb-2 border-b border-border-subtle flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Cloud size={15} className="text-sky-400" />
-            <div className="flex flex-col gap-0.5">
-              <span className="eyebrow">{t('overview.providerUsage')}</span>
-              <h2 className="text-sm font-semibold text-text">{t('ui.cloudLimitsBalances')}</h2>
-            </div>
-          </div>
-          {refreshing ? <RefreshCw size={12} className="text-text-subtle animate-spin" /> : null}
-        </div>
-        <div className="p-3"><p className="text-sm text-text-muted">{snapshot ? t('provider.unavailable') : t('provider.loading')}</p></div>
-      </Card>
-    );
-  }
+  const openCustomize = () => {
+    setDraftSelection(providerCatalog?.selectedProviders ?? []);
+    setProviderSearch('');
+    setSelectionError(null);
+    setCustomizeOpen(true);
+  };
+
+  const toggleProvider = (provider: string) => {
+    setDraftSelection((current) => current.includes(provider)
+      ? current.filter((item) => item !== provider)
+      : [...current, provider]);
+  };
+
+  const saveSelection = async () => {
+    setSavingSelection(true);
+    setSelectionError(null);
+    try {
+      const result = await saveProviderUsageSelection(draftSelection, storedToken || undefined);
+      setProviderCatalog((current) => current ? { ...current, selectedProviders: result.selectedProviders } : current);
+      setCustomizeOpen(false);
+      setSnapshot(await loadProviderUsage(storedToken || undefined));
+    } catch (error) {
+      setSelectionError(error instanceof Error ? error.message : t('provider.selectionSaveFailed'));
+    } finally {
+      setSavingSelection(false);
+    }
+  };
+
+  const providerNames = new Map((providerCatalog?.providers ?? []).map((provider) => [provider.provider, provider.displayName]));
+  const filteredCatalog = (providerCatalog?.providers ?? []).filter((provider) => {
+    const query = providerSearch.trim().toLowerCase();
+    return !query || `${provider.displayName} ${provider.provider}`.toLowerCase().includes(query);
+  });
+  const canCustomize = !catalogLoading && providerCatalog !== null;
 
   return (
     <Card padding="none">
@@ -250,13 +289,141 @@ export function ProviderUsagePanel() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {refreshing ? <RefreshCw size={12} className="text-text-subtle animate-spin" /> : null}
+          {snapshot?.stale ? <span className="text-[10px] text-amber-400">{t('provider.stale')}</span> : null}
+          {refreshing || snapshot?.refreshing ? <RefreshCw size={12} className="text-text-subtle animate-spin" /> : null}
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-[10px] text-text-muted hover:text-text disabled:opacity-50"
+            onClick={openCustomize}
+            disabled={!canCustomize}
+          >
+            <Settings2 size={12} /> {t('provider.customize')}
+          </button>
           <span className="text-[10px] text-text-subtle">{t('provider.live')}</span>
         </div>
       </div>
       <div className="p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {snapshot.providers.map((provider) => <ProviderCard key={provider.provider} provider={provider} />)}
+        {!snapshot?.available ? (
+          <p className="text-sm text-text-muted">{snapshot ? t('provider.unavailable') : t('provider.loading')}</p>
+        ) : snapshot.providers.length > 0 ? (
+          snapshot.providers.map((provider) => (
+            <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} />
+          ))
+        ) : (
+          <p className="text-sm text-text-muted">{t('provider.noneSelected')}</p>
+        )}
       </div>
+      <ProviderSelectionDialog
+        open={customizeOpen}
+        onClose={() => setCustomizeOpen(false)}
+        catalog={providerCatalog}
+        catalogLoading={catalogLoading}
+        draftSelection={draftSelection}
+        filteredCatalog={filteredCatalog}
+        search={providerSearch}
+        saving={savingSelection}
+        error={selectionError}
+        onSearch={setProviderSearch}
+        onToggle={toggleProvider}
+        onSave={() => void saveSelection()}
+      />
     </Card>
+  );
+}
+
+function ProviderSelectionDialog({
+  open,
+  onClose,
+  catalog,
+  catalogLoading,
+  draftSelection,
+  filteredCatalog,
+  search,
+  saving,
+  error,
+  onSearch,
+  onToggle,
+  onSave,
+}: {
+  open: boolean;
+  onClose: () => void;
+  catalog: MissionControlProviderCatalogSnapshot | null;
+  catalogLoading: boolean;
+  draftSelection: string[];
+  filteredCatalog: MissionControlProviderCatalogSnapshot['providers'];
+  search: string;
+  saving: boolean;
+  error: string | null;
+  onSearch: (value: string) => void;
+  onToggle: (provider: string) => void;
+  onSave: () => void;
+}) {
+  const { t } = useI18n();
+  const providerCatalog = catalog ?? { available: false, providers: [], selectedProviders: [] };
+  return (
+    <Modal
+      open={open}
+      title={t('provider.customizeTitle')}
+      subtitle={t('provider.customizeDescription')}
+      onClose={onClose}
+      fixedHeight
+      footer={(
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs text-text-subtle">{t('provider.selectedCount', { count: draftSelection.length })}</span>
+          <div className="flex gap-2">
+            <button type="button" onClick={onClose} disabled={saving} className="rounded-lg border border-border-subtle px-3 py-2 text-xs text-text-muted hover:text-text disabled:opacity-50">
+              {t('provider.cancel')}
+            </button>
+            <button type="button" onClick={onSave} disabled={saving || catalogLoading} className="rounded-lg bg-sky-500 px-3 py-2 text-xs font-medium text-white hover:bg-sky-400 disabled:opacity-50">
+              {saving ? t('provider.saving') : t('provider.saveSelection')}
+            </button>
+          </div>
+        </div>
+      )}
+    >
+      <div className="flex flex-col gap-3">
+        <label className="relative block">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle" />
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => onSearch(event.target.value)}
+            placeholder={t('provider.searchProviders')}
+            className="w-full rounded-lg border border-border-subtle bg-surface-raised py-2 pl-9 pr-3 text-sm text-text placeholder:text-text-subtle"
+          />
+        </label>
+        {providerCatalog.error ? <p className="text-xs text-amber-400">{providerCatalog.error}</p> : null}
+        {error ? <p role="alert" className="text-xs text-negative">{error}</p> : null}
+        <p className="text-xs text-text-subtle">{t('provider.disabledNote')}</p>
+        <div className="min-h-0 divide-y divide-border-subtle overflow-y-auto rounded-lg border border-border-subtle">
+          {catalogLoading ? <p className="p-3 text-sm text-text-muted">{t('provider.catalogLoading')}</p> : null}
+          {filteredCatalog.map((provider) => {
+            const unavailableReason = !provider.enabled && provider.source === 'codexbar'
+              ? t('provider.enableInCodexBar')
+              : !provider.selectable ? t('provider.adminRestricted') : '';
+            return (
+              <label key={provider.provider} className="flex items-center gap-3 px-3 py-2.5 hover:bg-surface-raised/60">
+                <input
+                  type="checkbox"
+                  checked={draftSelection.includes(provider.provider)}
+                  disabled={!provider.selectable || saving}
+                  onChange={() => onToggle(provider.provider)}
+                  aria-label={`${provider.displayName} (${provider.provider})`}
+                  className="h-4 w-4 accent-sky-500 disabled:opacity-50"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm text-text">{provider.displayName}</span>
+                  <span className="block truncate text-[10px] text-text-subtle">{provider.provider}{unavailableReason ? ` · ${unavailableReason}` : ''}</span>
+                </span>
+                <span className={`shrink-0 text-[10px] ${provider.enabled || provider.source === 'mission-control' ? 'text-emerald-400' : 'text-text-subtle'}`}>
+                  {provider.source === 'mission-control' ? t('provider.native') : provider.enabled ? t('provider.enabledInCodexBar') : t('provider.disabledInCodexBar')}
+                </span>
+              </label>
+            );
+          })}
+          {!catalogLoading && filteredCatalog.length === 0 ? <p className="p-3 text-sm text-text-muted">{t('provider.noProvidersFound')}</p> : null}
+        </div>
+      </div>
+    </Modal>
   );
 }

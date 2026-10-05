@@ -63,8 +63,14 @@ def _client_diagnostics_log() -> Path:
 from plugins.loader import resolve_handler, dispatch_plugin_request
 from nous_portal_usage import collect_nous_portal_usage
 from provider_usage_catalog import ProviderCatalogError, discover_codexbar_catalog, parse_provider_catalog
-from provider_usage_config import apply_provider_display_config, visible_usage_providers
-from provider_usage_contract import normalize_cached_entry, normalize_codexbar_entry, unavailable_provider
+from provider_usage_config import (
+    apply_provider_display_config,
+    save_selected_usage_providers,
+    selected_usage_providers,
+    stored_usage_providers,
+    usage_provider_selectable,
+)
+from provider_usage_contract import normalize_cached_entry, unavailable_provider
 
 from mission_control_agents import (
     load_agent_trace_snapshot,
@@ -462,11 +468,32 @@ def collect_thermal_snapshot() -> Dict[str, Any]:
     return _thermal_unavailable(f"unsupported platform: {current_platform or 'unknown'}")
 
 
-_USAGE_PROVIDERS = ("codex", "ollama", "openrouter")
 _PROVIDER_USAGE_CATALOG_LOCK = threading.Lock()
 _PROVIDER_USAGE_CATALOG_CACHE: Optional[Dict[str, Any]] = None
 _PROVIDER_USAGE_CATALOG_CACHE_AT = 0.0
 _PROVIDER_USAGE_CATALOG_TTL = 300.0
+_PROVIDER_USAGE_REFRESH_LOCK = threading.Lock()
+_PROVIDER_USAGE_REFRESH_RUNNING = False
+_PROVIDER_USAGE_CACHE_TTL = 300.0
+
+
+def _provider_usage_catalog_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    providers = [
+        {
+            **item,
+            "selectable": usage_provider_selectable(
+                item["provider"],
+                enabled=item.get("enabled") is True,
+                source=item.get("source", ""),
+            ),
+        }
+        for item in snapshot.get("providers", [])
+    ]
+    return {
+        **snapshot,
+        "providers": providers,
+        "selectedProviders": list(selected_usage_providers(providers)),
+    }
 
 
 def reset_provider_usage_catalog_cache() -> None:
@@ -487,22 +514,18 @@ def provider_usage_catalog_snapshot(*, force_refresh: bool = False) -> Dict[str,
             and _PROVIDER_USAGE_CATALOG_CACHE is not None
             and now - _PROVIDER_USAGE_CATALOG_CACHE_AT < _PROVIDER_USAGE_CATALOG_TTL
         ):
-            return {
-                **_PROVIDER_USAGE_CATALOG_CACHE,
-                "providers": [dict(item) for item in _PROVIDER_USAGE_CATALOG_CACHE["providers"]],
-            }
+            return _provider_usage_catalog_response(_PROVIDER_USAGE_CATALOG_CACHE)
 
         try:
             codexbar_providers = parse_provider_catalog(json.dumps(discover_codexbar_catalog()))
         except ProviderCatalogError:
             if _PROVIDER_USAGE_CATALOG_CACHE is not None:
-                return {
+                return _provider_usage_catalog_response({
                     **_PROVIDER_USAGE_CATALOG_CACHE,
                     "stale": True,
                     "error": "CodexBar provider catalog is unavailable.",
-                    "providers": [dict(item) for item in _PROVIDER_USAGE_CATALOG_CACHE["providers"]],
-                }
-            return {
+                })
+            return _provider_usage_catalog_response({
                 "available": False,
                 "stale": False,
                 "error": "CodexBar provider catalog is unavailable.",
@@ -513,7 +536,7 @@ def provider_usage_catalog_snapshot(*, force_refresh: bool = False) -> Dict[str,
                     "defaultEnabled": True,
                     "source": "mission-control",
                 }],
-            }
+            })
 
         providers = [*codexbar_providers, {
             "provider": "nous",
@@ -529,29 +552,57 @@ def provider_usage_catalog_snapshot(*, force_refresh: bool = False) -> Dict[str,
             "providers": providers,
         }
         _PROVIDER_USAGE_CATALOG_CACHE_AT = now
-        return {
-            **_PROVIDER_USAGE_CATALOG_CACHE,
-            "providers": [dict(item) for item in providers],
-        }
+        return _provider_usage_catalog_response(_PROVIDER_USAGE_CATALOG_CACHE)
 
 
-def _sanitize_usage_window(value: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(value, dict):
+def _schedule_provider_usage_refresh() -> None:
+    """Refresh the selected providers off-request; never run CodexBar in GET."""
+    global _PROVIDER_USAGE_REFRESH_RUNNING
+    with _PROVIDER_USAGE_REFRESH_LOCK:
+        if _PROVIDER_USAGE_REFRESH_RUNNING:
+            return
+        _PROVIDER_USAGE_REFRESH_RUNNING = True
+
+    script = SERVER_DIR.parent / "scripts" / "update-provider-usage.py"
+
+    def refresh() -> None:
+        global _PROVIDER_USAGE_REFRESH_RUNNING
+        try:
+            subprocess.run(
+                [sys.executable, str(script)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=1800,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        finally:
+            with _PROVIDER_USAGE_REFRESH_LOCK:
+                _PROVIDER_USAGE_REFRESH_RUNNING = False
+
+    threading.Thread(target=refresh, name="provider-usage-refresh", daemon=True).start()
+
+
+def _usage_cache_timestamp(payload: Dict[str, Any]) -> Optional[datetime]:
+    value = payload.get("updatedAt")
+    if not isinstance(value, str):
         return None
-    result: Dict[str, Any] = {}
-    for key in ("usedPercent", "resetsAt", "windowMinutes"):
-        if key in value and value[key] is not None:
-            result[key] = value[key]
-    return result or None
-
-
-def _sanitize_provider_usage(provider: str, payload: Any) -> Dict[str, Any]:
-    """Compatibility wrapper for the provider-agnostic contract."""
-    return normalize_codexbar_entry(provider, payload)
+    try:
+        updated_at = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        return updated_at.astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 def collect_provider_usage() -> Dict[str, Any]:
-    visible = set(visible_usage_providers())
+    catalog_snapshot = provider_usage_catalog_snapshot()
+    catalog = catalog_snapshot.get("providers", [])
+    catalog_available = catalog_snapshot.get("available") is True
+    selected = selected_usage_providers(catalog)
     cache_path = hermes_cache_dir() / "mission-control-provider-usage.json"
     cached: Optional[Dict[str, Any]] = None
     try:
@@ -561,62 +612,58 @@ def collect_provider_usage() -> Dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         pass
 
+    cached_providers: Dict[str, Dict[str, Any]] = {}
     if cached is not None:
-        providers = []
         for provider in cached["providers"]:
             normalized = normalize_cached_entry(provider)
-            if normalized is None or normalized.get("provider") not in visible or normalized.get("provider") == "nous":
+            if normalized is None or normalized.get("provider") == "nous":
                 continue
-            providers.append(apply_provider_display_config(normalized))
-    else:
-        executable = shutil.which("codexbar") or "/opt/homebrew/bin/codexbar"
-        providers = []
-        for provider in _USAGE_PROVIDERS:
-            if provider not in visible:
-                continue
-            try:
-                # Ollama's API path exposes no usage data; must read the web dashboard (Chrome cookies).
-                src_flag = ["--source", "web"] if provider == "ollama" else []
-                completed = subprocess.run(
-                    [executable, "usage", "--provider", provider, *src_flag, "--json", "--no-color"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                )
-                stdout, stderr, returncode = completed.stdout, completed.stderr, completed.returncode
-                try:
-                    payload = json.loads(stdout)
-                except json.JSONDecodeError:
-                    raw_output = stdout.strip()
-                    try:
-                        decoded = json.loads(raw_output)
-                        payload = json.loads(decoded) if isinstance(decoded, str) else decoded
-                    except (json.JSONDecodeError, TypeError):
-                        start = raw_output.find("[")
-                        end = raw_output.rfind("]")
-                        try:
-                            payload = json.loads(raw_output[start:end + 1]) if start >= 0 and end > start else None
-                        except json.JSONDecodeError:
-                            payload = None
-                result = apply_provider_display_config(_sanitize_provider_usage(provider, payload))
-                if returncode != 0 and result.get("available"):
-                    result["available"] = False
-                    result["error"] = "CodexBar returned a provider error."
-                providers.append(result)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                error = "CodexBar unavailable." if isinstance(exc, OSError) else "CodexBar timed out."
-                providers.append(apply_provider_display_config(unavailable_provider(provider, "cli", error)))
+            cached_providers[normalized["provider"]] = normalized
 
-    if "nous" in visible:
-        # Nous is deliberately not sent through CodexBar. The sidecar uses the
-        # access token already persisted by Hermes and never rotates a refresh token.
-        providers.append(apply_provider_display_config(collect_nous_portal_usage()))
+    if not catalog_available:
+        # Keep configured last-known-good cards visible during discovery outages,
+        # but never query CodexBar until its catalog is available again.
+        selected = tuple(
+            provider for provider in stored_usage_providers()
+            if provider == "nous" or provider in cached_providers
+        )
+    selected_codexbar = {provider for provider in selected if provider != "nous"} if catalog_available else set()
+
+    updated_at = _usage_cache_timestamp(cached) if cached is not None else None
+    cache_fresh = bool(
+        updated_at is not None
+        and 0 <= (datetime.now(timezone.utc) - updated_at).total_seconds() < _PROVIDER_USAGE_CACHE_TTL
+    )
+    refresh_needed = bool(
+        selected_codexbar
+        and (
+            not cache_fresh
+            or not selected_codexbar.issubset(cached_providers)
+        )
+    )
+    if refresh_needed:
+        _schedule_provider_usage_refresh()
+
+    providers = []
+    for provider in selected:
+        if provider == "nous":
+            # Nous is native to MC and remains outside the CodexBar collector.
+            providers.append(apply_provider_display_config(collect_nous_portal_usage()))
+            continue
+        normalized = cached_providers.get(provider)
+        if normalized is None:
+            normalized = unavailable_provider(provider, "cli", "Usage data is pending refresh.")
+        elif not cache_fresh:
+            normalized["stale"] = True
+        providers.append(apply_provider_display_config(normalized))
+
     return {
         "schemaVersion": 1,
         "success": any(provider.get("available") for provider in providers),
         "available": True,
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        "updatedAt": updated_at.isoformat() if updated_at is not None else datetime.now(timezone.utc).isoformat(),
+        "stale": bool(cached is not None and not cache_fresh),
+        "refreshing": _PROVIDER_USAGE_REFRESH_RUNNING,
         "providers": providers,
     }
 
@@ -2379,6 +2426,38 @@ class Handler(BaseHTTPRequestHandler):
         if self._reject_mutation_in_read_only_mode():
             return
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/local/provider-usage/selection":
+            if not _is_authorized(self):
+                self._unauthorized()
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                self._json(400, {"error": "bad_request", "detail": "Invalid Content-Length."})
+                return
+            if length > 32_768:
+                self._json(413, {"error": "bad_request", "detail": "Selection payload is too large."})
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            if set(payload) != {"selectedProviders"}:
+                self._json(400, {"error": "bad_request", "detail": "Expected selectedProviders only."})
+                return
+            catalog = provider_usage_catalog_snapshot().get("providers", [])
+            catalog_ids = {
+                item["provider"] for item in catalog
+                if isinstance(item, dict)
+                and isinstance(item.get("provider"), str)
+                and (item.get("enabled") is True or item.get("source") == "mission-control")
+            }
+            try:
+                selected = save_selected_usage_providers(payload.get("selectedProviders"), catalog_ids)
+            except ValueError as exc:
+                self._json(400, {"error": "bad_request", "detail": str(exc)})
+                return
+            self._json(200, {"selectedProviders": selected})
+            return
         if parsed.path == '/api/local/config':
             if not _is_authorized(self):
                 self._unauthorized()

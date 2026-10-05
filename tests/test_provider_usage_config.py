@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
 import provider_usage_config as usage_config
-from provider_usage_config import apply_provider_display_config, visible_usage_providers
+from provider_usage_config import apply_provider_display_config, stored_usage_providers, visible_usage_providers
 
 
 class ProviderUsageConfigTests(unittest.TestCase):
@@ -81,12 +81,12 @@ class ProviderUsageConfigTests(unittest.TestCase):
         os.environ["MISSION_CONTROL_USAGE_PROVIDERS"] = "codex,not-a-provider,nous"
         self.assertEqual(visible_usage_providers(), ("codex", "nous"))
 
-    def test_first_run_selects_legacy_cards_and_newly_enabled_catalog_entries(self):
+    def test_first_run_keeps_selection_bounded_to_legacy_cards(self):
         os.environ.pop("MISSION_CONTROL_USAGE_PROVIDERS", None)
         catalog = [
             {"provider": "codex", "enabled": True, "source": "codexbar"},
             {"provider": "ollama", "enabled": True, "source": "codexbar"},
-            {"provider": "openrouter", "enabled": False, "source": "codexbar"},
+            {"provider": "openrouter", "enabled": True, "source": "codexbar"},
             {"provider": "deepseek", "enabled": True, "source": "codexbar"},
             {"provider": "claude", "enabled": False, "source": "codexbar"},
             {"provider": "nous", "enabled": True, "source": "mission-control"},
@@ -94,7 +94,13 @@ class ProviderUsageConfigTests(unittest.TestCase):
 
         selected = usage_config.selected_usage_providers(catalog)
 
-        self.assertEqual(selected, ("codex", "ollama", "openrouter", "deepseek", "nous"))
+        self.assertEqual(selected, ("codex", "ollama", "openrouter", "nous"))
+
+    def test_saved_selection_survives_temporary_catalog_outage(self):
+        config_path = self._tmp / "hermes" / "mission-control-usage.json"
+        config_path.write_text(json.dumps({"selectedProviders": ["codex", "deepseek", "bad/id"]}), encoding="utf-8")
+
+        self.assertEqual(stored_usage_providers(), ("codex", "deepseek"))
 
     def test_saved_selection_is_deduplicated_and_unknown_ids_are_omitted(self):
         config_path = self._tmp / "hermes" / "mission-control-usage.json"

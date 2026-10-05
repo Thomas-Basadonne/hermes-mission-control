@@ -13,11 +13,41 @@ adapter.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+_SAFE_SOURCES = {"api", "oauth", "web", "cli", "local", "openai-web", "oauth+web", "codex-cli", "claude"}
+_SAFE_UNITS = {"%", "USD", "credits", "tokens", "requests", "messages", "count", "days", "hours"}
+_EMAIL = re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b")
+_SECRET_TEXT = re.compile(r"(?i)\b(?:bearer\s+\S+|(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S+)")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
-def _finite_number(value: Any) -> Optional[float | int]:
+
+def _safe_label(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    label = _CONTROL.sub(" ", value).strip()
+    if _SECRET_TEXT.search(label) or _EMAIL.search(label):
+        return None
+    label = label[:80].strip()
+    return label or None
+
+
+def _timestamp(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    except ValueError:
+        return None
+    return text
+
+
+def _finite_number(value: Any) -> Optional[float]:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -36,7 +66,11 @@ def _window(value: Any, window_id: str, label: str) -> Optional[Dict[str, Any]]:
             number = _finite_number(value[key])
             if number is not None:
                 result[key] = number
-        elif isinstance(value[key], str):
+        elif key == "resetsAt":
+            timestamp = _timestamp(value[key])
+            if timestamp is not None:
+                result[key] = timestamp
+        elif key == "unit" and isinstance(value[key], str) and value[key] in _SAFE_UNITS:
             result[key] = value[key]
     return result if len(result) > 2 else None
 
@@ -70,23 +104,26 @@ def normalize_codexbar_entry(provider: str, payload: Any) -> Dict[str, Any]:
     if not isinstance(item, dict):
         return unavailable_provider(provider, "cli", "Provider not returned by CodexBar.")
 
-    source = str(item.get("source") or "cli")
+    source_value = item.get("source")
+    source = source_value if isinstance(source_value, str) and source_value in _SAFE_SOURCES else "cli"
     error = item.get("error")
-    if isinstance(error, dict):
-        return unavailable_provider(provider, source, str(error.get("message") or "Provider unavailable."))
+    if error:
+        return unavailable_provider(provider, source, "CodexBar returned a provider error.")
 
     raw_usage = item.get("usage")
     usage: Dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
     result = _base_entry(provider, available=True, source=source)
-    result["updatedAt"] = usage.get("updatedAt") or result["updatedAt"]
+    result["updatedAt"] = _timestamp(usage.get("updatedAt")) or result["updatedAt"]
 
     labels = {
         "primary": "Session",
         "secondary": "Weekly",
         "tertiary": "Tertiary",
     }
+    rate_window_labels = usage.get("rateWindowLabels")
     for window_id, label in labels.items():
-        window = _window(usage.get(window_id), window_id, label)
+        custom_label = _safe_label(rate_window_labels.get(window_id)) if isinstance(rate_window_labels, dict) else None
+        window = _window(usage.get(window_id), window_id, custom_label or label)
         if window is not None:
             result["windows"].append(window)
 
@@ -135,9 +172,32 @@ def normalize_codexbar_entry(provider: str, payload: Any) -> Dict[str, Any]:
                     "unit": "count",
                 })
 
-    pace = item.get("pace")
-    if isinstance(pace, dict):
-        result["pace"] = pace
+    details = usage.get("details")
+    if isinstance(details, list):
+        for section_index, section in enumerate(details[:16]):
+            if not isinstance(section, dict) or not isinstance(section.get("rows"), list):
+                continue
+            for row_index, row in enumerate(section["rows"][:32]):
+                if len(result["metrics"]) >= 40:
+                    break
+                if not isinstance(row, dict):
+                    continue
+                label = _safe_label(row.get("label"))
+                value = row.get("value")
+                number = _finite_number(value)
+                if number is not None:
+                    metric_value: Any = number
+                elif isinstance(value, bool):
+                    metric_value = value
+                else:
+                    continue
+                if label:
+                    result["metrics"].append({
+                        "id": f"detail-{section_index}-{row_index}",
+                        "label": label,
+                        "value": metric_value,
+                    })
+
     return result
 
 

@@ -79,6 +79,10 @@ class TelemetryPathResolutionTests(unittest.TestCase):
                 "balances": [],
                 "metrics": [],
             },
+        ), patch.object(
+            local_telemetry_server,
+            "provider_usage_catalog_snapshot",
+            return_value={"available": False, "providers": [{"provider": "nous", "source": "mission-control", "enabled": True}]},
         ):
             result = local_telemetry_server.collect_provider_usage()
 
@@ -106,11 +110,15 @@ class TelemetryPathResolutionTests(unittest.TestCase):
         nous = {"provider": "nous", "available": True, "windows": [], "balances": [], "metrics": []}
 
         with patch.object(local_telemetry_server, "collect_nous_portal_usage", return_value=nous), \
+             patch.object(local_telemetry_server, "provider_usage_catalog_snapshot", return_value={
+                 "available": False,
+                 "providers": [{"provider": "nous", "source": "mission-control", "enabled": True}],
+             }), \
              patch.object(local_telemetry_server.subprocess, "run") as run:
             result = local_telemetry_server.collect_provider_usage()
 
         self.assertEqual([item["provider"] for item in result["providers"]], ["codex", "nous"])
-        run.assert_not_called()
+        self.assertFalse(any(call.args[0][1] == "usage" for call in run.call_args_list))
 
     def test_local_display_rules_filter_codex_balance_and_feature_reset_metric(self):
         config = self._hermes_home / "mission-control-usage.json"
