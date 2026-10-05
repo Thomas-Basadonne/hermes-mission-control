@@ -13,6 +13,10 @@ export function canCustomizeProviderUsageCatalog(
   return !loading && catalog?.available === true;
 }
 
+export function getProviderUsageCatalogPollDelay(catalog: { refreshing?: boolean }): number {
+  return catalog.refreshing ? 1_500 : 60_000;
+}
+
 export function createSerializedRefresh<T>(
   load: (signal: AbortSignal) => Promise<T>,
   onValue: (value: T) => void,

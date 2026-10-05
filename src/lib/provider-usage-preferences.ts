@@ -35,6 +35,15 @@ export type ProviderUsageCatalogRow = {
   canReorder: boolean;
 };
 
+export function getCodexBarEnableCommand(provider: string): string | null {
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(provider)) return null;
+  return `codexbar config enable --provider ${provider}`;
+}
+
+export function needsCodexBarSetupAlert(source: string | undefined, enabled: boolean | undefined): boolean {
+  return source === 'codexbar' && enabled === false;
+}
+
 export const DEFAULT_PROVIDER_USAGE_PREFERENCES: ProviderUsagePreferences = {
   hiddenProviders: [],
   hiddenFields: {},
@@ -182,9 +191,8 @@ export function getProviderUsageCatalogRows<T extends ProviderUsageCatalogEntry>
 export function getProviderUsageGridColumns(
   providerCount: number,
   columns: ProviderUsagePreferences['columns'],
-): string {
-  if (providerCount === 1) return 'grid-cols-1';
-  return ['grid-cols-1', 'grid-cols-1 sm:grid-cols-2', 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'][columns - 1];
+): ProviderUsagePreferences['columns'] {
+  return Math.max(1, Math.min(providerCount, columns)) as ProviderUsagePreferences['columns'];
 }
 
 export function hasProviderUsageSelectionChanges(draft: string[], saved: string[]): boolean {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   canCustomizeProviderUsageCatalog,
   createSerializedRefresh,
+  getProviderUsageCatalogPollDelay,
   preserveLastAvailableSnapshot,
 } from '../src/lib/provider-usage-refresh.ts';
 
@@ -67,5 +68,16 @@ assert.equal(
 );
 assert.equal(canCustomizeProviderUsageCatalog({ available: false }, false), false);
 assert.equal(canCustomizeProviderUsageCatalog({ available: true }, true), false);
+
+assert.equal(
+  getProviderUsageCatalogPollDelay({ available: true, refreshing: false }),
+  60_000,
+  'a settled catalog must be polled again so CodexBar changes become visible',
+);
+assert.equal(
+  getProviderUsageCatalogPollDelay({ available: true, refreshing: true }),
+  1_500,
+  'an active catalog discovery should be polled promptly',
+);
 
 console.log('provider usage refresh tests passed');

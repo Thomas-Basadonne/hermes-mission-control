@@ -17,6 +17,7 @@ import { useMissionControl } from '../../lib/mission-control-store';
 import {
   canCustomizeProviderUsageCatalog,
   createSerializedRefresh,
+  getProviderUsageCatalogPollDelay,
   preserveLastAvailableSnapshot,
 } from '../../lib/provider-usage-refresh';
 import {
@@ -32,6 +33,8 @@ import {
   getProviderUsageGridColumns,
   getProviderUsageSelectionForDisplay,
   getVisibleProviderUsageCards,
+  getCodexBarEnableCommand,
+  needsCodexBarSetupAlert,
   hasProviderUsageSelectionChanges,
   loadProviderUsagePreferences,
   moveProviderUsagePreference,
@@ -93,9 +96,9 @@ function formatRenews(value: string | null | undefined, locale: string, t: Trans
 }
 
 function windowLabel(window: MissionControlProviderUsageWindow, t: Translate): string {
-  if (window.id === 'primary') return t('provider.session');
-  if (window.id === 'secondary') return t('provider.weekly');
-  if (window.id === 'subscription') return t('provider.subscription');
+  if (window.id === 'primary' && window.label === 'Session') return t('provider.session');
+  if (window.id === 'secondary' && window.label === 'Weekly') return t('provider.weekly');
+  if (window.id === 'subscription' && window.label === 'Subscription') return t('provider.subscription');
   return window.label;
 }
 
@@ -180,12 +183,11 @@ function UsageGauge({
   );
 }
 
-export function ProviderCard({ provider, displayName, view = 'compact', locale, snapshotStale = false }: {
+export function ProviderCard({ provider, displayName, view = 'compact', locale }: {
   provider: MissionControlProviderUsage;
   displayName?: string;
   view?: ProviderUsageView;
   locale: string;
-  snapshotStale?: boolean;
 }) {
   const { t } = useI18n();
   const label = displayName ?? PROVIDER_LABELS[provider.provider] ?? provider.provider;
@@ -201,7 +203,7 @@ export function ProviderCard({ provider, displayName, view = 'compact', locale, 
   const displayMetrics = metrics.filter((metric) => !resetCreditMetrics.includes(metric));
   const featuredMetrics = metrics.filter((metric) => metric.featured && !resetCreditMetrics.includes(metric));
   const regularMetrics = metrics.filter((metric) => !metric.featured && !resetCreditMetrics.includes(metric));
-  const stale = provider.stale || snapshotStale;
+  const stale = provider.stale === true;
   const status = unavailable ? t('provider.unavailableShort') : stale ? t('provider.stale') : t('provider.available');
   const updated = formatDate(provider.updatedAt, locale);
   const renews = formatRenews(provider.renewsAt, locale, t);
@@ -323,6 +325,9 @@ export function ProviderUsagePanel() {
   const [providerSearch, setProviderSearch] = useState('');
   const [savingSelection, setSavingSelection] = useState(false);
   const [selectionError, setSelectionError] = useState<string | null>(null);
+  const [setupProvider, setSetupProvider] = useState<{ name: string; command: string | null } | null>(null);
+  const [commandCopied, setCommandCopied] = useState(false);
+  const [commandCopyFailed, setCommandCopyFailed] = useState(false);
   const [preferences, setPreferences] = useState(loadProviderUsagePreferences);
   const customizeButtonRef = useRef<HTMLButtonElement>(null);
   const customizeWasOpen = useRef(false);
@@ -337,19 +342,21 @@ export function ProviderUsagePanel() {
     let cancelled = false;
     let pollTimer: number | undefined;
     const load = async (forceRefresh = false) => {
+      let nextPollDelay = 60_000;
       setCatalogLoading(true);
       try {
         const catalog = await loadProviderUsageCatalog(storedToken || undefined, forceRefresh);
         if (cancelled) return;
         setProviderCatalog(catalog);
         setCatalogLoadFailed(!catalog.available || Boolean(catalog.error));
-        if (catalog.refreshing) {
-          pollTimer = window.setTimeout(() => void load(), 1_500);
-        }
+        nextPollDelay = getProviderUsageCatalogPollDelay(catalog);
       } catch {
         if (!cancelled) setCatalogLoadFailed(true);
       } finally {
-        if (!cancelled) setCatalogLoading(false);
+        if (!cancelled) {
+          setCatalogLoading(false);
+          pollTimer = window.setTimeout(() => void load(), nextPollDelay);
+        }
       }
     };
     const forceRefresh = forceCatalogRefreshRef.current;
@@ -480,7 +487,7 @@ export function ProviderUsagePanel() {
     ),
     preferences,
   );
-  const gridColumns = getProviderUsageGridColumns(visibleProviders.length, preferences.columns);
+  const gridMaxColumns = getProviderUsageGridColumns(visibleProviders.length, preferences.columns);
 
   return (
     <Card padding="none" role="region" aria-labelledby="provider-usage-title" aria-busy={usageRefreshInProgress}>
@@ -545,10 +552,12 @@ export function ProviderUsagePanel() {
       ) : (
         <>
           {refreshFailed ? <p className="flex items-center gap-2 border-b border-border-subtle px-3 py-2 text-xs text-warning" role="status" aria-live="polite"><AlertCircle size={13} aria-hidden="true" />{t('provider.refreshFailed')}</p> : null}
-          <div className={`grid ${gridColumns} gap-3 p-3`}>
-            {visibleProviders.length > 0 ? visibleProviders.map((provider) => (
-              <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} view={preferences.view} locale={numberLocale} snapshotStale={snapshot?.stale} />
-            )) : <p className="text-sm text-text-muted" role="status">{t('provider.noneSelected')}</p>}
+          <div className="provider-usage-grid-container p-3">
+            <div className="provider-usage-grid gap-3" data-max-columns={gridMaxColumns}>
+              {visibleProviders.length > 0 ? visibleProviders.map((provider) => (
+                <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} view={preferences.view} locale={numberLocale} />
+              )) : <p className="text-sm text-text-muted" role="status">{t('provider.noneSelected')}</p>}
+            </div>
           </div>
         </>
       )}
@@ -568,8 +577,48 @@ export function ProviderUsagePanel() {
         error={selectionError}
         onSearch={setProviderSearch}
         onToggle={toggleProvider}
+        onRequestSetup={(name, command) => {
+          setCustomizeOpen(false);
+          setSetupProvider({ name, command });
+          setCommandCopied(false);
+          setCommandCopyFailed(false);
+        }}
         onSave={() => void saveSelection()}
       />
+      <Modal
+        open={setupProvider !== null}
+        title={t('provider.codexBarSetupTitle')}
+        subtitle={setupProvider?.name}
+        onClose={() => {
+          setSetupProvider(null);
+          setCustomizeOpen(true);
+        }}
+        className="sm:max-w-[520px]"
+      >
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-text-muted">{t('provider.codexBarSetupDescription', { provider: setupProvider?.name ?? '' })}</p>
+          {setupProvider?.command ? (
+            <>
+              <pre className="overflow-x-auto rounded-lg border border-border-subtle bg-surface-raised p-3 text-sm text-text"><code>{setupProvider.command}</code></pre>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(setupProvider.command!);
+                    setCommandCopied(true);
+                    setCommandCopyFailed(false);
+                  } catch {
+                    setCommandCopied(false);
+                    setCommandCopyFailed(true);
+                  }
+                }}
+                className="self-start rounded-lg border border-border-subtle px-3 py-2 text-xs font-medium text-text hover:bg-surface-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+              >{t(commandCopied ? 'provider.codexBarCommandCopied' : 'provider.codexBarCopyCommand')}</button>
+              {commandCopyFailed ? <p className="text-xs text-warning" role="status">{t('provider.codexBarCopyFailed')}</p> : null}
+            </>
+          ) : null}
+        </div>
+      </Modal>
     </Card>
   );
 }
@@ -590,6 +639,7 @@ function ProviderUsageCustomizeDialog({
   error,
   onSearch,
   onToggle,
+  onRequestSetup,
   onSave,
 }: {
   open: boolean;
@@ -607,6 +657,7 @@ function ProviderUsageCustomizeDialog({
   error: string | null;
   onSearch: (value: string) => void;
   onToggle: (provider: string) => void;
+  onRequestSetup: (name: string, command: string | null) => void;
   onSave: () => void;
 }) {
   const { t } = useI18n();
@@ -709,7 +760,13 @@ function ProviderUsageCustomizeDialog({
                         type="checkbox"
                         checked={row.collectUsage}
                         disabled={!provider?.selectable || saving || catalogLoading}
-                        onChange={() => onToggle(row.provider)}
+                        onChange={() => {
+                          if (needsCodexBarSetupAlert(provider?.source, provider?.enabled)) {
+                            onRequestSetup(row.displayName, getCodexBarEnableCommand(row.provider));
+                            return;
+                          }
+                          onToggle(row.provider);
+                        }}
                         aria-label={`${t('provider.collectUsage')}: ${row.displayName}`}
                         className="h-4 w-4 shrink-0 accent-accent disabled:opacity-50"
                       />

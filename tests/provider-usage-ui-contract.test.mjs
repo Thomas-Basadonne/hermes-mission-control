@@ -100,7 +100,20 @@ try {
       snapshotStale: true,
     }),
   ));
-  assert.match(staleCard, /Codex: stale/);
+  assert.match(staleCard, /Codex: Available/);
+
+  const freshLabeledCard = renderToStaticMarkup(createElement(I18nProvider, null,
+    createElement(ProviderCard, {
+      provider: {
+        provider: 'deepseek', available: true, windows: [{
+          id: 'primary', label: 'Five-hour quota', usedPercent: 25,
+        }], balances: [], metrics: [],
+      },
+      locale: 'en-US',
+    }),
+  ));
+  assert.match(freshLabeledCard, /Five-hour quota/);
+  assert.doesNotMatch(freshLabeledCard, />Session</);
 
   console.log('provider catalog validation and stale card rendering contracts passed');
 } finally {

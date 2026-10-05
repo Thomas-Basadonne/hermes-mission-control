@@ -37,6 +37,29 @@
   --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+.provider-usage-grid-container {
+  container-name: provider-usage;
+  container-type: inline-size;
+}
+
+.provider-usage-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@container provider-usage (min-width: 44rem) {
+  .provider-usage-grid[data-max-columns="2"],
+  .provider-usage-grid[data-max-columns="3"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container provider-usage (min-width: 72rem) {
+  .provider-usage-grid[data-max-columns="3"] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 
 /* Runtime recovery surface for iOS foreground-resume failures. */
 .app-error-screen {

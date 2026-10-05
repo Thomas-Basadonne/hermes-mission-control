@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   applyProviderUsagePreferences,
+  getCodexBarEnableCommand,
+  needsCodexBarSetupAlert,
   getProviderUsageCatalogRows,
   getProviderUsageSelectionForDisplay,
   getVisibleProviderUsageCards,
@@ -132,12 +134,31 @@ test('catalog rows keep selected providers first, then enabled providers, and re
   assert.deepEqual(rows.map(({ canReorder }) => canReorder), [true, true, false, false, false]);
 });
 
+test('builds a copyable CodexBar enable command only for safe provider IDs', () => {
+  assert.equal(getCodexBarEnableCommand('ollama'), 'codexbar config enable --provider ollama');
+  assert.equal(getCodexBarEnableCommand('openrouter'), 'codexbar config enable --provider openrouter');
+  assert.equal(getCodexBarEnableCommand('bad;echo-pwned'), null);
+  assert.equal(getCodexBarEnableCommand(''), null);
+});
+
+test('requests setup guidance only for disabled CodexBar providers', () => {
+  assert.equal(needsCodexBarSetupAlert('codexbar', false), true);
+  assert.equal(needsCodexBarSetupAlert('codexbar', true), false);
+  assert.equal(needsCodexBarSetupAlert('mission-control', false), false);
+});
+
 test('a single visible provider always gets a full-width one-column layout', async () => {
   const preferences = await import('../src/lib/provider-usage-preferences.ts');
   assert.equal(typeof preferences.getProviderUsageGridColumns, 'function');
-  assert.equal(preferences.getProviderUsageGridColumns?.(1, 3), 'grid-cols-1');
-  assert.equal(preferences.getProviderUsageGridColumns?.(1, 2), 'grid-cols-1');
-  assert.equal(preferences.getProviderUsageGridColumns?.(2, 3), 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3');
+  assert.equal(preferences.getProviderUsageGridColumns?.(1, 3), 1);
+  assert.equal(preferences.getProviderUsageGridColumns?.(1, 2), 1);
+});
+
+test('uses no more grid columns than visible cards or the saved maximum', async () => {
+  const { getProviderUsageGridColumns } = await import('../src/lib/provider-usage-preferences.ts');
+  assert.equal(getProviderUsageGridColumns?.(2, 3), 2);
+  assert.equal(getProviderUsageGridColumns?.(3, 2), 2);
+  assert.equal(getProviderUsageGridColumns?.(3, 3), 3);
 });
 
 test('preserves a card preference while its collection draft is deselected', () => {
