@@ -25,6 +25,7 @@ import {
   applyProviderUsagePreferences,
   DEFAULT_PROVIDER_USAGE_PREFERENCES,
   getProviderUsageCatalogRows,
+  getProviderUsageGridColumns,
   getProviderUsageSelectionForDisplay,
   getVisibleProviderUsageCards,
   hasProviderUsageSelectionChanges,
@@ -444,7 +445,7 @@ export function ProviderUsagePanel() {
     getProviderUsageSelectionForDisplay(providers, providerCatalog?.selectedProviders ?? null),
     preferences,
   );
-  const gridColumns = ['grid-cols-1', 'grid-cols-1 sm:grid-cols-2', 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'][preferences.columns - 1];
+  const gridColumns = getProviderUsageGridColumns(visibleProviders.length, preferences.columns);
 
   return (
     <Card padding="none" role="region" aria-labelledby="provider-usage-title" aria-busy={refreshing}>
@@ -571,8 +572,9 @@ function ProviderUsageCustomizeDialog({
 }) {
   const { t } = useI18n();
   const providerCatalog = catalog ?? { available: false, providers: [], selectedProviders: [] };
-  const displayRows = getProviderUsageCatalogRows(providerCatalog.providers, draftSelection, preferences)
-    .filter((row) => row.collectUsage);
+  const catalogRows = getProviderUsageCatalogRows(providerCatalog.providers, draftSelection, preferences);
+  const selectedRows = catalogRows.filter((row) => row.collectUsage);
+  const displayRows = selectedRows;
   const [activeProviderId, setActiveProviderId] = useState(displayRows[0]?.provider ?? '');
   const [activeSection, setActiveSection] = useState<'providers' | 'display'>('providers');
   const activeDisplayRow = displayRows.find(({ provider }) => provider === activeProviderId) ?? displayRows[0];
@@ -632,7 +634,9 @@ function ProviderUsageCustomizeDialog({
         {activeSection === 'providers' ? (
           <fieldset className="min-w-0">
             <legend className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-muted">{t('provider.collectUsage')}</legend>
-            <p className="mb-3 text-xs text-text-subtle">{t('provider.disabledNote')}</p>
+            <p className="mb-2 text-xs text-text-subtle">{t('provider.disabledNote')}</p>
+            <p className="mb-2 text-xs text-text-subtle">{t('provider.collectionVisibilityHelp')}</p>
+            <p className="mb-3 text-xs text-text-subtle">{t('provider.reorderSelectedHelp')}</p>
             <label className="relative mb-3 block">
               <Search size={14} aria-hidden="true" className="absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle" />
               <input
@@ -650,7 +654,7 @@ function ProviderUsageCustomizeDialog({
               {catalogLoading ? <p className="p-3 text-sm text-text-muted">{t('provider.catalogLoading')}</p> : null}
               {filteredCatalogRows.map((row) => {
                 const provider = providerCatalog.providers.find((entry) => entry.provider === row.provider);
-                const rowIndex = getProviderUsageCatalogRows(providerCatalog.providers, draftSelection, preferences).findIndex(({ provider }) => provider === row.provider);
+                const rowIndex = selectedRows.findIndex(({ provider }) => provider === row.provider);
                 const unavailableReason = provider && !provider.enabled && provider.source === 'codexbar'
                   ? t('provider.enableInCodexBar')
                   : provider && !provider.selectable ? t('provider.adminRestricted') : '';
@@ -684,16 +688,18 @@ function ProviderUsageCustomizeDialog({
                       />
                       {t('provider.showCard')}
                     </label>
-                    <div className="ml-auto flex shrink-0 gap-1">
-                      {([-1, 1] as const).map((direction) => (
-                        <button key={direction} type="button" aria-label={t(direction < 0 ? 'provider.moveUp' : 'provider.moveDown', { provider: row.displayName })}
-                          disabled={direction < 0 ? rowIndex === 0 : rowIndex === getProviderUsageCatalogRows(providerCatalog.providers, draftSelection, preferences).length - 1}
-                          onClick={() => setPreferences((current) => ({ ...current, providerOrder: moveProviderUsagePreference(getProviderUsageCatalogRows(providerCatalog.providers, draftSelection, current).map((item) => item.provider), row.provider, direction) }))}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-muted hover:bg-surface-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
-                          {direction < 0 ? <ArrowUp size={14} aria-hidden="true" /> : <ArrowDown size={14} aria-hidden="true" />}
-                        </button>
-                      ))}
-                    </div>
+                    {row.canReorder ? (
+                      <div className="ml-auto flex shrink-0 gap-1">
+                        {([-1, 1] as const).map((direction) => (
+                          <button key={direction} type="button" aria-label={t(direction < 0 ? 'provider.moveUp' : 'provider.moveDown', { provider: row.displayName })}
+                            disabled={direction < 0 ? rowIndex === 0 : rowIndex === selectedRows.length - 1}
+                            onClick={() => setPreferences((current) => ({ ...current, providerOrder: moveProviderUsagePreference(getProviderUsageCatalogRows(providerCatalog.providers, draftSelection, current).filter((item) => item.collectUsage).map((item) => item.provider), row.provider, direction) }))}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle text-text-muted hover:bg-surface-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+                            {direction < 0 ? <ArrowUp size={14} aria-hidden="true" /> : <ArrowDown size={14} aria-hidden="true" />}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                     {row.showCardDisabled ? <p id={showCardHelpId} className="basis-full text-[11px] text-text-subtle">{t('provider.showCardRequiresCollection')}</p> : null}
                   </div>
                 );
@@ -702,69 +708,70 @@ function ProviderUsageCustomizeDialog({
             </div>
           </fieldset>
         ) : (
-          <div className="flex flex-col gap-4">
-            <label className="block max-w-sm text-xs font-medium text-text-muted">
-              <span className="mb-1.5 block">{t('provider.displayProvider')}</span>
-              <select
-                value={activeDisplayRow?.provider ?? ''}
-                onChange={(event) => setActiveProviderId(event.target.value)}
-                disabled={displayRows.length === 0}
-                className="w-full rounded-lg border border-border-subtle bg-surface-raised px-3 py-2 text-sm text-text disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-              >
-                {displayRows.map((row) => <option key={row.provider} value={row.provider}>{row.displayName}</option>)}
-              </select>
-            </label>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <fieldset className="min-w-0">
-                <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">{t('provider.view')}</legend>
-                <div className="flex flex-col gap-2">
-                  {(['compact', 'detailed'] as const).map((view) => <label key={view} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors ${preferences.view === view ? 'border-accent/40 bg-accent/5' : 'border-border-subtle hover:bg-surface-hover'}`}>
-                    <input className="mt-0.5 shrink-0" type="radio" name="provider-usage-view" checked={preferences.view === view} onChange={() => setPreferences((current) => ({ ...current, view }))} />
-                    <span className="min-w-0"><span className="block text-sm font-medium text-text">{t(`provider.view.${view}`)}</span><span className="mt-0.5 block text-xs text-text-subtle">{t(`provider.view.${view}Help`)}</span></span>
-                  </label>)}
-                </div>
-              </fieldset>
-              <fieldset className="min-w-0">
-                <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">{t('provider.layout')}</legend>
-                <div className="grid grid-cols-3 gap-2">
-                  {([1, 2, 3] as const).map((columns) => <label key={columns} className={`flex min-h-12 cursor-pointer items-center justify-center gap-2 rounded-xl border px-2 py-2 text-xs font-medium transition-colors ${preferences.columns === columns ? 'border-accent/40 bg-accent/5 text-text' : 'border-border-subtle text-text-muted hover:bg-surface-hover'}`}>
-                    <input type="radio" name="provider-usage-columns" checked={preferences.columns === columns} onChange={() => setPreferences((current) => ({ ...current, columns }))} />
-                    {t('provider.columnsOption', { count: columns })}
-                  </label>)}
-                </div>
-              </fieldset>
-              <fieldset className="min-w-0 sm:col-span-2">
-                <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
-                  {t('provider.fields')}{activeProviderLabel ? ` · ${activeProviderLabel}` : ''}
-                </legend>
-                {!activeDisplayRow ? <p className="text-sm text-text-muted">{t('provider.selectProviderForFields')}</p> : null}
-                {activeDisplayRow && !activeProvider ? <p className="text-sm text-text-muted">{t('provider.noConfigurableFields')}</p> : null}
-                {activeProvider && !activeFields ? <p className="text-sm text-text-muted">{t('provider.noConfigurableFields')}</p> : null}
-                {activeProvider ? FIELD_GROUPS.map(({ id, label }) => {
-                  const fields = activeProvider[id] ?? [];
-                  if (fields.length === 0) return null;
-                  const hiddenFields = new Set(preferences.hiddenFields[activeProvider.provider]?.[id] ?? []);
-                  return (
-                    <div key={id} className="mb-4 last:mb-0">
-                      <h3 className="mb-2 text-xs font-medium text-text-muted">{t(label)}</h3>
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        {fields.map((field) => (
-                          <label key={field.id} className="inline-flex min-w-0 items-center gap-2 rounded-lg border border-border-subtle px-3 py-2 text-sm text-text">
-                            <input
-                              type="checkbox"
-                              checked={!hiddenFields.has(field.id)}
-                              onChange={(event) => setPreferences((current) => setProviderUsageFieldVisible(current, activeProvider.provider, id, field.id, event.target.checked))}
-                              className="h-4 w-4 shrink-0 accent-accent"
-                            />
-                            <span className="truncate">{field.label}</span>
-                          </label>
-                        ))}
-                      </div>
+          <div className="flex flex-col gap-5">
+            <fieldset className="min-w-0">
+              <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">{t('provider.view')}</legend>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {(['compact', 'detailed'] as const).map((view) => <label key={view} className={`flex min-h-[4.5rem] cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors ${preferences.view === view ? 'border-accent/40 bg-accent/5' : 'border-border-subtle hover:bg-surface-hover'}`}>
+                  <input className="mt-0.5 shrink-0" type="radio" name="provider-usage-view" checked={preferences.view === view} onChange={() => setPreferences((current) => ({ ...current, view }))} />
+                  <span className="min-w-0"><span className="block text-sm font-medium text-text">{t(`provider.view.${view}`)}</span><span className="mt-0.5 block text-xs text-text-subtle">{t(`provider.view.${view}Help`)}</span></span>
+                </label>)}
+              </div>
+            </fieldset>
+            <fieldset className="min-w-0">
+              <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">{t('provider.layout')}</legend>
+              <div className="grid grid-cols-3 gap-2">
+                {([1, 2, 3] as const).map((columns) => <label key={columns} className={`relative flex min-h-[4.75rem] cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border px-2 py-2 transition-colors ${preferences.columns === columns ? 'border-accent/40 bg-accent/5 text-text' : 'border-border-subtle text-text-muted hover:bg-surface-hover'}`}>
+                  <input className="absolute left-3 top-3 accent-accent" type="radio" name="provider-usage-columns" checked={preferences.columns === columns} onChange={() => setPreferences((current) => ({ ...current, columns }))} />
+                  <span aria-hidden="true" className="flex h-5 w-12 gap-1">
+                    {Array.from({ length: columns }, (_, index) => <span key={index} className={`flex-1 rounded-sm border ${preferences.columns === columns ? 'border-accent/50 bg-accent/20' : 'border-border-subtle bg-surface-raised'}`} />)}
+                  </span>
+                  <span className="text-xs font-medium">{t('provider.columnsOption', { count: columns })}</span>
+                </label>)}
+              </div>
+            </fieldset>
+            <fieldset className="min-w-0 border-t border-border-subtle pt-4">
+              <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
+                {t('provider.fields')}{activeProviderLabel ? ` · ${activeProviderLabel}` : ''}
+              </legend>
+              <label className="mb-3 block max-w-sm text-xs font-medium text-text-muted">
+                <span className="mb-1.5 block">{t('provider.displayProvider')}</span>
+                <select
+                  value={activeDisplayRow?.provider ?? ''}
+                  onChange={(event) => setActiveProviderId(event.target.value)}
+                  disabled={displayRows.length === 0}
+                  className="w-full rounded-lg border border-border-subtle bg-surface-raised px-3 py-2 text-sm text-text disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                >
+                  {displayRows.map((row) => <option key={row.provider} value={row.provider}>{row.displayName}</option>)}
+                </select>
+              </label>
+              {!activeDisplayRow ? <p className="text-sm text-text-muted">{t('provider.selectProviderForFields')}</p> : null}
+              {activeDisplayRow && !activeProvider ? <p className="text-sm text-text-muted">{t('provider.noConfigurableFields')}</p> : null}
+              {activeProvider && !activeFields ? <p className="text-sm text-text-muted">{t('provider.noConfigurableFields')}</p> : null}
+              {activeProvider ? FIELD_GROUPS.map(({ id, label }) => {
+                const fields = activeProvider[id] ?? [];
+                if (fields.length === 0) return null;
+                const hiddenFields = new Set(preferences.hiddenFields[activeProvider.provider]?.[id] ?? []);
+                return (
+                  <div key={id} className="mb-3 last:mb-0 rounded-xl border border-border-subtle bg-surface-raised/30 p-3">
+                    <h3 className="mb-2 text-xs font-semibold text-text-muted">{t(label)}</h3>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {fields.map((field) => (
+                        <label key={field.id} className="inline-flex min-w-0 items-center gap-2 rounded-lg border border-border-subtle px-3 py-2 text-sm text-text">
+                          <input
+                            type="checkbox"
+                            checked={!hiddenFields.has(field.id)}
+                            onChange={(event) => setPreferences((current) => setProviderUsageFieldVisible(current, activeProvider.provider, id, field.id, event.target.checked))}
+                            className="h-4 w-4 shrink-0 accent-accent"
+                          />
+                          <span className="truncate">{field.label}</span>
+                        </label>
+                      ))}
                     </div>
-                  );
-                }) : null}
-              </fieldset>
-            </div>
+                  </div>
+                );
+              }) : null}
+            </fieldset>
           </div>
         )}
       </div>

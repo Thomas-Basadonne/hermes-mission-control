@@ -267,6 +267,8 @@
   "provider.saveSelection": "Salva selezione",
   "provider.searchProviders": "Cerca provider",
   "provider.disabledNote": "I provider disabilitati in CodexBar restano spenti. Abilitali lì prima di selezionarli qui.",
+  "provider.collectionVisibilityHelp": "Raccogli dati interroga e aggiorna la cache. Mostra scheda controlla solo questa dashboard: la raccolta continua anche se la scheda è nascosta.",
+  "provider.reorderSelectedHelp": "Le frecce riordinano le schede dei provider selezionati nella Panoramica.",
   "provider.enableInCodexBar": "Abilita in CodexBar per raccogliere i dati",
   "provider.adminRestricted": "Bloccato dall'allowlist amministrativa",
   "provider.enabledInCodexBar": "Abilitato in CodexBar",

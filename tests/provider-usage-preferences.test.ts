@@ -93,9 +93,9 @@ test('keeps collection, presentation, and overview eligibility separate for cata
     view: 'compact' as const,
   };
   const catalog = [
-    { provider: 'codex', displayName: 'Codex' },
-    { provider: 'nous', displayName: 'Nous Portal' },
-    { provider: 'ollama', displayName: 'Ollama Cloud' },
+    { provider: 'codex', displayName: 'Codex', enabled: true, selectable: true, source: 'codexbar' },
+    { provider: 'nous', displayName: 'Nous Portal', enabled: true, selectable: true, source: 'mission-control' },
+    { provider: 'ollama', displayName: 'Ollama Cloud', enabled: false, selectable: true, source: 'codexbar' },
   ];
   const usage = [
     { provider: 'codex', available: true, windows: [], balances: [], metrics: [] },
@@ -104,11 +104,40 @@ test('keeps collection, presentation, and overview eligibility separate for cata
   ];
 
   assert.deepEqual(getProviderUsageCatalogRows(catalog, ['codex'], preferences), [
-    { provider: 'nous', displayName: 'Nous Portal', collectUsage: false, showCard: false, showCardDisabled: true },
-    { provider: 'codex', displayName: 'Codex', collectUsage: true, showCard: true, showCardDisabled: false },
-    { provider: 'ollama', displayName: 'Ollama Cloud', collectUsage: false, showCard: true, showCardDisabled: true },
+    { provider: 'codex', displayName: 'Codex', collectUsage: true, showCard: true, showCardDisabled: false, canReorder: false },
+    { provider: 'nous', displayName: 'Nous Portal', collectUsage: false, showCard: false, showCardDisabled: true, canReorder: false },
+    { provider: 'ollama', displayName: 'Ollama Cloud', collectUsage: false, showCard: true, showCardDisabled: true, canReorder: false },
   ]);
   assert.deepEqual(getVisibleProviderUsageCards(usage, ['codex', 'nous', 'ollama'], preferences).map(({ provider }) => provider), ['codex', 'ollama']);
+});
+
+test('catalog rows keep selected providers first, then enabled providers, and reorder only selected cards', () => {
+  const catalog = [
+    { provider: 'disabled', displayName: 'Disabled', enabled: false, selectable: true, source: 'codexbar' },
+    { provider: 'ready-b', displayName: 'Ready B', enabled: true, selectable: true, source: 'codexbar' },
+    { provider: 'selected-disabled', displayName: 'Selected disabled', enabled: false, selectable: true, source: 'codexbar' },
+    { provider: 'ready-a', displayName: 'Ready A', enabled: true, selectable: true, source: 'codexbar' },
+    { provider: 'selected-ready', displayName: 'Selected ready', enabled: true, selectable: true, source: 'codexbar' },
+  ];
+  const preferences = {
+    hiddenProviders: [], hiddenFields: {}, providerOrder: ['selected-ready', 'selected-disabled'],
+    columns: 3 as const, view: 'compact' as const,
+  };
+
+  const rows = getProviderUsageCatalogRows(catalog, ['selected-disabled', 'selected-ready'], preferences);
+
+  assert.deepEqual(rows.map(({ provider }) => provider), [
+    'selected-ready', 'selected-disabled', 'ready-b', 'ready-a', 'disabled',
+  ]);
+  assert.deepEqual(rows.map(({ canReorder }) => canReorder), [true, true, false, false, false]);
+});
+
+test('a single visible provider always gets a full-width one-column layout', async () => {
+  const preferences = await import('../src/lib/provider-usage-preferences.ts');
+  assert.equal(typeof preferences.getProviderUsageGridColumns, 'function');
+  assert.equal(preferences.getProviderUsageGridColumns?.(1, 3), 'grid-cols-1');
+  assert.equal(preferences.getProviderUsageGridColumns?.(1, 2), 'grid-cols-1');
+  assert.equal(preferences.getProviderUsageGridColumns?.(2, 3), 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3');
 });
 
 test('preserves a card preference while its collection draft is deselected', () => {
@@ -119,10 +148,10 @@ test('preserves a card preference while its collection draft is deselected', () 
     columns: 3 as const,
     view: 'compact' as const,
   };
-  const catalog = [{ provider: 'codex', displayName: 'Codex' }];
+  const catalog = [{ provider: 'codex', displayName: 'Codex', enabled: true, selectable: true }];
 
   assert.deepEqual(getProviderUsageCatalogRows(catalog, [], preferences), [
-    { provider: 'codex', displayName: 'Codex', collectUsage: false, showCard: true, showCardDisabled: true },
+    { provider: 'codex', displayName: 'Codex', collectUsage: false, showCard: true, showCardDisabled: true, canReorder: false },
   ]);
   assert.deepEqual(preferences.hiddenProviders, []);
 });

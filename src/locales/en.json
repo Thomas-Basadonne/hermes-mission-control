@@ -267,6 +267,8 @@
   "provider.saveSelection": "Save selection",
   "provider.searchProviders": "Search providers",
   "provider.disabledNote": "Providers disabled in CodexBar stay off. Enable them there before selecting them here.",
+  "provider.collectionVisibilityHelp": "Collect usage fetches and caches data. Show card only controls this dashboard; collection keeps running while the card is hidden.",
+  "provider.reorderSelectedHelp": "Arrows reorder selected provider cards on the Overview.",
   "provider.enableInCodexBar": "Enable in CodexBar to collect",
   "provider.adminRestricted": "Blocked by administrator allowlist",
   "provider.enabledInCodexBar": "Enabled in CodexBar",

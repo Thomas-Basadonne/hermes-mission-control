@@ -22,6 +22,8 @@ type ProviderUsageEntry = {
 type ProviderUsageCatalogEntry = {
   provider: string;
   displayName: string;
+  enabled: boolean;
+  selectable: boolean;
 };
 
 export type ProviderUsageCatalogRow = {
@@ -30,6 +32,7 @@ export type ProviderUsageCatalogRow = {
   collectUsage: boolean;
   showCard: boolean;
   showCardDisabled: boolean;
+  canReorder: boolean;
 };
 
 export const DEFAULT_PROVIDER_USAGE_PREFERENCES: ProviderUsagePreferences = {
@@ -139,19 +142,49 @@ export function getProviderUsageCatalogRows<T extends ProviderUsageCatalogEntry>
   preferences: ProviderUsagePreferences,
 ): ProviderUsageCatalogRow[] {
   const selected = new Set(draftSelection);
+  const order = new Map(preferences.providerOrder.map((provider, index) => [provider, index]));
   const seen = new Set<string>();
-  return orderProviderUsage(catalog, preferences).flatMap((provider) => {
-    if (!provider.provider || seen.has(provider.provider)) return [];
-    seen.add(provider.provider);
-    const collectUsage = selected.has(provider.provider);
-    return [{
-      provider: provider.provider,
-      displayName: provider.displayName,
-      collectUsage,
-      showCard: !preferences.hiddenProviders.includes(provider.provider),
-      showCardDisabled: !collectUsage,
-    }];
-  });
+  return catalog
+    .map((provider, index) => ({ provider, index }))
+    .filter(({ provider }) => {
+      if (!provider.provider || seen.has(provider.provider)) return false;
+      seen.add(provider.provider);
+      return true;
+    })
+    .sort((a, b) => {
+      const aSelected = selected.has(a.provider.provider);
+      const bSelected = selected.has(b.provider.provider);
+      const aReady = a.provider.selectable && a.provider.enabled;
+      const bReady = b.provider.selectable && b.provider.enabled;
+      const aGroup = aSelected ? 0 : aReady ? 1 : 2;
+      const bGroup = bSelected ? 0 : bReady ? 1 : 2;
+      if (aGroup !== bGroup) return aGroup - bGroup;
+      if (aGroup === 0) {
+        return (order.get(a.provider.provider) ?? Number.MAX_SAFE_INTEGER)
+          - (order.get(b.provider.provider) ?? Number.MAX_SAFE_INTEGER)
+          || a.index - b.index;
+      }
+      return a.index - b.index;
+    })
+    .map(({ provider }) => {
+      const collectUsage = selected.has(provider.provider);
+      return {
+        provider: provider.provider,
+        displayName: provider.displayName,
+        collectUsage,
+        showCard: !preferences.hiddenProviders.includes(provider.provider),
+        showCardDisabled: !collectUsage,
+        canReorder: collectUsage && selected.size > 1,
+      };
+    });
+}
+
+export function getProviderUsageGridColumns(
+  providerCount: number,
+  columns: ProviderUsagePreferences['columns'],
+): string {
+  if (providerCount === 1) return 'grid-cols-1';
+  return ['grid-cols-1', 'grid-cols-1 sm:grid-cols-2', 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'][columns - 1];
 }
 
 export function hasProviderUsageSelectionChanges(draft: string[], saved: string[]): boolean {
