@@ -20,16 +20,16 @@ spec.loader.exec_module(updater)
 class SnapshotUpdaterTests(unittest.TestCase):
     def test_main_uses_snapshot_manager_for_selected_codexbar_providers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cache = Path(tmp)
+            cache_path = Path(tmp) / "mission-control-provider-usage.json"
             catalog = [{"provider": "deepseek", "source": "codexbar"}, {"provider": "nous", "source": "mission-control"}]
             with (
-                patch.object(updater, "hermes_cache_dir", return_value=cache),
+                patch.object(updater, "provider_usage_snapshot_path", return_value=cache_path),
                 patch.object(updater, "discover_codexbar_catalog", return_value=catalog),
                 patch.object(updater, "selected_usage_providers", return_value=("deepseek", "nous")),
                 patch.object(updater, "refresh_provider_usage_snapshot", return_value=True) as refresh,
             ):
                 self.assertEqual(updater.main(), 0)
-            refresh.assert_called_once_with(cache / "mission-control-provider-usage.json", ("deepseek",), ANY)
+            refresh.assert_called_once_with(cache_path, ("deepseek",), ANY)
 
 
 if __name__ == "__main__":

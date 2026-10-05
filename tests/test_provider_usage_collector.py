@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -48,8 +49,10 @@ class ProviderUsageCollectorTests(unittest.TestCase):
         self.assertEqual(results[1]["provider"], "ollama")
         self.assertEqual(run.call_count, 2)
         calls = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(calls[0], ["/test/codexbar", "usage", "--provider", "deepseek", "--json", "--no-color"])
-        self.assertEqual(calls[1], ["/test/codexbar", "usage", "--provider", "ollama", "--source", "web", "--json", "--no-color"])
+        self.assertCountEqual(calls, [
+            ["/test/codexbar", "usage", "--provider", "deepseek", "--json", "--no-color"],
+            ["/test/codexbar", "usage", "--provider", "ollama", "--source", "web", "--json", "--no-color"],
+        ])
         self.assertNotIn("must-not-leak", repr(results))
 
     def test_unlisted_and_native_ids_never_reach_codexbar_argv(self) -> None:
@@ -71,13 +74,64 @@ class ProviderUsageCollectorTests(unittest.TestCase):
             {"provider": "deepseek", "source": "codexbar"},
             {"provider": "claude", "source": "codexbar"},
         ]
+        def run_for_provider(arguments: list[str], **_kwargs: object) -> object:
+            if arguments[3] == "deepseek":
+                return successful
+            raise OSError("private path")
+
         with patch("provider_usage_collector.shutil.which", return_value="/test/codexbar"), \
-             patch("provider_usage_collector.subprocess.run", side_effect=[successful, OSError("private path")]):
+             patch("provider_usage_collector.subprocess.run", side_effect=run_for_provider):
             results = collect_codexbar_usage(("deepseek", "claude"), catalog)
 
         self.assertTrue(results[0]["available"])
         self.assertFalse(results[1]["available"])
         self.assertNotIn("private path", repr(results))
+
+    def test_unexpected_worker_error_preserves_successful_sibling_result(self) -> None:
+        successful = {"provider": "deepseek", "available": True, "windows": [], "balances": [], "metrics": []}
+        catalog = [
+            {"provider": "deepseek", "source": "codexbar"},
+            {"provider": "claude", "source": "codexbar"},
+        ]
+
+        def collect(provider: str, _catalog_ids: set[str]) -> dict[str, object]:
+            if provider == "deepseek":
+                return successful
+            raise UnicodeDecodeError("utf-8", b"\\xff", 0, 1, "invalid start byte")
+
+        with patch("provider_usage_collector.collect_codexbar_provider", side_effect=collect):
+            results = collect_codexbar_usage(("deepseek", "claude"), catalog)
+
+        self.assertEqual(results[0], successful)
+        self.assertFalse(results[1]["available"])
+        self.assertNotIn("UnicodeDecodeError", repr(results))
+
+    def test_selected_batch_uses_bounded_parallel_collection_and_preserves_order(self) -> None:
+        providers = tuple(f"provider-{index}" for index in range(10))
+        catalog = [{"provider": provider, "source": "codexbar"} for provider in providers]
+        lock = threading.Lock()
+        release = threading.Event()
+        active = 0
+        peak = 0
+
+        def collect(provider: str, _catalog_ids: set[str]) -> dict[str, object]:
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+                if peak == 5:
+                    release.set()
+            if not release.wait(timeout=1):
+                release.set()
+            with lock:
+                active -= 1
+            return {"provider": provider, "available": False}
+
+        with patch("provider_usage_collector.collect_codexbar_provider", side_effect=collect):
+            results = collect_codexbar_usage(providers, catalog)
+
+        self.assertEqual(peak, 5)
+        self.assertEqual([item["provider"] for item in results], list(providers))
 
     def test_raw_error_source_timestamp_unit_and_pace_are_not_echoed(self) -> None:
         payload = [{

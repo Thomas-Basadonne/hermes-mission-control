@@ -6,12 +6,14 @@ import json
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from provider_usage_contract import normalize_codexbar_entry, unavailable_provider
 
 _CODEXBAR_FALLBACK = "/opt/homebrew/bin/codexbar"
 _PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_MAX_CONCURRENT_PROVIDER_REFRESHES = 5
 
 
 def _decode_payload(stdout: str) -> Any:
@@ -78,8 +80,15 @@ def collect_codexbar_usage(
 ) -> list[dict[str, Any]]:
     """Collect selected CodexBar providers independently; Nous is native to MC."""
     catalog_ids = _codexbar_provider_ids(catalog)
-    return [
-        collect_codexbar_provider(provider, catalog_ids)
-        for provider in providers
-        if provider != "nous"
-    ]
+    selected = tuple(provider for provider in providers if provider != "nous")
+    if not selected:
+        return []
+
+    def collect_one(provider: str) -> dict[str, Any]:
+        try:
+            return collect_codexbar_provider(provider, catalog_ids)
+        except Exception:
+            return unavailable_provider(provider, "cli", "CodexBar provider refresh failed.")
+
+    with ThreadPoolExecutor(max_workers=min(_MAX_CONCURRENT_PROVIDER_REFRESHES, len(selected))) as executor:
+        return list(executor.map(collect_one, selected))

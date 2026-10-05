@@ -47,7 +47,6 @@ if str(SERVER_DIR) not in sys.path:
 from hermes_paths import (
     display_home_path,
     get_hermes_home as resolve_hermes_home,
-    hermes_cache_dir,
     hermes_core_dir,
     hermes_logs_dir,
     hermes_skills_dir,
@@ -71,6 +70,8 @@ from provider_usage_config import (
     usage_provider_selectable,
 )
 from provider_usage_contract import normalize_cached_entry, unavailable_provider
+from provider_usage_paths import provider_usage_snapshot_path
+from provider_usage_snapshot import providers_due_for_refresh, provider_usage_entry_is_stale
 
 from mission_control_agents import (
     load_agent_trace_snapshot,
@@ -474,7 +475,6 @@ _PROVIDER_USAGE_CATALOG_CACHE_AT = 0.0
 _PROVIDER_USAGE_CATALOG_TTL = 300.0
 _PROVIDER_USAGE_REFRESH_LOCK = threading.Lock()
 _PROVIDER_USAGE_REFRESH_RUNNING = False
-_PROVIDER_USAGE_CACHE_TTL = 300.0
 
 
 def _provider_usage_catalog_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
@@ -603,7 +603,7 @@ def collect_provider_usage() -> Dict[str, Any]:
     catalog = catalog_snapshot.get("providers", [])
     catalog_available = catalog_snapshot.get("available") is True
     selected = selected_usage_providers(catalog)
-    cache_path = hermes_cache_dir() / "mission-control-provider-usage.json"
+    cache_path = provider_usage_snapshot_path()
     cached: Optional[Dict[str, Any]] = None
     try:
         candidate = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -627,20 +627,10 @@ def collect_provider_usage() -> Dict[str, Any]:
             provider for provider in stored_usage_providers()
             if provider == "nous" or provider in cached_providers
         )
-    selected_codexbar = {provider for provider in selected if provider != "nous"} if catalog_available else set()
+    selected_codexbar = tuple(provider for provider in selected if provider != "nous") if catalog_available else ()
 
     updated_at = _usage_cache_timestamp(cached) if cached is not None else None
-    cache_fresh = bool(
-        updated_at is not None
-        and 0 <= (datetime.now(timezone.utc) - updated_at).total_seconds() < _PROVIDER_USAGE_CACHE_TTL
-    )
-    refresh_needed = bool(
-        selected_codexbar
-        and (
-            not cache_fresh
-            or not selected_codexbar.issubset(cached_providers)
-        )
-    )
+    refresh_needed = bool(selected_codexbar and providers_due_for_refresh(cached or {}, selected_codexbar))
     if refresh_needed:
         _schedule_provider_usage_refresh()
 
@@ -653,8 +643,11 @@ def collect_provider_usage() -> Dict[str, Any]:
         normalized = cached_providers.get(provider)
         if normalized is None:
             normalized = unavailable_provider(provider, "cli", "Usage data is pending refresh.")
-        elif not cache_fresh:
-            normalized["stale"] = True
+            normalized["updatedAt"] = None
+            normalized["lastAttemptAt"] = None
+            normalized["stale"] = False
+        else:
+            normalized["stale"] = provider_usage_entry_is_stale(provider, normalized)
         providers.append(apply_provider_display_config(normalized))
 
     return {
@@ -662,7 +655,7 @@ def collect_provider_usage() -> Dict[str, Any]:
         "success": any(provider.get("available") for provider in providers),
         "available": True,
         "updatedAt": updated_at.isoformat() if updated_at is not None else datetime.now(timezone.utc).isoformat(),
-        "stale": bool(cached is not None and not cache_fresh),
+        "stale": any(provider.get("stale") for provider in providers),
         "refreshing": _PROVIDER_USAGE_REFRESH_RUNNING,
         "providers": providers,
     }

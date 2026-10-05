@@ -50,10 +50,17 @@ def _is_stale(provider: str, entry: dict[str, Any], now: datetime) -> bool:
     if not entry.get("available"):
         return bool(entry.get("stale", False))
     updated_at = _parse_timestamp(entry.get("updatedAt"))
-    if updated_at is None:
+    if updated_at is None or updated_at > now:
         return True
     max_age = SOURCE_LIMITS[_source_for(provider)]["stale_after_seconds"]
     return bool(entry.get("stale", False)) or now - updated_at > timedelta(seconds=max_age)
+
+
+def provider_usage_entry_is_stale(
+    provider: str, entry: dict[str, Any], *, now: datetime | None = None
+) -> bool:
+    """Evaluate freshness from this provider's last successful update."""
+    return _is_stale(provider, entry, _now(now))
 
 
 def providers_due_for_refresh(
@@ -78,7 +85,7 @@ def providers_due_for_refresh(
             continue
         interval = SOURCE_LIMITS[_source_for(provider)]["min_interval_seconds"]
         elapsed = (current - last_attempt).total_seconds()
-        if elapsed < -interval or elapsed >= interval:
+        if elapsed < 0 or elapsed >= interval:
             due.append(provider)
     return tuple(due)
 

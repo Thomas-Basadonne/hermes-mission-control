@@ -299,7 +299,7 @@ Field presentation can be customized independently in `~/.hermes/mission-control
 
 ### Data sources and cache behavior
 
-1. **CodexBar providers:** discovery runs `codexbar config providers --json` and caches sanitized catalog metadata for five minutes. The collector invokes CodexBar only for selected, enabled IDs, one provider per command; newly discovered or disabled providers are never activated automatically. The usage cache is `~/.hermes/cache/mission-control-provider-usage.json`; refreshes run asynchronously and preserve the last-known-good snapshot on failure.
+1. **CodexBar providers:** discovery runs `codexbar config providers --json` and caches sanitized catalog metadata for five minutes. The collector invokes CodexBar only for selected, enabled IDs, with at most five provider commands in flight; newly discovered or disabled providers are never activated automatically. The usage cache is `<Hermes cache>/mission-control-provider-usage.json`; refreshes run asynchronously and preserve last-known-good provider data on failure. Each provider's `updatedAt` and `lastAttemptAt` determine its freshness and retry eligibility; the snapshot-level `updatedAt` does not imply every provider is fresh.
 2. **Nous Portal:** the sidecar reads the current `providers.nous.access_token` from the active/profile-aware `auth.json` and performs a read-only `GET /api/oauth/account`. If the access token is expired, it delegates refresh to the existing `hermes portal info` command and then re-reads `auth.json`; the sidecar never implements the OAuth refresh exchange or rotates refresh tokens itself.
 3. **Provider-agnostic boundary:** every entry returned by `/api/local/provider-usage` exposes `windows`, `balances`, and `metrics`. Known quota windows and balances are normalized explicitly. CodexBar's generic detail rows contribute only bounded numeric/boolean metrics with sanitized labels; arbitrary strings, identity fields, chart payloads, and raw provider JSON are not forwarded.
 
@@ -310,7 +310,7 @@ scripts/update-provider-usage.sh        # profile-aware writer
 scripts/local/update-provider-usage.sh  # compatibility wrapper
 ```
 
-These read `MISSION_CONTROL_CACHE_DIR` (defaulting to the resolved Hermes cache directory). A scheduler can run the writer every 60s so CodexBar data stays fresh without paying a CodexBar call per request. Nous data is fetched by the telemetry sidecar from the already-authenticated Portal session.
+Both the API reader and these writers resolve the same snapshot path from `MISSION_CONTROL_CACHE_DIR` (defaulting to the resolved Hermes cache directory). A scheduler can run the writer every 60s so CodexBar data stays fresh without paying a CodexBar call per request. Nous data is fetched by the telemetry sidecar from the already-authenticated Portal session.
 
 ### Ollama requires the web source
 
