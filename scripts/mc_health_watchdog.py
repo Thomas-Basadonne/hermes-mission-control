@@ -209,7 +209,10 @@ def check_health(targets, token, *, service_probe=service_status):
     check('cron_inventory', cron)
 
     def sessions():
-        data = api.read('frontend', '/api/local/sessions?limit=1')
+        data = api.read(
+            'frontend',
+            '/api/local/sessions?limit=1&include_facets=0&include_recent_messages=0',
+        )
         if data.get('success') is not True or data.get('available') is not True or not isinstance(data.get('items'), list):
             raise HealthFailure('Canonical sessions API unavailable')
         return 'available; read-only limit=1'

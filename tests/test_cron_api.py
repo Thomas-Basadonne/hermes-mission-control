@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 
 fake_psutil = types.SimpleNamespace(
@@ -88,6 +89,17 @@ class CronApiTests(unittest.TestCase):
             detail = json.loads(response.read())
         self.assertEqual(detail["id"], "job-123")
         self.assertEqual(self.calls[0][0], "get")
+
+    def test_sessions_route_accepts_lightweight_health_query(self):
+        expected = {"success": True, "available": True, "items": []}
+        with patch.object(local_telemetry_server, "load_agents_sessions_snapshot", return_value=expected) as load:
+            with self.request("/api/local/sessions?limit=1&include_facets=0&include_recent_messages=0") as response:
+                payload = json.loads(response.read())
+
+        self.assertEqual(payload, expected)
+        self.assertEqual(load.call_args.kwargs["limit"], 1)
+        self.assertFalse(load.call_args.kwargs["include_facets"])
+        self.assertFalse(load.call_args.kwargs["include_recent_messages"])
 
     def test_mutating_actions_route_to_bridge(self):
         actions = [

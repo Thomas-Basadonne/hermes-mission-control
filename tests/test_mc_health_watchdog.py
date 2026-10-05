@@ -20,6 +20,7 @@ class MCHealthTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fault = None
+        cls.session_query = None
 
         def http_response(connection, status, body, content_type='application/json'):
             response = connection.respond(status, body)
@@ -30,6 +31,8 @@ class MCHealthTests(unittest.TestCase):
         def route(connection, request):
             parsed = urlparse(request.path)
             path = parsed.path
+            if path == '/api/local/sessions':
+                cls.session_query = parse_qs(parsed.query)
             if path == '/api/ws':
                 if parse_qs(parsed.query).get('token') != ['fixture-ws-secret']:
                     return http_response(connection, HTTPStatus.UNAUTHORIZED, '{}')
@@ -87,6 +90,9 @@ class MCHealthTests(unittest.TestCase):
         self.assertEqual(healthy['status'], 'ok', healthy)
         self.assertTrue(all(c['status'] == 'ok' for c in healthy['checks'].values()))
         self.assertEqual(healthy['checks']['chat_websocket']['detail'], 'authenticated WebSocket + gateway.ready')
+        session_query = self.__class__.session_query or {}
+        self.assertEqual(session_query.get('include_facets'), ['0'])
+        self.assertEqual(session_query.get('include_recent_messages'), ['0'])
         for path in ['/api/status', '/api/local/cron/jobs', '/api/local/sessions']:
             with self.subTest(path=path):
                 self.__class__.fault = path
