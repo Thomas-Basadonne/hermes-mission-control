@@ -168,6 +168,7 @@ test('keeps snapshot cards visible when the catalog selection is unavailable', (
     { provider: 'deepseek', windows: [], balances: [], metrics: [] },
   ];
   assert.deepEqual(getProviderUsageSelectionForDisplay(providers, null), ['codex', 'deepseek']);
+  assert.deepEqual(getProviderUsageSelectionForDisplay(providers, ['nous'], false), ['codex', 'deepseek']);
   assert.deepEqual(getProviderUsageSelectionForDisplay(providers, ['deepseek']), ['deepseek']);
 });
 

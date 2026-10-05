@@ -473,7 +473,11 @@ export function ProviderUsagePanel() {
   const providers = snapshot?.providers ?? [];
   const visibleProviders = getVisibleProviderUsageCards(
     providers,
-    getProviderUsageSelectionForDisplay(providers, providerCatalog?.selectedProviders ?? null),
+    getProviderUsageSelectionForDisplay(
+      providers,
+      providerCatalog?.selectedProviders ?? null,
+      providerCatalog?.available === true,
+    ),
     preferences,
   );
   const gridColumns = getProviderUsageGridColumns(visibleProviders.length, preferences.columns);

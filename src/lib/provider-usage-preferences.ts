@@ -196,8 +196,11 @@ export function hasProviderUsageSelectionChanges(draft: string[], saved: string[
 export function getProviderUsageSelectionForDisplay<T extends ProviderUsageEntry>(
   providers: T[],
   selectedProviders: string[] | null,
+  catalogAvailable = true,
 ): string[] {
-  return selectedProviders ?? providers.map(({ provider }) => provider);
+  return catalogAvailable && selectedProviders !== null
+    ? selectedProviders
+    : providers.map(({ provider }) => provider);
 }
 
 export function getVisibleProviderUsageCards<T extends ProviderUsageEntry>(
