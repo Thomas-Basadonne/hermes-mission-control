@@ -3,10 +3,8 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,12 +14,14 @@ if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
 from hermes_paths import hermes_cache_dir  # noqa: E402
-from provider_usage_catalog import discover_codexbar_catalog  # noqa: E402
+from provider_usage_catalog import ProviderCatalogError, discover_codexbar_catalog  # noqa: E402
 from provider_usage_collector import collect_codexbar_usage as collect_dynamic_codexbar_usage  # noqa: E402
 from provider_usage_config import selected_usage_providers  # noqa: E402
+from provider_usage_snapshot import refresh_provider_usage_snapshot  # noqa: E402
 
 
 def collect_codexbar_usage() -> list[dict[str, Any]]:
+    """Collect the persisted provider selection without querying Nous."""
     catalog = discover_codexbar_catalog()
     selected = selected_usage_providers(catalog)
     codexbar_selection = tuple(provider for provider in selected if provider != "nous")
@@ -32,17 +32,18 @@ def main() -> int:
     output_dir = Path(os.environ.get("MISSION_CONTROL_CACHE_DIR", "")).expanduser() if os.environ.get("MISSION_CONTROL_CACHE_DIR") else hermes_cache_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / "mission-control-provider-usage.json"
-    temporary = output.with_name(f"{output.name}.tmp.{os.getpid()}")
-    providers = collect_codexbar_usage()
-    payload = {
-        "schemaVersion": 1,
-        "success": any(provider.get("available") for provider in providers),
-        "available": True,
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "providers": providers,
-    }
-    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(output)
+    try:
+        catalog = discover_codexbar_catalog()
+    except ProviderCatalogError:
+        # Discovery failure must not replace the last-known-good snapshot.
+        return 1
+    selected = selected_usage_providers(catalog)
+    codexbar_selection = tuple(provider for provider in selected if provider != "nous")
+    refresh_provider_usage_snapshot(
+        output,
+        codexbar_selection,
+        lambda due: collect_dynamic_codexbar_usage(due, catalog),
+    )
     return 0
 
 

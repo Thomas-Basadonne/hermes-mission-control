@@ -8,6 +8,6 @@ source "$SCRIPT_DIR/lib/env.sh"
 load_mission_control_env
 
 # Provider usage is refreshed by the shared Python writer. It emits the same
-# provider-agnostic contract consumed by the telemetry sidecar; Nous is fetched
-# by telemetry itself from the already-authenticated Portal session.
+# provider-agnostic contract consumed by the telemetry sidecar. The collector
+# delegates Nous session refresh to Hermes, then reads usage through CodexBar.
 exec python3 "$SCRIPT_DIR/update-provider-usage.py"

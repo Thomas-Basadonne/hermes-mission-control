@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 type ModalProps = {
   open: boolean;
   title: string;
+  eyebrow?: string;
   subtitle?: string;
   onClose: () => void;
   children: ReactNode;
@@ -14,7 +15,7 @@ type ModalProps = {
   fixedHeight?: boolean;
 };
 
-export function Modal({ open, title, subtitle, onClose, children, footer, className, borderless = false, fixedHeight = false }: ModalProps) {
+export function Modal({ open, title, eyebrow, subtitle, onClose, children, footer, className, borderless = false, fixedHeight = false }: ModalProps) {
   const { t } = useI18n();
   useEffect(() => {
     if (!open || typeof window === 'undefined') {
@@ -71,7 +72,7 @@ export function Modal({ open, title, subtitle, onClose, children, footer, classN
       >
         <div className={`px-4 py-3 flex items-start justify-between gap-3 sticky top-0 bg-surface z-10 ${borderless ? '!border-b-0' : 'border-b border-border-subtle'}`}>
           <div className="min-w-0">
-            <p className="eyebrow">{t('modal.detailView')}</p>
+            <p className="eyebrow">{eyebrow ?? t('modal.detailView')}</p>
             <h3 id="modal-title" className="text-sm font-semibold text-text break-words">{title}</h3>
             {subtitle ? <p className="text-xs text-text-subtle break-words mt-0.5">{subtitle}</p> : null}
           </div>

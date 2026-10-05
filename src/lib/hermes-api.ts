@@ -1549,15 +1549,14 @@ export type MissionControlProviderUsage = {
   available: boolean;
   source?: string;
   updatedAt?: string | null;
+  lastAttemptAt?: string | null;
   stale?: boolean;
   error?: string;
   plan?: string | null;
-  status?: string;
   renewsAt?: string | null;
   windows: MissionControlProviderUsageWindow[];
   balances: MissionControlProviderUsageBalance[];
   metrics: MissionControlProviderUsageMetric[];
-  pace?: Record<string, unknown> | null;
 };
 
 export type MissionControlProviderUsageSnapshot = {
@@ -1619,9 +1618,9 @@ const fallbackProviderUsage: MissionControlProviderUsageSnapshot = {
   providers: [],
 };
 
-export async function loadProviderUsage(accessToken?: string): Promise<MissionControlProviderUsageSnapshot> {
+export async function loadProviderUsage(accessToken?: string, signal?: AbortSignal): Promise<MissionControlProviderUsageSnapshot> {
   try {
-    const { payload: local } = await maybeFetchLocalJson<MissionControlProviderUsageSnapshot>('/provider-usage', accessToken);
+    const { payload: local } = await maybeFetchLocalJson<MissionControlProviderUsageSnapshot>('/provider-usage', accessToken, signal);
     if (local && local.available) return local;
   } catch { /* provider usage is an optional overview panel */ }
   return fallbackProviderUsage;

@@ -1,0 +1,32 @@
+[
+  {
+    "provider": "nous",
+    "source": "api",
+    "usage": {
+      "primary": {
+        "usedPercent": 75,
+        "resetsAt": "2026-10-12T04:29:00Z"
+      },
+      "details": [
+        {
+          "title": "Subscription",
+          "rows": [
+            { "label": "Subscription credits", "value": "$55.00 of $220.00 left" },
+            { "label": "Rollover credits", "value": "$4.00" },
+            { "label": "Renews", "value": "Oct 12" }
+          ]
+        },
+        {
+          "title": "Credits",
+          "rows": [
+            { "label": "Top-up credits", "value": "$19.25" },
+            { "label": "Total usable", "value": "$74.25" }
+          ]
+        }
+      ],
+      "subscriptionRenewsAt": "2026-10-12T04:29:00Z",
+      "identity": { "loginMethod": "Ultra" },
+      "dataConfidence": "exact"
+    }
+  }
+]

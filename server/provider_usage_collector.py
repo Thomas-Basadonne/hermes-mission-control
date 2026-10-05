@@ -1,4 +1,4 @@
-"""Shared, allowlisted CodexBar provider collection for sidecar and cache writer."""
+"""Shared, allowlisted CodexBar provider collection for the sidecar and cache writer."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import subprocess
 from typing import Any
 
 from provider_usage_contract import normalize_codexbar_entry, unavailable_provider
-
 
 _CODEXBAR_FALLBACK = "/opt/homebrew/bin/codexbar"
 _PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -46,7 +45,7 @@ def _codexbar_provider_ids(catalog: list[dict[str, Any]]) -> set[str]:
 
 
 def collect_codexbar_provider(provider: str, catalog_ids: set[str]) -> dict[str, Any]:
-    """Collect exactly one provider after checking it against discovered IDs."""
+    """Collect exactly one provider, only after discovery has allowlisted its ID."""
     if provider not in catalog_ids or not _PROVIDER_ID.fullmatch(provider) or provider == "nous":
         return unavailable_provider(provider, "cli", "Unknown provider.")
 
@@ -79,9 +78,8 @@ def collect_codexbar_usage(
 ) -> list[dict[str, Any]]:
     """Collect selected CodexBar providers independently; Nous is native to MC."""
     catalog_ids = _codexbar_provider_ids(catalog)
-    results: list[dict[str, Any]] = []
-    for provider in providers:
-        if provider == "nous":
-            continue
-        results.append(collect_codexbar_provider(provider, catalog_ids))
-    return results
+    return [
+        collect_codexbar_provider(provider, catalog_ids)
+        for provider in providers
+        if provider != "nous"
+    ]

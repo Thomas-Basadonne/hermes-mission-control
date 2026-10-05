@@ -31,4 +31,25 @@ if (!api.includes("'/provider-usage/catalog'") || !api.includes("'/provider-usag
   throw new Error('provider usage API client must use the local catalog and selection routes');
 }
 
+for (const preferenceApi of [
+  'loadProviderUsagePreferences',
+  'saveProviderUsagePreferences',
+  'applyProviderUsagePreferences',
+  'setProviderUsageProviderVisible',
+  'setProviderUsageFieldVisible',
+  'moveProviderUsagePreference',
+]) {
+  if (!component.includes(preferenceApi)) {
+    throw new Error(`provider usage UI must support user preference API: ${preferenceApi}`);
+  }
+}
+if (!component.includes('provider-usage-customize-dialog') || !component.includes('aria-haspopup="dialog"')) {
+  throw new Error('provider usage preferences must use a viewport-safe accessible dialog');
+}
+if (component.includes('max-h-[70vh]')) {
+  throw new Error('provider usage customize content must not be clipped by a viewport-relative dropdown');
+}
+if (!component.includes('provider.preferencesHelp')) {
+  throw new Error('provider usage UI must explain the boundary between user preferences and admin config');
+}
 console.log('provider usage UI contract test passed');

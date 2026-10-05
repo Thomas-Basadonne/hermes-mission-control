@@ -1,6 +1,6 @@
 import { useI18n } from '../../lib/i18n';
-import { useEffect, useState } from 'react';
-import { Cloud, RefreshCw, Search, Settings2 } from 'lucide-react';
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
+import { ArrowDown, ArrowUp, Cloud, RefreshCw, Search, Settings2, SlidersHorizontal } from 'lucide-react';
 import { Card } from '../ui/Card';
 import { Modal } from '../Modal';
 import {
@@ -14,6 +14,25 @@ import {
   type MissionControlProviderUsageWindow,
 } from '../../lib/hermes-api';
 import { useMissionControl } from '../../lib/mission-control-store';
+import {
+  applyProviderUsagePreferences,
+  DEFAULT_PROVIDER_USAGE_PREFERENCES,
+  loadProviderUsagePreferences,
+  moveProviderUsagePreference,
+  orderProviderUsage,
+  saveProviderUsagePreferences,
+  setProviderUsageFieldVisible,
+  setProviderUsageProviderVisible,
+  type ProviderUsageFieldGroup,
+  type ProviderUsagePreferences,
+  type ProviderUsageView,
+} from '../../lib/provider-usage-preferences';
+
+const FIELD_GROUPS: Array<{ id: ProviderUsageFieldGroup; label: string }> = [
+  { id: 'windows', label: 'provider.fields.windows' },
+  { id: 'balances', label: 'provider.fields.balances' },
+  { id: 'metrics', label: 'provider.fields.metrics' },
+];
 
 const PROVIDER_LABELS: Record<string, string> = {
   codex: 'Codex',
@@ -105,7 +124,7 @@ function UsageGauge({
   );
 }
 
-export function ProviderCard({ provider, displayName }: { provider: MissionControlProviderUsage; displayName?: string }) {
+export function ProviderCard({ provider, displayName, view = 'compact' }: { provider: MissionControlProviderUsage; displayName?: string; view?: ProviderUsageView }) {
   const { t } = useI18n();
   const label = displayName ?? PROVIDER_LABELS[provider.provider] ?? provider.provider;
   const unavailable = !provider.available;
@@ -160,7 +179,7 @@ export function ProviderCard({ provider, displayName }: { provider: MissionContr
           ) : null}
           {secondaryBalances.length > 0 ? (
             <div className="grid grid-cols-2 gap-2">
-              {secondaryBalances.slice(0, 2).map((balance) => (
+              {secondaryBalances.slice(0, view === 'detailed' ? secondaryBalances.length : 2).map((balance) => (
                 <div key={balance.id} className="min-w-0">
                   <span className="text-[10px] text-text-muted uppercase tracking-wide truncate block">{balanceLabel(balance, t)}</span>
                   <span className="text-xs text-text tabular-nums">{formatValue(balance.value, balance.currency, balance.unit)}</span>
@@ -174,7 +193,7 @@ export function ProviderCard({ provider, displayName }: { provider: MissionContr
           {provider.renewsAt && formatRenews(provider.renewsAt, t) ? <span className="text-[10px] text-text-subtle">{formatRenews(provider.renewsAt, t)}</span> : null}
           {regularMetrics.length > 0 ? (
             <div className="flex flex-wrap justify-end gap-x-2 gap-y-1">
-              {regularMetrics.slice(0, 2).map((metric) => (
+              {regularMetrics.slice(0, view === 'detailed' ? regularMetrics.length : 2).map((metric) => (
                 <span key={metric.id} className="text-[10px] text-text-subtle">
                   {metricLabel(metric, t)}: {typeof metric.value === 'boolean' ? (metric.value ? t('provider.enabled') : t('provider.disabled')) : String(metric.value)}
                 </span>
@@ -213,6 +232,12 @@ export function ProviderUsagePanel() {
   const [providerSearch, setProviderSearch] = useState('');
   const [savingSelection, setSavingSelection] = useState(false);
   const [selectionError, setSelectionError] = useState<string | null>(null);
+  const [preferences, setPreferences] = useState(loadProviderUsagePreferences);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+
+  useEffect(() => {
+    saveProviderUsagePreferences(preferences);
+  }, [preferences]);
 
   useEffect(() => {
     let cancelled = false;
@@ -277,6 +302,9 @@ export function ProviderUsagePanel() {
     return !query || `${provider.displayName} ${provider.provider}`.toLowerCase().includes(query);
   });
   const canCustomize = !catalogLoading && providerCatalog !== null;
+  const providers = snapshot?.providers ?? [];
+  const visibleProviders = applyProviderUsagePreferences(providers, preferences);
+  const gridColumns = ['grid-cols-1', 'grid-cols-1 sm:grid-cols-2', 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'][preferences.columns - 1];
 
   return (
     <Card padding="none">
@@ -296,18 +324,28 @@ export function ProviderUsagePanel() {
             className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-[10px] text-text-muted hover:text-text disabled:opacity-50"
             onClick={openCustomize}
             disabled={!canCustomize}
+            aria-haspopup="dialog"
           >
-            <Settings2 size={12} /> {t('provider.customize')}
+            <Settings2 size={12} /> {t('provider.providers')}
+          </button>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-2 py-1 text-[10px] text-text-muted hover:text-text"
+            onClick={() => setPreferencesOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={preferencesOpen}
+          >
+            <SlidersHorizontal size={12} aria-hidden="true" /> {t('provider.customize')}
           </button>
           <span className="text-[10px] text-text-subtle">{t('provider.live')}</span>
         </div>
       </div>
-      <div className="p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      <div className={`p-3 grid ${gridColumns} gap-3`}>
         {!snapshot?.available ? (
           <p className="text-sm text-text-muted">{snapshot ? t('provider.unavailable') : t('provider.loading')}</p>
-        ) : snapshot.providers.length > 0 ? (
-          snapshot.providers.map((provider) => (
-            <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} />
+        ) : visibleProviders.length > 0 ? (
+          visibleProviders.map((provider) => (
+            <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} view={preferences.view} />
           ))
         ) : (
           <p className="text-sm text-text-muted">{t('provider.noneSelected')}</p>
@@ -327,7 +365,142 @@ export function ProviderUsagePanel() {
         onToggle={toggleProvider}
         onSave={() => void saveSelection()}
       />
+      <ProviderUsageCustomizeDialog
+        open={preferencesOpen}
+        onClose={() => setPreferencesOpen(false)}
+        providers={providers}
+        preferences={preferences}
+        setPreferences={setPreferences}
+      />
     </Card>
+  );
+}
+
+function ProviderUsageCustomizeDialog({
+  open,
+  onClose,
+  providers,
+  preferences,
+  setPreferences,
+}: {
+  open: boolean;
+  onClose: () => void;
+  providers: MissionControlProviderUsage[];
+  preferences: ProviderUsagePreferences;
+  setPreferences: Dispatch<SetStateAction<ProviderUsagePreferences>>;
+}) {
+  const { t } = useI18n();
+  const ordered = orderProviderUsage(providers, preferences);
+  return (
+    <Modal
+      open={open}
+      title={t('provider.customize')}
+      subtitle={t('provider.preferencesHelp')}
+      onClose={onClose}
+      className="provider-usage-customize-dialog sm:max-w-[680px]"
+      fixedHeight
+      footer={(
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setPreferences({ ...DEFAULT_PROVIDER_USAGE_PREFERENCES })}
+            className="rounded-lg border border-border-subtle px-3 py-2 text-xs text-text-muted hover:text-text"
+          >{t('provider.resetPreferences')}</button>
+        </div>
+      )}
+    >
+      <div className="flex flex-col gap-5">
+        <fieldset>
+          <legend className="mb-2 text-xs font-semibold uppercase text-text-muted">{t('provider.providers')}</legend>
+          <div className="divide-y divide-border-subtle rounded-xl border border-border-subtle">
+            {ordered.map((provider, index) => (
+              <div key={provider.provider} className="flex items-center gap-2 px-3 py-2">
+                <label className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={!preferences.hiddenProviders.includes(provider.provider)}
+                    onChange={(event) => setPreferences((current) => setProviderUsageProviderVisible(current, provider.provider, event.target.checked))}
+                  />
+                  <span className="truncate">{PROVIDER_LABELS[provider.provider] ?? provider.provider}</span>
+                </label>
+                {([-1, 1] as const).map((direction) => (
+                  <button
+                    key={direction}
+                    type="button"
+                    aria-label={t(direction < 0 ? 'provider.moveUp' : 'provider.moveDown', { provider: PROVIDER_LABELS[provider.provider] ?? provider.provider })}
+                    disabled={direction < 0 ? index === 0 : index === ordered.length - 1}
+                    onClick={() => setPreferences((current) => ({
+                      ...current,
+                      providerOrder: moveProviderUsagePreference(ordered.map((item) => item.provider), provider.provider, direction),
+                    }))}
+                    className="rounded border border-border-subtle p-1 text-text-muted disabled:opacity-40"
+                  >{direction < 0 ? <ArrowUp size={14} /> : <ArrowDown size={14} />}</button>
+                ))}
+              </div>
+            ))}
+          </div>
+        </fieldset>
+
+        <section className="flex flex-col gap-3">
+          <h3 className="text-xs font-semibold uppercase text-text-muted">{t('provider.fields')}</h3>
+          {ordered.map((provider) => (
+            <fieldset key={provider.provider} className="rounded-xl border border-border-subtle p-3">
+              <legend className="px-1 text-sm font-medium">{PROVIDER_LABELS[provider.provider] ?? provider.provider}</legend>
+              {FIELD_GROUPS.map((group) => {
+                const fields = provider[group.id] ?? [];
+                if (fields.length === 0) return null;
+                return (
+                  <div key={group.id} className="mt-2">
+                    <h4 className="mb-1 text-[10px] font-semibold uppercase text-text-subtle">{t(group.label)}</h4>
+                    <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                      {fields.map((field) => {
+                        const hidden = preferences.hiddenFields[provider.provider]?.[group.id]?.includes(field.id) ?? false;
+                        const label = group.id === 'windows'
+                          ? windowLabel(field as MissionControlProviderUsageWindow, t)
+                          : group.id === 'balances'
+                            ? balanceLabel(field as MissionControlProviderUsageBalance, t)
+                            : metricLabel(field as { id: string; label: string }, t);
+                        return (
+                          <label key={field.id} className="flex items-center gap-2 rounded border border-border-subtle px-2 py-1.5 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={!hidden}
+                              onChange={(event) => setPreferences((current) => setProviderUsageFieldVisible(current, provider.provider, group.id, field.id, event.target.checked))}
+                            />
+                            {label}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </fieldset>
+          ))}
+        </section>
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <fieldset>
+            <legend className="mb-2 text-xs font-semibold uppercase text-text-muted">{t('provider.view')}</legend>
+            {(['compact', 'detailed'] as const).map((view) => (
+              <label key={view} className="mr-3 inline-flex items-center gap-2 text-xs">
+                <input type="radio" name="provider-usage-view" checked={preferences.view === view} onChange={() => setPreferences((current) => ({ ...current, view }))} />
+                {t(`provider.view.${view}`)}
+              </label>
+            ))}
+          </fieldset>
+          <fieldset>
+            <legend className="mb-2 text-xs font-semibold uppercase text-text-muted">{t('provider.layout')}</legend>
+            {([1, 2, 3] as const).map((columns) => (
+              <label key={columns} className="mr-3 inline-flex items-center gap-2 text-xs">
+                <input type="radio" name="provider-usage-columns" checked={preferences.columns === columns} onChange={() => setPreferences((current) => ({ ...current, columns }))} />
+                {t('provider.columnsOption', { count: columns })}
+              </label>
+            ))}
+          </fieldset>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
