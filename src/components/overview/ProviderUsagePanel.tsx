@@ -34,6 +34,7 @@ import {
   getProviderUsageSelectionForDisplay,
   getVisibleProviderUsageCards,
   getCodexBarEnableCommand,
+  isProviderUsageCollectionCheckboxDisabled,
   needsCodexBarSetupAlert,
   hasProviderUsageSelectionChanges,
   loadProviderUsagePreferences,
@@ -759,7 +760,13 @@ function ProviderUsageCustomizeDialog({
                       <input
                         type="checkbox"
                         checked={row.collectUsage}
-                        disabled={!provider?.selectable || saving || catalogLoading}
+                        disabled={isProviderUsageCollectionCheckboxDisabled({
+                          source: provider?.source,
+                          enabled: provider?.enabled,
+                          selectable: provider?.selectable,
+                          saving,
+                          catalogLoading,
+                        })}
                         onChange={() => {
                           if (needsCodexBarSetupAlert(provider?.source, provider?.enabled)) {
                             onRequestSetup(row.displayName, getCodexBarEnableCommand(row.provider));

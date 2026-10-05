@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   applyProviderUsagePreferences,
   getCodexBarEnableCommand,
+  isProviderUsageCollectionCheckboxDisabled,
   needsCodexBarSetupAlert,
   getProviderUsageCatalogRows,
   getProviderUsageSelectionForDisplay,
@@ -145,6 +146,18 @@ test('requests setup guidance only for disabled CodexBar providers', () => {
   assert.equal(needsCodexBarSetupAlert('codexbar', false), true);
   assert.equal(needsCodexBarSetupAlert('codexbar', true), false);
   assert.equal(needsCodexBarSetupAlert('mission-control', false), false);
+});
+
+test('keeps disabled CodexBar providers clickable for setup guidance, but not collectable', () => {
+  assert.equal(isProviderUsageCollectionCheckboxDisabled({
+    source: 'codexbar', enabled: false, selectable: false, saving: false, catalogLoading: false,
+  }), false);
+  assert.equal(isProviderUsageCollectionCheckboxDisabled({
+    source: 'mission-control', enabled: false, selectable: false, saving: false, catalogLoading: false,
+  }), true);
+  assert.equal(isProviderUsageCollectionCheckboxDisabled({
+    source: 'codexbar', enabled: false, selectable: false, saving: false, catalogLoading: true,
+  }), true);
 });
 
 test('a single visible provider always gets a full-width one-column layout', async () => {

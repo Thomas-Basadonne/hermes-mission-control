@@ -44,6 +44,23 @@ export function needsCodexBarSetupAlert(source: string | undefined, enabled: boo
   return source === 'codexbar' && enabled === false;
 }
 
+export function isProviderUsageCollectionCheckboxDisabled({
+  source,
+  enabled,
+  selectable,
+  saving,
+  catalogLoading,
+}: {
+  source: string | undefined;
+  enabled: boolean | undefined;
+  selectable: boolean | undefined;
+  saving: boolean;
+  catalogLoading: boolean;
+}): boolean {
+  if (saving || catalogLoading) return true;
+  return !selectable && !needsCodexBarSetupAlert(source, enabled);
+}
+
 export const DEFAULT_PROVIDER_USAGE_PREFERENCES: ProviderUsagePreferences = {
   hiddenProviders: [],
   hiddenFields: {},
