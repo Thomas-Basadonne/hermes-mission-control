@@ -473,6 +473,10 @@ _PROVIDER_USAGE_CATALOG_LOCK = threading.Lock()
 _PROVIDER_USAGE_CATALOG_CACHE: Optional[Dict[str, Any]] = None
 _PROVIDER_USAGE_CATALOG_CACHE_AT = 0.0
 _PROVIDER_USAGE_CATALOG_TTL = 300.0
+_PROVIDER_USAGE_CATALOG_RETRY_DELAY = 30.0
+_PROVIDER_USAGE_CATALOG_RETRY_AT = 0.0
+_PROVIDER_USAGE_CATALOG_REFRESH_RUNNING = False
+_PROVIDER_USAGE_CATALOG_LAST_ERROR: Optional[str] = None
 _PROVIDER_USAGE_REFRESH_LOCK = threading.Lock()
 _PROVIDER_USAGE_REFRESH_RUNNING = False
 
@@ -491,6 +495,7 @@ def _provider_usage_catalog_response(snapshot: Dict[str, Any]) -> Dict[str, Any]
     ]
     return {
         **snapshot,
+        "refreshing": _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING,
         "providers": providers,
         "selectedProviders": list(selected_usage_providers(providers)),
     }
@@ -499,36 +504,92 @@ def _provider_usage_catalog_response(snapshot: Dict[str, Any]) -> Dict[str, Any]
 def reset_provider_usage_catalog_cache() -> None:
     """Reset the process-local catalog cache (also used by isolated tests)."""
     global _PROVIDER_USAGE_CATALOG_CACHE, _PROVIDER_USAGE_CATALOG_CACHE_AT
+    global _PROVIDER_USAGE_CATALOG_RETRY_AT, _PROVIDER_USAGE_CATALOG_LAST_ERROR
     with _PROVIDER_USAGE_CATALOG_LOCK:
         _PROVIDER_USAGE_CATALOG_CACHE = None
         _PROVIDER_USAGE_CATALOG_CACHE_AT = 0.0
+        _PROVIDER_USAGE_CATALOG_RETRY_AT = 0.0
+        _PROVIDER_USAGE_CATALOG_LAST_ERROR = None
+
+
+def _schedule_provider_usage_catalog_refresh(*, force: bool = False) -> bool:
+    """Discover CodexBar metadata outside request handlers, at most once at a time."""
+    global _PROVIDER_USAGE_CATALOG_CACHE, _PROVIDER_USAGE_CATALOG_CACHE_AT
+    global _PROVIDER_USAGE_CATALOG_RETRY_AT, _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING
+    global _PROVIDER_USAGE_CATALOG_LAST_ERROR
+    with _PROVIDER_USAGE_CATALOG_LOCK:
+        now = time.monotonic()
+        if _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING:
+            return False
+        if not force and now < _PROVIDER_USAGE_CATALOG_RETRY_AT:
+            return False
+        _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING = True
+
+    def refresh() -> None:
+        global _PROVIDER_USAGE_CATALOG_CACHE, _PROVIDER_USAGE_CATALOG_CACHE_AT
+        global _PROVIDER_USAGE_CATALOG_RETRY_AT, _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING
+        global _PROVIDER_USAGE_CATALOG_LAST_ERROR
+        try:
+            codexbar_providers = parse_provider_catalog(json.dumps(discover_codexbar_catalog()))
+            providers = [*codexbar_providers, {
+                "provider": "nous",
+                "displayName": "Nous Portal",
+                "enabled": True,
+                "defaultEnabled": True,
+                "source": "mission-control",
+            }]
+            providers.sort(key=lambda item: (item["displayName"].casefold(), item["provider"]))
+            with _PROVIDER_USAGE_CATALOG_LOCK:
+                _PROVIDER_USAGE_CATALOG_CACHE = {
+                    "available": True,
+                    "stale": False,
+                    "providers": providers,
+                }
+                _PROVIDER_USAGE_CATALOG_CACHE_AT = time.monotonic()
+                _PROVIDER_USAGE_CATALOG_RETRY_AT = 0.0
+                _PROVIDER_USAGE_CATALOG_LAST_ERROR = None
+        except ProviderCatalogError:
+            with _PROVIDER_USAGE_CATALOG_LOCK:
+                _PROVIDER_USAGE_CATALOG_RETRY_AT = time.monotonic() + _PROVIDER_USAGE_CATALOG_RETRY_DELAY
+                _PROVIDER_USAGE_CATALOG_LAST_ERROR = "CodexBar provider catalog is unavailable."
+        finally:
+            with _PROVIDER_USAGE_CATALOG_LOCK:
+                _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING = False
+
+    thread = threading.Thread(target=refresh, name="provider-usage-catalog-refresh", daemon=True)
+    try:
+        thread.start()
+    except RuntimeError:
+        with _PROVIDER_USAGE_CATALOG_LOCK:
+            _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING = False
+            _PROVIDER_USAGE_CATALOG_RETRY_AT = time.monotonic() + _PROVIDER_USAGE_CATALOG_RETRY_DELAY
+        return False
+    return True
 
 
 def provider_usage_catalog_snapshot(*, force_refresh: bool = False) -> Dict[str, Any]:
-    """Return sanitized CodexBar metadata plus MC's native Nous adapter."""
-    global _PROVIDER_USAGE_CATALOG_CACHE, _PROVIDER_USAGE_CATALOG_CACHE_AT
+    """Return the last catalog immediately and schedule discovery when it is due."""
     with _PROVIDER_USAGE_CATALOG_LOCK:
         now = time.monotonic()
-        if (
-            not force_refresh
-            and _PROVIDER_USAGE_CATALOG_CACHE is not None
-            and now - _PROVIDER_USAGE_CATALOG_CACHE_AT < _PROVIDER_USAGE_CATALOG_TTL
-        ):
-            return _provider_usage_catalog_response(_PROVIDER_USAGE_CATALOG_CACHE)
+        cache = _PROVIDER_USAGE_CATALOG_CACHE
+        fresh = cache is not None and now - _PROVIDER_USAGE_CATALOG_CACHE_AT < _PROVIDER_USAGE_CATALOG_TTL
+        if fresh and not force_refresh:
+            snapshot = dict(cache)
+            if _PROVIDER_USAGE_CATALOG_LAST_ERROR:
+                snapshot["error"] = _PROVIDER_USAGE_CATALOG_LAST_ERROR
+            else:
+                snapshot.pop("error", None)
+            return _provider_usage_catalog_response(snapshot)
 
-        try:
-            codexbar_providers = parse_provider_catalog(json.dumps(discover_codexbar_catalog()))
-        except ProviderCatalogError:
-            if _PROVIDER_USAGE_CATALOG_CACHE is not None:
-                return _provider_usage_catalog_response({
-                    **_PROVIDER_USAGE_CATALOG_CACHE,
-                    "stale": True,
-                    "error": "CodexBar provider catalog is unavailable.",
-                })
-            return _provider_usage_catalog_response({
+    _schedule_provider_usage_catalog_refresh(force=force_refresh)
+
+    with _PROVIDER_USAGE_CATALOG_LOCK:
+        now = time.monotonic()
+        cache = _PROVIDER_USAGE_CATALOG_CACHE
+        if cache is None:
+            snapshot: Dict[str, Any] = {
                 "available": False,
                 "stale": False,
-                "error": "CodexBar provider catalog is unavailable.",
                 "providers": [{
                     "provider": "nous",
                     "displayName": "Nous Portal",
@@ -536,23 +597,19 @@ def provider_usage_catalog_snapshot(*, force_refresh: bool = False) -> Dict[str,
                     "defaultEnabled": True,
                     "source": "mission-control",
                 }],
-            })
-
-        providers = [*codexbar_providers, {
-            "provider": "nous",
-            "displayName": "Nous Portal",
-            "enabled": True,
-            "defaultEnabled": True,
-            "source": "mission-control",
-        }]
-        providers.sort(key=lambda item: (item["displayName"].casefold(), item["provider"]))
-        _PROVIDER_USAGE_CATALOG_CACHE = {
-            "available": True,
-            "stale": False,
-            "providers": providers,
-        }
-        _PROVIDER_USAGE_CATALOG_CACHE_AT = now
-        return _provider_usage_catalog_response(_PROVIDER_USAGE_CATALOG_CACHE)
+            }
+            if _PROVIDER_USAGE_CATALOG_LAST_ERROR:
+                snapshot["error"] = _PROVIDER_USAGE_CATALOG_LAST_ERROR
+        else:
+            snapshot = {
+                **cache,
+                "stale": now - _PROVIDER_USAGE_CATALOG_CACHE_AT >= _PROVIDER_USAGE_CATALOG_TTL,
+            }
+            if _PROVIDER_USAGE_CATALOG_LAST_ERROR:
+                snapshot["error"] = _PROVIDER_USAGE_CATALOG_LAST_ERROR
+            else:
+                snapshot.pop("error", None)
+        return _provider_usage_catalog_response(snapshot)
 
 
 def _schedule_provider_usage_refresh() -> None:
@@ -609,7 +666,7 @@ def collect_provider_usage() -> Dict[str, Any]:
         candidate = json.loads(cache_path.read_text(encoding="utf-8"))
         if isinstance(candidate, dict) and isinstance(candidate.get("providers"), list):
             cached = candidate
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         pass
 
     cached_providers: Dict[str, Dict[str, Any]] = {}
@@ -2160,7 +2217,8 @@ class Handler(BaseHTTPRequestHandler):
             if not _is_authorized(self):
                 self._unauthorized()
                 return
-            self._json(200, provider_usage_catalog_snapshot())
+            force_refresh = _parse_bool((params.get("refresh") or [None])[0], default=False)
+            self._json(200, provider_usage_catalog_snapshot(force_refresh=force_refresh))
             return
         if parsed.path == "/api/local/provider-usage":
             if not _is_authorized(self):

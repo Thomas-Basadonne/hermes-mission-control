@@ -1,3 +1,18 @@
+export function preserveLastAvailableSnapshot<T extends { available: boolean; refreshing?: boolean }>(
+  current: T | null,
+  next: T,
+): T {
+  if (next.available || !current?.available) return next;
+  return { ...current, refreshing: next.refreshing };
+}
+
+export function canCustomizeProviderUsageCatalog(
+  catalog: { available: boolean } | null,
+  loading: boolean,
+): boolean {
+  return !loading && catalog?.available === true;
+}
+
 export function createSerializedRefresh<T>(
   load: (signal: AbortSignal) => Promise<T>,
   onValue: (value: T) => void,

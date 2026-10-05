@@ -141,6 +141,25 @@ class ProviderUsageRuntimeTests(unittest.TestCase):
         self.assertTrue(snapshot["providers"][0]["available"])
         self.assertEqual(snapshot["providers"][0]["windows"][0]["usedPercent"], 32)
 
+    def test_non_utf8_snapshot_falls_back_to_pending_provider(self) -> None:
+        cache_dir = self._home / "cache"
+        cache_dir.mkdir()
+        (cache_dir / "mission-control-provider-usage.json").write_bytes(b"\xff\xfe")
+        with (
+            patch.object(telemetry, "provider_usage_catalog_snapshot", return_value={
+                "available": True, "providers": [{"provider": "deepseek", "source": "codexbar"}],
+            }),
+            patch.object(telemetry, "selected_usage_providers", return_value=("deepseek",)),
+            patch.object(telemetry, "_schedule_provider_usage_refresh") as schedule,
+            patch("provider_usage_paths.hermes_cache_dir", return_value=cache_dir),
+        ):
+            snapshot = telemetry.collect_provider_usage()
+
+        schedule.assert_called_once_with()
+        self.assertEqual([item["provider"] for item in snapshot["providers"]], ["deepseek"])
+        self.assertFalse(snapshot["providers"][0]["available"])
+        self.assertEqual(snapshot["providers"][0]["error"], "Usage data is pending refresh.")
+
     def test_stale_provider_retries_independently_of_fresh_global_timestamp(self) -> None:
         cache_dir = self._home / "cache"
         cache_dir.mkdir()

@@ -1581,6 +1581,7 @@ export type MissionControlProviderCatalogEntry = {
 export type MissionControlProviderCatalogSnapshot = {
   available: boolean;
   stale?: boolean;
+  refreshing?: boolean;
   error?: string;
   providers: MissionControlProviderCatalogEntry[];
   selectedProviders: string[];
@@ -1593,6 +1594,7 @@ export function normalizeProviderUsageCatalog(input: unknown): MissionControlPro
     || !Array.isArray(input.selectedProviders)
     || !input.selectedProviders.every((provider) => typeof provider === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider))
     || ('stale' in input && typeof input.stale !== 'boolean')
+    || ('refreshing' in input && typeof input.refreshing !== 'boolean')
     || ('error' in input && typeof input.error !== 'string')) return null;
 
   const seenProviders = new Set<string>();
@@ -1626,6 +1628,7 @@ export function normalizeProviderUsageCatalog(input: unknown): MissionControlPro
   return {
     available: input.available,
     ...(readBoolean(input.stale) ? { stale: true } : {}),
+    ...(readBoolean(input.refreshing) ? { refreshing: true } : {}),
     ...(readString(input.error) ? { error: readString(input.error) } : {}),
     providers,
     selectedProviders,
@@ -1640,8 +1643,12 @@ export function normalizeProviderUsageSelection(input: unknown): { selectedProvi
   return { selectedProviders: [...new Set(input.selectedProviders as string[])] };
 }
 
-export async function loadProviderUsageCatalog(accessToken?: string): Promise<MissionControlProviderCatalogSnapshot> {
-  const { payload: local } = await maybeFetchLocalJson<unknown>('/provider-usage/catalog', accessToken);
+export async function loadProviderUsageCatalog(
+  accessToken?: string,
+  forceRefresh = false,
+): Promise<MissionControlProviderCatalogSnapshot> {
+  const path = forceRefresh ? '/provider-usage/catalog?refresh=1' : '/provider-usage/catalog';
+  const { payload: local } = await maybeFetchLocalJson<unknown>(path, accessToken);
   const catalog = normalizeProviderUsageCatalog(local);
   if (!catalog) throw new Error('Mission Control provider usage catalog payload is malformed');
   return catalog;
@@ -1666,13 +1673,87 @@ export async function saveProviderUsageSelection(
 const fallbackProviderUsage: MissionControlProviderUsageSnapshot = {
   success: false,
   available: false,
+  refreshing: false,
   providers: [],
 };
 
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+function isOptionalFiniteNumber(value: unknown): boolean {
+  return value === undefined || (typeof value === 'number' && Number.isFinite(value));
+}
+
+function normalizeUsageFields(input: unknown, requiredArray: string): Record<string, unknown> | null {
+  if (!isRecord(input)) return null;
+  for (const field of ['id', 'label']) {
+    if (typeof input[field] !== 'string' || !input[field].trim()) return null;
+  }
+  if (requiredArray === 'windows') {
+    if (!isOptionalFiniteNumber(input.usedPercent)
+      || !isOptionalFiniteNumber(input.windowMinutes)
+      || !isOptionalFiniteNumber(input.remaining)
+      || !isOptionalFiniteNumber(input.total)
+      || !isOptionalString(input.resetsAt)
+      || !isOptionalString(input.unit)) return null;
+  } else if (requiredArray === 'balances') {
+    if (!isOptionalFiniteNumber(input.value)
+      || !isOptionalString(input.currency)
+      || !isOptionalString(input.unit)) return null;
+  } else if (!isOptionalString(input.unit)
+    || !(input.value === undefined || input.value === null || typeof input.value === 'string'
+      || typeof input.value === 'boolean' || (typeof input.value === 'number' && Number.isFinite(input.value)))) {
+    return null;
+  }
+  if (input.featured !== undefined && typeof input.featured !== 'boolean') return null;
+  return input;
+}
+
+export function normalizeProviderUsageSnapshot(input: unknown): MissionControlProviderUsageSnapshot | null {
+  if (!isRecord(input)
+    || typeof input.success !== 'boolean'
+    || typeof input.available !== 'boolean'
+    || !Array.isArray(input.providers)
+    || (input.schemaVersion !== undefined && !Number.isFinite(input.schemaVersion))
+    || !isOptionalString(input.updatedAt)
+    || (input.stale !== undefined && typeof input.stale !== 'boolean')
+    || (input.refreshing !== undefined && typeof input.refreshing !== 'boolean')) return null;
+
+  const providers: MissionControlProviderUsage[] = [];
+  for (const item of input.providers) {
+    if (!isRecord(item)
+      || typeof item.provider !== 'string'
+      || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(item.provider)
+      || typeof item.available !== 'boolean'
+      || !Array.isArray(item.windows)
+      || !Array.isArray(item.balances)
+      || !Array.isArray(item.metrics)
+      || !isOptionalString(item.source)
+      || !isOptionalString(item.updatedAt)
+      || !isOptionalString(item.lastAttemptAt)
+      || !isOptionalString(item.error)
+      || !isOptionalString(item.plan)
+      || !isOptionalString(item.renewsAt)
+      || (item.stale !== undefined && typeof item.stale !== 'boolean')) return null;
+
+    const windows = item.windows.map((value) => normalizeUsageFields(value, 'windows'));
+    const balances = item.balances.map((value) => normalizeUsageFields(value, 'balances'));
+    const metrics = item.metrics.map((value) => normalizeUsageFields(value, 'metrics'));
+    if (windows.some((value) => value === null)
+      || balances.some((value) => value === null)
+      || metrics.some((value) => value === null)) return null;
+    providers.push(item as unknown as MissionControlProviderUsage);
+  }
+
+  return input as unknown as MissionControlProviderUsageSnapshot;
+}
+
 export async function loadProviderUsage(accessToken?: string, signal?: AbortSignal): Promise<MissionControlProviderUsageSnapshot> {
   try {
-    const { payload: local } = await maybeFetchLocalJson<MissionControlProviderUsageSnapshot>('/provider-usage', accessToken, signal);
-    if (local && local.available) return local;
+    const { payload: local } = await maybeFetchLocalJson<unknown>('/provider-usage', accessToken, signal);
+    const snapshot = normalizeProviderUsageSnapshot(local);
+    if (snapshot?.available) return snapshot;
   } catch { /* provider usage is an optional overview panel */ }
   return fallbackProviderUsage;
 }

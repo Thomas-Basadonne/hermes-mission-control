@@ -14,7 +14,11 @@ import {
   type MissionControlProviderUsageWindow,
 } from '../../lib/hermes-api';
 import { useMissionControl } from '../../lib/mission-control-store';
-import { createSerializedRefresh } from '../../lib/provider-usage-refresh';
+import {
+  canCustomizeProviderUsageCatalog,
+  createSerializedRefresh,
+  preserveLastAvailableSnapshot,
+} from '../../lib/provider-usage-refresh';
 import {
   formatCurrency as formatLocalizedCurrency,
   formatDateTime,
@@ -322,6 +326,8 @@ export function ProviderUsagePanel() {
   const [preferences, setPreferences] = useState(loadProviderUsagePreferences);
   const customizeButtonRef = useRef<HTMLButtonElement>(null);
   const customizeWasOpen = useRef(false);
+  const providerUsageRefreshingRef = useRef(false);
+  const forceCatalogRefreshRef = useRef(false);
 
   useEffect(() => {
     saveProviderUsagePreferences(preferences);
@@ -329,33 +335,57 @@ export function ProviderUsagePanel() {
 
   useEffect(() => {
     let cancelled = false;
-    setCatalogLoading(true);
-    setCatalogLoadFailed(false);
-    void loadProviderUsageCatalog(storedToken || undefined).then((catalog) => {
-      if (!cancelled) setProviderCatalog(catalog);
-    }).catch(() => {
-      if (!cancelled) {
-        setCatalogLoadFailed(true);
+    let pollTimer: number | undefined;
+    const load = async (forceRefresh = false) => {
+      setCatalogLoading(true);
+      try {
+        const catalog = await loadProviderUsageCatalog(storedToken || undefined, forceRefresh);
+        if (cancelled) return;
+        setProviderCatalog(catalog);
+        setCatalogLoadFailed(!catalog.available || Boolean(catalog.error));
+        if (catalog.refreshing) {
+          pollTimer = window.setTimeout(() => void load(), 1_500);
+        }
+      } catch {
+        if (!cancelled) setCatalogLoadFailed(true);
+      } finally {
+        if (!cancelled) setCatalogLoading(false);
       }
-    }).finally(() => {
-      if (!cancelled) setCatalogLoading(false);
-    });
-    return () => { cancelled = true; };
+    };
+    const forceRefresh = forceCatalogRefreshRef.current;
+    forceCatalogRefreshRef.current = false;
+    void load(forceRefresh);
+    return () => {
+      cancelled = true;
+      if (pollTimer !== undefined) window.clearTimeout(pollTimer);
+    };
   }, [catalogRefreshKey, storedToken]);
 
   useEffect(() => {
+    let cancelled = false;
+    let pollTimer: number | undefined;
     const refresh = createSerializedRefresh(
       (signal) => loadProviderUsage(storedToken || undefined, signal),
       (next) => {
-        setSnapshot((current) => next.available || !current?.available ? next : current);
+        providerUsageRefreshingRef.current = next.refreshing === true;
+        setSnapshot((current) => preserveLastAvailableSnapshot(current, next));
         setRefreshFailed(!next.available);
       },
       setRefreshing,
     );
-    void refresh.run();
-    const interval = window.setInterval(() => void refresh.run(), 60_000);
+    const run = async () => {
+      await refresh.run();
+      if (!cancelled) {
+        pollTimer = window.setTimeout(
+          () => void run(),
+          providerUsageRefreshingRef.current ? 1_500 : 60_000,
+        );
+      }
+    };
+    void run();
     return () => {
-      window.clearInterval(interval);
+      cancelled = true;
+      if (pollTimer !== undefined) window.clearTimeout(pollTimer);
       refresh.cancel();
     };
   }, [storedToken, refreshKey]);
@@ -438,7 +468,8 @@ export function ProviderUsagePanel() {
     const query = providerSearch.trim().toLowerCase();
     return !query || `${provider.displayName} ${provider.provider}`.toLowerCase().includes(query);
   });
-  const canCustomize = !catalogLoading && !catalogLoadFailed && providerCatalog !== null;
+  const canCustomize = canCustomizeProviderUsageCatalog(providerCatalog, catalogLoading);
+  const usageRefreshInProgress = refreshing || snapshot?.refreshing === true;
   const providers = snapshot?.providers ?? [];
   const visibleProviders = getVisibleProviderUsageCards(
     providers,
@@ -448,7 +479,7 @@ export function ProviderUsagePanel() {
   const gridColumns = getProviderUsageGridColumns(visibleProviders.length, preferences.columns);
 
   return (
-    <Card padding="none" role="region" aria-labelledby="provider-usage-title" aria-busy={refreshing}>
+    <Card padding="none" role="region" aria-labelledby="provider-usage-title" aria-busy={usageRefreshInProgress}>
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border-subtle px-3 py-3">
         <div className="flex items-center gap-2">
           <Cloud size={16} className="text-sky-400" aria-hidden="true" />
@@ -462,16 +493,20 @@ export function ProviderUsagePanel() {
           <button
             type="button"
             onClick={() => setRefreshKey((key) => key + 1)}
-            disabled={refreshing}
+            disabled={usageRefreshInProgress}
+            title={t('provider.refreshHelp')}
             className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2 py-1.5 text-xs font-medium text-text-muted hover:text-text disabled:cursor-wait disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
           >
-            <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} aria-hidden="true" />
-            {t('provider.refresh')}
+            <RefreshCw size={13} className={usageRefreshInProgress ? 'animate-spin' : ''} aria-hidden="true" />
+            {snapshot?.refreshing ? t('provider.refreshing') : t('provider.refresh')}
           </button>
           {catalogLoadFailed ? (
             <button
               type="button"
-              onClick={() => setCatalogRefreshKey((key) => key + 1)}
+              onClick={() => {
+                forceCatalogRefreshRef.current = true;
+                setCatalogRefreshKey((key) => key + 1);
+              }}
               disabled={catalogLoading}
               className="inline-flex items-center gap-1.5 rounded-md border border-warning/30 px-2 py-1.5 text-xs font-medium text-warning hover:text-text disabled:cursor-wait disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
             >

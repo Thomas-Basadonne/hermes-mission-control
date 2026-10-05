@@ -266,7 +266,9 @@ GET /api/local/provider-usage  (telemetry :8765)
 src/components/overview/ProviderUsagePanel.tsx
 ```
 
-The frontend polls `loadProviderUsage()` every **60s** (`ProviderUsagePanel` `useEffect` + `setInterval`). A cache miss or stale snapshot schedules a background refresh; the `GET /api/local/provider-usage` handler does not run CodexBar synchronously.
+The frontend polls `loadProviderUsage()` every **60s** while idle and every **1.5s** while the sidecar reports an active collection. The **Check now** action checks the current snapshot; provider queries run only when their source rate limits say they are due. A cache miss or stale snapshot schedules a background refresh; `GET /api/local/provider-usage` never runs CodexBar synchronously.
+
+Catalog discovery is also asynchronous: `GET /api/local/provider-usage/catalog` returns the last-known catalog (or the native Nous entry) and a `refreshing` flag immediately. The panel polls while discovery is active; after failure, **Try again** requests a new discovery with `?refresh=1`, bypassing the server's 30-second retry backoff.
 
 ### Local provider visibility
 

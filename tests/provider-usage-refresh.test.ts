@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { createSerializedRefresh } from '../src/lib/provider-usage-refresh.ts';
+import {
+  canCustomizeProviderUsageCatalog,
+  createSerializedRefresh,
+  preserveLastAvailableSnapshot,
+} from '../src/lib/provider-usage-refresh.ts';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -46,5 +50,22 @@ assert.equal(signal?.aborted, true);
 pending.resolve('obsolete');
 await inFlight;
 assert.equal(acceptedAfterCancel, false, 'cancelled requests must not publish stale results');
+
+assert.deepEqual(
+  preserveLastAvailableSnapshot(
+    { available: true, refreshing: true, providers: ['last-good'] },
+    { available: false, refreshing: false, providers: [] },
+  ),
+  { available: true, refreshing: false, providers: ['last-good'] },
+  'a failed poll must preserve cached data without leaving the UI stuck in a refreshing state',
+);
+
+assert.equal(
+  canCustomizeProviderUsageCatalog({ available: true, error: 'transient discovery failure' }, false),
+  true,
+  'a stale cached catalog must remain editable when background discovery fails',
+);
+assert.equal(canCustomizeProviderUsageCatalog({ available: false }, false), false);
+assert.equal(canCustomizeProviderUsageCatalog({ available: true }, true), false);
 
 console.log('provider usage refresh tests passed');

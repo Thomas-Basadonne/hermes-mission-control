@@ -76,7 +76,7 @@ def discover_codexbar_catalog(executable: str | None = None) -> list[dict[str, A
             timeout=5,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as exc:
         raise ProviderCatalogError("CodexBar provider catalog is unavailable.") from exc
     if completed.returncode != 0:
         raise ProviderCatalogError("CodexBar provider catalog is unavailable.")

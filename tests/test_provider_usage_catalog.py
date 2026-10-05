@@ -100,6 +100,15 @@ class ProviderUsageCatalogTests(unittest.TestCase):
         self.assertEqual(str(raised.exception), "CodexBar provider catalog is unavailable.")
         self.assertNotIn("secret path", str(raised.exception))
 
+    def test_discovery_converts_invalid_utf8_output_to_safe_catalog_error(self) -> None:
+        invalid_output = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        with patch("provider_usage_catalog.shutil.which", return_value="/test/codexbar"), \
+             patch("provider_usage_catalog.subprocess.run", side_effect=invalid_output):
+            with self.assertRaises(ProviderCatalogError) as raised:
+                discover_codexbar_catalog()
+
+        self.assertEqual(str(raised.exception), "CodexBar provider catalog is unavailable.")
+
 
 if __name__ == "__main__":
     unittest.main()

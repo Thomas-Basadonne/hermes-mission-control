@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 import urllib.error
@@ -63,12 +64,27 @@ class ProviderUsageApiTests(unittest.TestCase):
         if reset is not None:
             reset()
 
-    def _get(self, *, token: bool = True):
+    def _get(self, *, token: bool = True, force_refresh: bool = False):
+        headers = {}
+        if token:
+            headers["Authorization"] = "Bearer synthetic-provider-test-token"
+        query = "?refresh=1" if force_refresh else ""
+        request = urllib.request.Request(
+            f"{self.base_url}/api/local/provider-usage/catalog{query}",
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=3) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read())
+
+    def _get_usage(self, *, token: bool = True):
         headers = {}
         if token:
             headers["Authorization"] = "Bearer synthetic-provider-test-token"
         request = urllib.request.Request(
-            f"{self.base_url}/api/local/provider-usage/catalog",
+            f"{self.base_url}/api/local/provider-usage",
             headers=headers,
         )
         try:
@@ -93,6 +109,52 @@ class ProviderUsageApiTests(unittest.TestCase):
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())
 
+    def _wait_for_catalog(self, timeout: float = 2):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            status, payload = self._get()
+            if not payload.get("refreshing"):
+                return status, payload
+            time.sleep(0.01)
+        self.fail("provider catalog discovery did not settle")
+
+    def test_usage_get_does_not_wait_for_catalog_discovery(self) -> None:
+        discovery_started = threading.Event()
+        release_discovery = threading.Event()
+        request_finished = threading.Event()
+        result = []
+
+        def slow_discovery():
+            discovery_started.set()
+            release_discovery.wait(timeout=2)
+            return []
+
+        def request_usage():
+            try:
+                result.append(self._get_usage())
+            finally:
+                request_finished.set()
+
+        with (
+            patch.object(telemetry, "discover_codexbar_catalog", side_effect=slow_discovery),
+            patch.object(telemetry, "stored_usage_providers", return_value=()),
+            patch.object(telemetry, "collect_nous_portal_usage", return_value={
+                "provider": "nous", "available": False, "windows": [], "balances": [], "metrics": [],
+            }),
+        ):
+            request = threading.Thread(target=request_usage)
+            request.start()
+            try:
+                self.assertTrue(discovery_started.wait(timeout=1))
+                self.assertTrue(request_finished.wait(timeout=0.25), "usage GET waited for CodexBar catalog discovery")
+                self.assertEqual(result[0][0], 200)
+            finally:
+                release_discovery.set()
+                request.join(timeout=2)
+                deadline = time.monotonic() + 1
+                while telemetry._PROVIDER_USAGE_CATALOG_REFRESH_RUNNING and time.monotonic() < deadline:
+                    time.sleep(0.01)
+
     def test_catalog_route_returns_only_sanitized_catalog_and_native_nous(self) -> None:
         with patch.object(telemetry, "discover_codexbar_catalog", create=True, return_value=[
             {
@@ -104,7 +166,7 @@ class ProviderUsageApiTests(unittest.TestCase):
                 "secret": "must-not-leak",
             },
         ]):
-            status, payload = self._get()
+            status, payload = self._wait_for_catalog()
 
         self.assertEqual(status, 200)
         self.assertTrue(payload["available"])
@@ -129,12 +191,81 @@ class ProviderUsageApiTests(unittest.TestCase):
             create=True,
             side_effect=ProviderCatalogError("CodexBar provider catalog is unavailable."),
         ):
-            status, payload = self._get()
+            status, payload = self._wait_for_catalog()
 
         self.assertEqual(status, 200)
         self.assertFalse(payload["available"])
         self.assertEqual(payload["error"], "CodexBar provider catalog is unavailable.")
         self.assertEqual([item["provider"] for item in payload["providers"]], ["nous"])
+
+    def test_catalog_decode_failure_surfaces_error_and_obeys_retry_backoff(self) -> None:
+        invalid_output = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        with (
+            patch("provider_usage_catalog.shutil.which", return_value="/test/codexbar"),
+            patch("provider_usage_catalog.subprocess.run", side_effect=invalid_output) as run,
+        ):
+            status, payload = self._get()
+            if payload.get("refreshing"):
+                status, payload = self._wait_for_catalog()
+            self.assertEqual(status, 200)
+            self.assertFalse(payload["available"])
+            self.assertEqual(payload["error"], "CodexBar provider catalog is unavailable.")
+
+            self._get()
+
+        run.assert_called_once()
+
+    def test_catalog_retry_query_bypasses_failure_backoff(self) -> None:
+        from provider_usage_catalog import ProviderCatalogError
+
+        with patch.object(
+            telemetry,
+            "discover_codexbar_catalog",
+            side_effect=ProviderCatalogError("CodexBar provider catalog is unavailable."),
+        ):
+            self._wait_for_catalog()
+
+        with patch.object(telemetry, "discover_codexbar_catalog", return_value=[{
+            "provider": "deepseek",
+            "displayName": "DeepSeek",
+            "enabled": True,
+            "defaultEnabled": False,
+            "source": "codexbar",
+        }]):
+            status, payload = self._get(force_refresh=True)
+            if payload.get("refreshing"):
+                status, payload = self._wait_for_catalog()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["available"])
+        self.assertIn("deepseek", {item["provider"] for item in payload["providers"]})
+
+    def test_failed_forced_refresh_keeps_cached_catalog_and_surfaces_error(self) -> None:
+        from provider_usage_catalog import ProviderCatalogError
+
+        with patch.object(telemetry, "discover_codexbar_catalog", return_value=[{
+            "provider": "deepseek",
+            "displayName": "DeepSeek",
+            "enabled": True,
+            "defaultEnabled": False,
+            "source": "codexbar",
+        }]):
+            self._wait_for_catalog()
+
+        with patch.object(
+            telemetry,
+            "discover_codexbar_catalog",
+            side_effect=ProviderCatalogError("CodexBar provider catalog is unavailable."),
+        ):
+            status, payload = self._get(force_refresh=True)
+            if payload.get("refreshing"):
+                status, payload = self._wait_for_catalog()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["available"])
+        self.assertFalse(payload["stale"])
+        self.assertEqual(payload["error"], "CodexBar provider catalog is unavailable.")
+        self.assertIn("deepseek", {item["provider"] for item in payload["providers"]})
 
     def test_selection_route_validates_and_persists_only_catalog_ids(self) -> None:
         with patch.object(telemetry, "discover_codexbar_catalog", return_value=[
@@ -146,6 +277,7 @@ class ProviderUsageApiTests(unittest.TestCase):
                 "source": "codexbar",
             },
         ]):
+            self._wait_for_catalog()
             status, payload = self._put({"selectedProviders": ["deepseek", "deepseek", "nous"]})
 
         self.assertEqual(status, 200)
@@ -155,6 +287,7 @@ class ProviderUsageApiTests(unittest.TestCase):
 
     def test_selection_route_rejects_unknown_ids_and_requires_auth(self) -> None:
         with patch.object(telemetry, "discover_codexbar_catalog", return_value=[]):
+            self._wait_for_catalog()
             unauth_status, _ = self._put({"selectedProviders": []}, token=False)
             invalid_status, payload = self._put({"selectedProviders": ["not-in-catalog"]})
 
