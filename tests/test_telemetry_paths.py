@@ -65,28 +65,32 @@ class TelemetryPathResolutionTests(unittest.TestCase):
     def test_provider_usage_reads_profile_aware_cache(self):
         cache = self._hermes_home / "cache" / "mission-control-provider-usage.json"
         cache.parent.mkdir(parents=True)
-        payload = {"success": True, "available": True, "providers": [{"provider": "codex"}]}
+        payload = {
+            "success": True,
+            "available": True,
+            "providers": [
+                {"provider": "codex"},
+                {
+                    "provider": "nous",
+                    "available": False,
+                    "source": "cli",
+                    "windows": [],
+                    "balances": [],
+                    "metrics": [],
+                },
+            ],
+        }
         cache.write_text(json.dumps(payload), encoding="utf-8")
 
-        with patch.object(
-            local_telemetry_server,
-            "collect_nous_portal_usage",
-            return_value={
-                "provider": "nous",
-                "available": False,
-                "source": "portal-account",
-                "windows": [],
-                "balances": [],
-                "metrics": [],
-            },
-        ):
+        with patch.object(local_telemetry_server.subprocess, "run") as run:
             result = local_telemetry_server.collect_provider_usage()
 
         self.assertEqual(result["schemaVersion"], 1)
-        self.assertTrue(result["available"])
+        self.assertEqual(result["available"], True)
         self.assertEqual(result["providers"][0]["provider"], "codex")
         self.assertEqual(result["providers"][0]["windows"], [])
         self.assertEqual(result["providers"][-1]["provider"], "nous")
+        self.assertEqual(result["providers"][-1]["source"], "cli")
 
     def test_local_allowlist_filters_hidden_provider_from_cache_and_fetches(self):
         cache = self._hermes_home / "cache" / "mission-control-provider-usage.json"
@@ -103,13 +107,24 @@ class TelemetryPathResolutionTests(unittest.TestCase):
             encoding="utf-8",
         )
         os.environ["MISSION_CONTROL_USAGE_PROVIDERS"] = "codex,nous"
-        nous = {"provider": "nous", "available": True, "windows": [], "balances": [], "metrics": []}
+        nous = {
+            "provider": "nous",
+            "available": True,
+            "source": "cli",
+            "windows": [],
+            "balances": [],
+            "metrics": [],
+        }
+        cache_payload = json.loads(cache.read_text(encoding="utf-8"))
+        cache_payload["providers"].append(nous)
+        cache.write_text(json.dumps(cache_payload), encoding="utf-8")
 
-        with patch.object(local_telemetry_server, "collect_nous_portal_usage", return_value=nous), \
-             patch.object(local_telemetry_server.subprocess, "run") as run:
+        with patch.object(local_telemetry_server.subprocess, "run") as run:
             result = local_telemetry_server.collect_provider_usage()
 
         self.assertEqual([item["provider"] for item in result["providers"]], ["codex", "nous"])
+        self.assertEqual(result["providers"][-1]["source"], "cli")
+        self.assertTrue(result["providers"][-1]["available"])
         run.assert_not_called()
 
     def test_local_display_rules_filter_codex_balance_and_feature_reset_metric(self):

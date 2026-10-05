@@ -61,9 +61,9 @@ def _client_diagnostics_log() -> Path:
     return hermes_logs_dir() / "mission-control-client.log"
 
 from plugins.loader import resolve_handler, dispatch_plugin_request
-from nous_portal_usage import collect_nous_portal_usage
 from provider_usage_config import apply_provider_display_config, visible_usage_providers
-from provider_usage_contract import normalize_cached_entry, normalize_codexbar_entry, unavailable_provider
+from provider_usage_collector import collect_codexbar_usage
+from provider_usage_snapshot import read_provider_usage_snapshot, request_background_provider_usage_refresh
 
 from mission_control_agents import (
     load_agent_trace_snapshot,
@@ -461,93 +461,13 @@ def collect_thermal_snapshot() -> Dict[str, Any]:
     return _thermal_unavailable(f"unsupported platform: {current_platform or 'unknown'}")
 
 
-_USAGE_PROVIDERS = ("codex", "ollama", "openrouter")
-
-
-def _sanitize_usage_window(value: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(value, dict):
-        return None
-    result: Dict[str, Any] = {}
-    for key in ("usedPercent", "resetsAt", "windowMinutes"):
-        if key in value and value[key] is not None:
-            result[key] = value[key]
-    return result or None
-
-
-def _sanitize_provider_usage(provider: str, payload: Any) -> Dict[str, Any]:
-    """Compatibility wrapper for the provider-agnostic contract."""
-    return normalize_codexbar_entry(provider, payload)
-
-
 def collect_provider_usage() -> Dict[str, Any]:
-    visible = set(visible_usage_providers())
+    configured_providers = visible_usage_providers()
     cache_path = hermes_cache_dir() / "mission-control-provider-usage.json"
-    cached: Optional[Dict[str, Any]] = None
-    try:
-        candidate = json.loads(cache_path.read_text(encoding="utf-8"))
-        if isinstance(candidate, dict) and isinstance(candidate.get("providers"), list):
-            cached = candidate
-    except (OSError, json.JSONDecodeError):
-        pass
-
-    if cached is not None:
-        providers = []
-        for provider in cached["providers"]:
-            normalized = normalize_cached_entry(provider)
-            if normalized is None or normalized.get("provider") not in visible or normalized.get("provider") == "nous":
-                continue
-            providers.append(apply_provider_display_config(normalized))
-    else:
-        executable = shutil.which("codexbar") or "/opt/homebrew/bin/codexbar"
-        providers = []
-        for provider in _USAGE_PROVIDERS:
-            if provider not in visible:
-                continue
-            try:
-                # Ollama's API path exposes no usage data; must read the web dashboard (Chrome cookies).
-                src_flag = ["--source", "web"] if provider == "ollama" else []
-                completed = subprocess.run(
-                    [executable, "usage", "--provider", provider, *src_flag, "--json", "--no-color"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                )
-                stdout, stderr, returncode = completed.stdout, completed.stderr, completed.returncode
-                try:
-                    payload = json.loads(stdout)
-                except json.JSONDecodeError:
-                    raw_output = stdout.strip()
-                    try:
-                        decoded = json.loads(raw_output)
-                        payload = json.loads(decoded) if isinstance(decoded, str) else decoded
-                    except (json.JSONDecodeError, TypeError):
-                        start = raw_output.find("[")
-                        end = raw_output.rfind("]")
-                        try:
-                            payload = json.loads(raw_output[start:end + 1]) if start >= 0 and end > start else None
-                        except json.JSONDecodeError:
-                            payload = None
-                result = apply_provider_display_config(_sanitize_provider_usage(provider, payload))
-                if returncode != 0 and result.get("available"):
-                    result["available"] = False
-                    result["error"] = "CodexBar returned a provider error."
-                providers.append(result)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                error = "CodexBar unavailable." if isinstance(exc, OSError) else "CodexBar timed out."
-                providers.append(apply_provider_display_config(unavailable_provider(provider, "cli", error)))
-
-    if "nous" in visible:
-        # Nous is deliberately not sent through CodexBar. The sidecar uses the
-        # access token already persisted by Hermes and never rotates a refresh token.
-        providers.append(apply_provider_display_config(collect_nous_portal_usage()))
-    return {
-        "schemaVersion": 1,
-        "success": any(provider.get("available") for provider in providers),
-        "available": True,
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "providers": providers,
-    }
+    snapshot = read_provider_usage_snapshot(cache_path, configured_providers)
+    request_background_provider_usage_refresh(cache_path, configured_providers, collect_codexbar_usage)
+    snapshot["providers"] = [apply_provider_display_config(provider) for provider in snapshot["providers"]]
+    return snapshot
 
 
 def _resolve_access_token() -> Optional[str]:
