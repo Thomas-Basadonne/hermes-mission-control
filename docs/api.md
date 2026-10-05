@@ -38,6 +38,7 @@ is the `do_GET` / `do_POST` / `do_PUT` / `do_PATCH` / `do_DELETE` handlers in
 | GET | `/api/local/status` | Gateway/runtime status and active model |
 | GET | `/api/local/model/info` | Model details |
 | GET | `/api/local/provider-usage` | Normalized provider usage (see [telemetry.md](telemetry.md#provider-usage-codexbar--nous-portal)) |
+| GET | `/api/local/provider-usage/catalog` | Sanitized CodexBar provider catalog plus Mission Control-native providers |
 | GET | `/api/local/sessions` | Session list |
 | GET | `/api/local/sessions/usage` | Session token/cost usage |
 | GET | `/api/local/logs` | Tail of recent Hermes log files (`maxFiles`, `maxLines`) |

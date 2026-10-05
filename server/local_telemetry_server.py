@@ -62,6 +62,7 @@ def _client_diagnostics_log() -> Path:
 
 from plugins.loader import resolve_handler, dispatch_plugin_request
 from nous_portal_usage import collect_nous_portal_usage
+from provider_usage_catalog import ProviderCatalogError, discover_codexbar_catalog, parse_provider_catalog
 from provider_usage_config import apply_provider_display_config, visible_usage_providers
 from provider_usage_contract import normalize_cached_entry, normalize_codexbar_entry, unavailable_provider
 
@@ -462,6 +463,76 @@ def collect_thermal_snapshot() -> Dict[str, Any]:
 
 
 _USAGE_PROVIDERS = ("codex", "ollama", "openrouter")
+_PROVIDER_USAGE_CATALOG_LOCK = threading.Lock()
+_PROVIDER_USAGE_CATALOG_CACHE: Optional[Dict[str, Any]] = None
+_PROVIDER_USAGE_CATALOG_CACHE_AT = 0.0
+_PROVIDER_USAGE_CATALOG_TTL = 300.0
+
+
+def reset_provider_usage_catalog_cache() -> None:
+    """Reset the process-local catalog cache (also used by isolated tests)."""
+    global _PROVIDER_USAGE_CATALOG_CACHE, _PROVIDER_USAGE_CATALOG_CACHE_AT
+    with _PROVIDER_USAGE_CATALOG_LOCK:
+        _PROVIDER_USAGE_CATALOG_CACHE = None
+        _PROVIDER_USAGE_CATALOG_CACHE_AT = 0.0
+
+
+def provider_usage_catalog_snapshot(*, force_refresh: bool = False) -> Dict[str, Any]:
+    """Return sanitized CodexBar metadata plus MC's native Nous adapter."""
+    global _PROVIDER_USAGE_CATALOG_CACHE, _PROVIDER_USAGE_CATALOG_CACHE_AT
+    with _PROVIDER_USAGE_CATALOG_LOCK:
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and _PROVIDER_USAGE_CATALOG_CACHE is not None
+            and now - _PROVIDER_USAGE_CATALOG_CACHE_AT < _PROVIDER_USAGE_CATALOG_TTL
+        ):
+            return {
+                **_PROVIDER_USAGE_CATALOG_CACHE,
+                "providers": [dict(item) for item in _PROVIDER_USAGE_CATALOG_CACHE["providers"]],
+            }
+
+        try:
+            codexbar_providers = parse_provider_catalog(json.dumps(discover_codexbar_catalog()))
+        except ProviderCatalogError:
+            if _PROVIDER_USAGE_CATALOG_CACHE is not None:
+                return {
+                    **_PROVIDER_USAGE_CATALOG_CACHE,
+                    "stale": True,
+                    "error": "CodexBar provider catalog is unavailable.",
+                    "providers": [dict(item) for item in _PROVIDER_USAGE_CATALOG_CACHE["providers"]],
+                }
+            return {
+                "available": False,
+                "stale": False,
+                "error": "CodexBar provider catalog is unavailable.",
+                "providers": [{
+                    "provider": "nous",
+                    "displayName": "Nous Portal",
+                    "enabled": True,
+                    "defaultEnabled": True,
+                    "source": "mission-control",
+                }],
+            }
+
+        providers = [*codexbar_providers, {
+            "provider": "nous",
+            "displayName": "Nous Portal",
+            "enabled": True,
+            "defaultEnabled": True,
+            "source": "mission-control",
+        }]
+        providers.sort(key=lambda item: (item["displayName"].casefold(), item["provider"]))
+        _PROVIDER_USAGE_CATALOG_CACHE = {
+            "available": True,
+            "stale": False,
+            "providers": providers,
+        }
+        _PROVIDER_USAGE_CATALOG_CACHE_AT = now
+        return {
+            **_PROVIDER_USAGE_CATALOG_CACHE,
+            "providers": [dict(item) for item in providers],
+        }
 
 
 def _sanitize_usage_window(value: Any) -> Optional[Dict[str, Any]]:
@@ -2040,6 +2111,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._unauthorized()
                 return
             self._json(200, load_sessions_usage())
+            return
+        if parsed.path == "/api/local/provider-usage/catalog":
+            if not _is_authorized(self):
+                self._unauthorized()
+                return
+            self._json(200, provider_usage_catalog_snapshot())
             return
         if parsed.path == "/api/local/provider-usage":
             if not _is_authorized(self):
