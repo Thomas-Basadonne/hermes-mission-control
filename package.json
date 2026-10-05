@@ -1,7 +1,7 @@
 {
   "name": "hermes-mission-control",
   "private": false,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "packageManager": "pnpm@10.33.2",
   "description": "Standalone operational dashboard for Hermes with live telemetry and zero core dependencies.",
   "type": "module",
