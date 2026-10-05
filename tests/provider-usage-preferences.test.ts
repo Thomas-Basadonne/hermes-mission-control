@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   applyProviderUsagePreferences,
+  getProviderUsageCatalogRows,
+  getProviderUsageSelectionForDisplay,
+  getVisibleProviderUsageCards,
+  hasProviderUsageSelectionChanges,
   loadProviderUsagePreferences,
   moveProviderUsagePreference,
   PROVIDER_USAGE_PREFERENCES_KEY,
@@ -78,6 +82,64 @@ test('updates provider and field visibility immutably', () => {
   assert.deepEqual(fieldHidden.hiddenFields.codex.windows, ['primary']);
   assert.deepEqual(fieldVisible.hiddenFields.codex.windows, []);
   assert.deepEqual(preferences.hiddenProviders, ['ollama']);
+});
+
+test('keeps collection, presentation, and overview eligibility separate for catalog providers', () => {
+  const preferences = {
+    hiddenProviders: ['nous'],
+    hiddenFields: {},
+    providerOrder: ['nous', 'codex'],
+    columns: 3 as const,
+    view: 'compact' as const,
+  };
+  const catalog = [
+    { provider: 'codex', displayName: 'Codex' },
+    { provider: 'nous', displayName: 'Nous Portal' },
+    { provider: 'ollama', displayName: 'Ollama Cloud' },
+  ];
+  const usage = [
+    { provider: 'codex', available: true, windows: [], balances: [], metrics: [] },
+    { provider: 'nous', available: true, windows: [], balances: [], metrics: [] },
+    { provider: 'ollama', available: false, windows: [], balances: [], metrics: [] },
+  ];
+
+  assert.deepEqual(getProviderUsageCatalogRows(catalog, ['codex'], preferences), [
+    { provider: 'nous', displayName: 'Nous Portal', collectUsage: false, showCard: false, showCardDisabled: true },
+    { provider: 'codex', displayName: 'Codex', collectUsage: true, showCard: true, showCardDisabled: false },
+    { provider: 'ollama', displayName: 'Ollama Cloud', collectUsage: false, showCard: true, showCardDisabled: true },
+  ]);
+  assert.deepEqual(getVisibleProviderUsageCards(usage, ['codex', 'nous', 'ollama'], preferences).map(({ provider }) => provider), ['codex', 'ollama']);
+});
+
+test('preserves a card preference while its collection draft is deselected', () => {
+  const preferences = {
+    hiddenProviders: [],
+    hiddenFields: {},
+    providerOrder: [],
+    columns: 3 as const,
+    view: 'compact' as const,
+  };
+  const catalog = [{ provider: 'codex', displayName: 'Codex' }];
+
+  assert.deepEqual(getProviderUsageCatalogRows(catalog, [], preferences), [
+    { provider: 'codex', displayName: 'Codex', collectUsage: false, showCard: true, showCardDisabled: true },
+  ]);
+  assert.deepEqual(preferences.hiddenProviders, []);
+});
+
+test('marks collection settings dirty only when the selected provider set changes', () => {
+  assert.equal(hasProviderUsageSelectionChanges(['codex', 'nous'], ['nous', 'codex']), false);
+  assert.equal(hasProviderUsageSelectionChanges(['codex', 'nous'], ['codex']), true);
+  assert.equal(hasProviderUsageSelectionChanges(['codex'], ['codex', 'nous']), true);
+});
+
+test('keeps snapshot cards visible when the catalog selection is unavailable', () => {
+  const providers = [
+    { provider: 'codex', windows: [], balances: [], metrics: [] },
+    { provider: 'deepseek', windows: [], balances: [], metrics: [] },
+  ];
+  assert.deepEqual(getProviderUsageSelectionForDisplay(providers, null), ['codex', 'deepseek']);
+  assert.deepEqual(getProviderUsageSelectionForDisplay(providers, ['deepseek']), ['deepseek']);
 });
 
 test('persists normalized preferences without failing when browser storage is unavailable', () => {

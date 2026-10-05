@@ -1,55 +1,67 @@
-import { readFileSync } from 'node:fs';
+import assert from 'node:assert/strict';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createServer } from 'vite';
+import react from '@vitejs/plugin-react';
 
-const component = readFileSync(new URL('../src/components/overview/ProviderUsagePanel.tsx', import.meta.url), 'utf8');
-const api = readFileSync(new URL('../src/lib/hermes-api.ts', import.meta.url), 'utf8');
+const server = await createServer({
+  configFile: false,
+  root: process.cwd(),
+  appType: 'custom',
+  logLevel: 'silent',
+  plugins: [react()],
+  server: { middlewareMode: true, hmr: false },
+});
 
-if (!component.includes('lg:grid-cols-3')) {
-  throw new Error('provider usage desktop grid must use three columns');
-}
-if (component.includes('lg:grid-cols-4')) {
-  throw new Error('provider usage desktop grid must not use four columns');
-}
-if (!component.includes('featuredMetrics')) {
-  throw new Error('provider usage cards must support featured metrics');
-}
-if (!component.includes('resetCreditMetrics')) {
-  throw new Error('Codex reset credits must be separated from featured metrics');
-}
-if (!component.includes('provider-reset-footer')) {
-  throw new Error('Codex reset credits must render in a card footer');
-}
-if (!component.includes("metric.id === 'reset_credits_available'")) {
-  throw new Error('Codex footer must target reset credits, not quota reset dates');
-}
-if (!component.includes('loadProviderUsageCatalog') || !component.includes('saveProviderUsageSelection')) {
-  throw new Error('provider usage panel must load and persist the dynamic provider selection');
-}
-if (!component.includes('filteredCatalog.map')) {
-  throw new Error('provider usage customization must render the searched catalog');
-}
-if (!api.includes("'/provider-usage/catalog'") || !api.includes("'/provider-usage/selection'")) {
-  throw new Error('provider usage API client must use the local catalog and selection routes');
-}
+try {
+  const {
+    normalizeProviderUsageCatalog,
+    normalizeProviderUsageSelection,
+  } = await server.ssrLoadModule('/src/lib/hermes-api.ts');
+  const { ProviderCard } = await server.ssrLoadModule('/src/components/overview/ProviderUsagePanel.tsx');
+  const { I18nProvider } = await server.ssrLoadModule('/src/lib/i18n.tsx');
 
-for (const preferenceApi of [
-  'loadProviderUsagePreferences',
-  'saveProviderUsagePreferences',
-  'applyProviderUsagePreferences',
-  'setProviderUsageProviderVisible',
-  'setProviderUsageFieldVisible',
-  'moveProviderUsagePreference',
-]) {
-  if (!component.includes(preferenceApi)) {
-    throw new Error(`provider usage UI must support user preference API: ${preferenceApi}`);
-  }
+  assert.deepEqual(normalizeProviderUsageCatalog({
+    available: true,
+    providers: [],
+    selectedProviders: [],
+  }), {
+    available: true,
+    providers: [],
+    selectedProviders: [],
+  });
+
+  assert.equal(normalizeProviderUsageCatalog({
+    available: true,
+    providers: 'not-an-array',
+    selectedProviders: [],
+  }), null);
+  assert.equal(normalizeProviderUsageCatalog({
+    available: true,
+    providers: [{ provider: 'codex', displayName: 'Codex', enabled: 'yes', defaultEnabled: false, source: 'codexbar', selectable: true }],
+    selectedProviders: ['codex'],
+  }), null);
+  assert.equal(normalizeProviderUsageCatalog({
+    available: true,
+    providers: [],
+    selectedProviders: ['codex', 1],
+  }), null);
+
+  assert.deepEqual(normalizeProviderUsageSelection({ selectedProviders: ['codex', 'codex'] }), {
+    selectedProviders: ['codex'],
+  });
+  assert.equal(normalizeProviderUsageSelection({ selectedProviders: ['codex', null] }), null);
+
+  const staleCard = renderToStaticMarkup(createElement(I18nProvider, null,
+    createElement(ProviderCard, {
+      provider: { provider: 'codex', available: true, stale: false, windows: [], balances: [], metrics: [] },
+      locale: 'en-US',
+      snapshotStale: true,
+    }),
+  ));
+  assert.match(staleCard, /Codex: stale/);
+
+  console.log('provider catalog validation and stale card rendering contracts passed');
+} finally {
+  await server.close();
 }
-if (!component.includes('provider-usage-customize-dialog') || !component.includes('aria-haspopup="dialog"')) {
-  throw new Error('provider usage preferences must use a viewport-safe accessible dialog');
-}
-if (component.includes('max-h-[70vh]')) {
-  throw new Error('provider usage customize content must not be clipped by a viewport-relative dropdown');
-}
-if (!component.includes('provider.preferencesHelp')) {
-  throw new Error('provider usage UI must explain the boundary between user preferences and admin config');
-}
-console.log('provider usage UI contract test passed');

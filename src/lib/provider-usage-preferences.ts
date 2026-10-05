@@ -19,6 +19,19 @@ type ProviderUsageEntry = {
   metrics?: Array<{ id: string }>;
 };
 
+type ProviderUsageCatalogEntry = {
+  provider: string;
+  displayName: string;
+};
+
+export type ProviderUsageCatalogRow = {
+  provider: string;
+  displayName: string;
+  collectUsage: boolean;
+  showCard: boolean;
+  showCardDisabled: boolean;
+};
+
 export const DEFAULT_PROVIDER_USAGE_PREFERENCES: ProviderUsagePreferences = {
   hiddenProviders: [],
   hiddenFields: {},
@@ -118,6 +131,52 @@ export function applyProviderUsagePreferences<T extends ProviderUsageEntry>(
         metrics: provider.metrics?.filter(({ id }) => !hidden.metrics.includes(id)),
       };
     });
+}
+
+export function getProviderUsageCatalogRows<T extends ProviderUsageCatalogEntry>(
+  catalog: T[],
+  draftSelection: string[],
+  preferences: ProviderUsagePreferences,
+): ProviderUsageCatalogRow[] {
+  const selected = new Set(draftSelection);
+  const seen = new Set<string>();
+  return orderProviderUsage(catalog, preferences).flatMap((provider) => {
+    if (!provider.provider || seen.has(provider.provider)) return [];
+    seen.add(provider.provider);
+    const collectUsage = selected.has(provider.provider);
+    return [{
+      provider: provider.provider,
+      displayName: provider.displayName,
+      collectUsage,
+      showCard: !preferences.hiddenProviders.includes(provider.provider),
+      showCardDisabled: !collectUsage,
+    }];
+  });
+}
+
+export function hasProviderUsageSelectionChanges(draft: string[], saved: string[]): boolean {
+  const draftSet = new Set(draft);
+  const savedSet = new Set(saved);
+  return draftSet.size !== savedSet.size || [...draftSet].some((provider) => !savedSet.has(provider));
+}
+
+export function getProviderUsageSelectionForDisplay<T extends ProviderUsageEntry>(
+  providers: T[],
+  selectedProviders: string[] | null,
+): string[] {
+  return selectedProviders ?? providers.map(({ provider }) => provider);
+}
+
+export function getVisibleProviderUsageCards<T extends ProviderUsageEntry>(
+  providers: T[],
+  selectedProviders: string[],
+  preferences: ProviderUsagePreferences,
+): T[] {
+  const selected = new Set(selectedProviders);
+  return applyProviderUsagePreferences(
+    providers.filter((provider) => selected.has(provider.provider)),
+    preferences,
+  );
 }
 
 export function moveProviderUsagePreference(

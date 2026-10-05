@@ -1586,30 +1586,81 @@ export type MissionControlProviderCatalogSnapshot = {
   selectedProviders: string[];
 };
 
-const fallbackProviderCatalog: MissionControlProviderCatalogSnapshot = {
-  available: false,
-  providers: [],
-  selectedProviders: [],
-};
+export function normalizeProviderUsageCatalog(input: unknown): MissionControlProviderCatalogSnapshot | null {
+  if (!isRecord(input)
+    || typeof input.available !== 'boolean'
+    || !Array.isArray(input.providers)
+    || !Array.isArray(input.selectedProviders)
+    || !input.selectedProviders.every((provider) => typeof provider === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider))
+    || ('stale' in input && typeof input.stale !== 'boolean')
+    || ('error' in input && typeof input.error !== 'string')) return null;
+
+  const seenProviders = new Set<string>();
+  const providers: MissionControlProviderCatalogEntry[] = [];
+  for (const item of input.providers) {
+    if (!isRecord(item)
+      || typeof item.provider !== 'string'
+      || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(item.provider)
+      || typeof item.displayName !== 'string'
+      || !item.displayName.trim()
+      || typeof item.enabled !== 'boolean'
+      || typeof item.defaultEnabled !== 'boolean'
+      || (item.source !== 'codexbar' && item.source !== 'mission-control')
+      || typeof item.selectable !== 'boolean'
+      || seenProviders.has(item.provider)) return null;
+    const provider = item.provider;
+    seenProviders.add(provider);
+    providers.push({
+      provider,
+      displayName: item.displayName.trim(),
+      enabled: item.enabled,
+      defaultEnabled: item.defaultEnabled,
+      source: item.source,
+      selectable: item.selectable,
+    });
+  }
+
+  const selectedProviders = [...new Set(input.selectedProviders as string[])];
+  if (selectedProviders.some((provider) => !seenProviders.has(provider))) return null;
+
+  return {
+    available: input.available,
+    ...(readBoolean(input.stale) ? { stale: true } : {}),
+    ...(readString(input.error) ? { error: readString(input.error) } : {}),
+    providers,
+    selectedProviders,
+  };
+}
+
+export function normalizeProviderUsageSelection(input: unknown): { selectedProviders: string[] } | null {
+  if (!isRecord(input) || !Array.isArray(input.selectedProviders)
+    || !input.selectedProviders.every((provider) => typeof provider === 'string' && provider.length > 0)) {
+    return null;
+  }
+  return { selectedProviders: [...new Set(input.selectedProviders as string[])] };
+}
 
 export async function loadProviderUsageCatalog(accessToken?: string): Promise<MissionControlProviderCatalogSnapshot> {
-  try {
-    const { payload: local } = await maybeFetchLocalJson<MissionControlProviderCatalogSnapshot>('/provider-usage/catalog', accessToken);
-    return local ?? fallbackProviderCatalog;
-  } catch {
-    return fallbackProviderCatalog;
-  }
+  const { payload: local } = await maybeFetchLocalJson<unknown>('/provider-usage/catalog', accessToken);
+  const catalog = normalizeProviderUsageCatalog(local);
+  if (!catalog) throw new Error('Mission Control provider usage catalog payload is malformed');
+  return catalog;
 }
 
 export async function saveProviderUsageSelection(
   selectedProviders: string[],
   accessToken?: string,
 ): Promise<{ selectedProviders: string[] }> {
-  return await putLocalJson<{ selectedProviders: string[] }>(
+  const payload = await putLocalJson<unknown>(
     '/provider-usage/selection',
     { selectedProviders },
     accessToken,
   );
+  const selection = normalizeProviderUsageSelection(payload);
+  if (!selection) {
+    throw new Error('Mission Control provider usage selection payload is malformed');
+  }
+  return selection;
 }
 
 const fallbackProviderUsage: MissionControlProviderUsageSnapshot = {
