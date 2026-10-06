@@ -5,6 +5,7 @@ import {
   getCodexBarEnableCommand,
   isProviderUsageCollectionCheckboxDisabled,
   needsCodexBarSetupAlert,
+  normalizeProviderUsagePreferences,
   getProviderUsageCatalogRows,
   getProviderUsageSelectionForDisplay,
   getVisibleProviderUsageCards,
@@ -17,6 +18,85 @@ import {
   setProviderUsageFieldVisible,
   setProviderUsageProviderVisible,
 } from '../src/lib/provider-usage-preferences.ts';
+
+test('normalizes optional compact overrides into bounded ordered safe field references', () => {
+  const compactFields = JSON.parse('{"future":[],"constructor":[{"group":"metrics","id":"safe:metric"}],"__proto__":[{"group":"windows","id":"primary"}]}');
+  compactFields.other = [
+    { group: 'windows', id: 'quota' }, { group: 'windows', id: 'quota' },
+    { group: 'metrics', id: 'quota' }, { group: 'invalid', id: 'x' },
+    { group: 'metrics', id: 'bad id' }, { group: 'metrics', id: '_bad' },
+    { group: 'metrics', id: 'a'.repeat(161) }, null,
+    { group: 'balances', id: 'USD.balance' }, { group: 'metrics', id: 'A_1-2:3' },
+    { group: 'metrics', id: 'last' }, { group: 'metrics', id: 'sixth' },
+  ];
+  compactFields.invalid = 'not-an-array';
+  const result = normalizeProviderUsagePreferences({ compactFields });
+  assert.deepEqual(result.compactFields?.other, [
+    { group: 'windows', id: 'quota' }, { group: 'metrics', id: 'quota' },
+    { group: 'balances', id: 'USD.balance' }, { group: 'metrics', id: 'A_1-2:3' },
+    { group: 'metrics', id: 'last' },
+  ]);
+  assert.deepEqual(result.compactFields?.future, []);
+  assert.deepEqual(result.compactFields?.constructor, [{ group: 'metrics', id: 'safe:metric' }]);
+  assert.deepEqual(result.compactFields?.['__proto__'], [{ group: 'windows', id: 'primary' }]);
+  assert.equal(Object.getPrototypeOf(result.compactFields), Object.prototype);
+  assert.equal(Object.hasOwn(result.compactFields!, 'invalid'), false);
+  for (const invalid of [undefined, null, [], 'invalid']) {
+    assert.equal(Object.hasOwn(normalizeProviderUsagePreferences({ compactFields: invalid }), 'compactFields'), false);
+  }
+});
+
+test('sets compact selection immutably, persists empty override, and restores Auto with null', async () => {
+  const api = await import('../src/lib/provider-usage-preferences.ts');
+  assert.equal(typeof api.setProviderUsageCompactFields, 'function');
+  assert.equal(api.MAX_PROVIDER_USAGE_COMPACT_FIELDS, 5);
+  const preferences = normalizeProviderUsagePreferences({
+    hiddenProviders: ['hidden'], hiddenFields: { future: { metrics: ['hidden-row'] } },
+    providerOrder: ['future'], columns: 2, view: 'detailed',
+  });
+  const fields = [{ group: 'metrics' as const, id: 'row' }, { group: 'windows' as const, id: 'quota' }];
+  const selected = api.setProviderUsageCompactFields(preferences, 'future', [...fields, fields[0]]);
+  assert.deepEqual(selected, { ...preferences, compactFields: { future: fields } });
+  fields[0].id = 'changed';
+  assert.equal(selected.compactFields!.future[0].id, 'row');
+  assert.equal(Object.hasOwn(preferences, 'compactFields'), false);
+  const empty = api.setProviderUsageCompactFields(selected, 'future', []);
+  assert.deepEqual(empty.compactFields!.future, []);
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  saveProviderUsagePreferences(empty, storage);
+  assert.deepEqual(loadProviderUsagePreferences(storage), empty);
+  const other = api.setProviderUsageCompactFields(empty, 'constructor', [{ group: 'balances', id: 'balance' }]);
+  const auto = api.setProviderUsageCompactFields(other, 'future', null);
+  assert.equal(Object.hasOwn(auto.compactFields!, 'future'), false);
+  assert.deepEqual(auto.compactFields!.constructor, [{ group: 'balances', id: 'balance' }]);
+  const providers = [{ provider: 'future', windows: [{ id: 'quota' }], balances: [{ id: 'balance' }], metrics: [{ id: 'row' }, { id: 'hidden-row' }] }];
+  assert.deepEqual(applyProviderUsagePreferences(providers, empty)[0], { ...providers[0], metrics: [{ id: 'row' }] });
+});
+
+test('migrates compact legacy references without deleting missing or ambiguous selections', () => {
+  const prefs = normalizeProviderUsagePreferences({
+    compactFields: { future: [
+      { group: 'metrics', id: 'legacy' }, { group: 'windows', id: 'legacy' },
+      { group: 'balances', id: 'missing' }, { group: 'metrics', id: 'ambiguous' },
+      { group: 'metrics', id: 'stable' },
+    ], offline: [], dropped: [{ group: 'metrics', id: 'remember-me' }] },
+  });
+  const providers = [{ provider: 'future', windows: [{ id: 'weekly', legacyIds: ['legacy'] }], balances: [], metrics: [
+    { id: 'stable', legacyIds: ['legacy'] }, { id: 'other', legacyIds: ['stable'] },
+    { id: 'a', legacyIds: ['ambiguous'] }, { id: 'b', legacyIds: ['ambiguous'] },
+  ] }];
+  const migrated = migrateProviderUsagePreferences(providers, prefs);
+  assert.deepEqual(migrated.compactFields, {
+    future: [{ group: 'metrics', id: 'stable' }, { group: 'windows', id: 'weekly' },
+      { group: 'balances', id: 'missing' }, { group: 'metrics', id: 'ambiguous' }],
+    offline: [], dropped: [{ group: 'metrics', id: 'remember-me' }],
+  });
+  assert.equal(prefs.compactFields!.future[0].id, 'legacy');
+  assert.equal(migrateProviderUsagePreferences([], migrated), migrated);
+  assert.equal(migrateProviderUsagePreferences([{ ...providers[0], windows: [], metrics: [] }], migrated), migrated);
+  assert.equal(migrateProviderUsagePreferences(providers, migrated), migrated);
+});
 
 test('loads versioned browser preferences and removes malformed entries', () => {
   const values = new Map([[PROVIDER_USAGE_PREFERENCES_KEY, JSON.stringify({

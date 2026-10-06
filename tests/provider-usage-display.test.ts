@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { selectCompactFields, formatProviderUsagePercent } from '../src/lib/provider-usage-display.ts';
 const fields = [{ id: 'regular' }, { id: 'featured-a', featured: true }, { id: 'featured-b', featured: true }, { id: 'overflow' }];
-assert.deepEqual(selectCompactFields(fields, 1).visible.map(field => field.id), ['featured-a', 'featured-b', 'regular']);
-assert.deepEqual(selectCompactFields(fields, 1).overflow.map(field => field.id), ['overflow']);
-assert.equal(selectCompactFields(fields, -1).visible.length, 2);
+assert.deepEqual(selectCompactFields(fields, 1).visible.map(field => field.id), ['featured-a']);
+assert.deepEqual(selectCompactFields(fields, 1).overflow.map(field => field.id), ['featured-b', 'regular', 'overflow']);
+assert.equal(selectCompactFields(fields, -1).visible.length, 0);
 assert.equal(formatProviderUsagePercent(0.005, 'it-IT'), '<0,01%');
 assert.equal(formatProviderUsagePercent(125, 'en-US'), '125%');
 assert.equal(formatProviderUsagePercent(0, 'en-US'), '0%');

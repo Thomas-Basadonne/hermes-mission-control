@@ -39,22 +39,23 @@ export function ProviderUsageChartView({ chart, locale, dataLabel }: ChartProps)
 interface MetricProps {
   metric: MissionControlProviderUsageMetric; locale: string; label: string; dataLabel: string;
   enabledLabel: string; disabledLabel: string; detailed: boolean;
+  showSectionLabel?: boolean; numericLabel?: string;
 }
-export function ProviderUsageMetricRow({ metric, locale, label, dataLabel, enabledLabel, disabledLabel, detailed }: MetricProps) {
+export function ProviderUsageMetricRow({ metric, locale, label, dataLabel, enabledLabel, disabledLabel, detailed, showSectionLabel = true, numericLabel }: MetricProps) {
   let value = metric.value == null ? '—' : String(metric.value);
   if (metric.kind === 'timestamp') {
     const date = new Date(String(metric.value ?? ''));
     value = Number.isFinite(date.getTime()) ? formatDateTime(date, locale) : '—';
   } else if (typeof metric.value === 'number') {
     value = metric.currency ? formatCurrency(metric.value, metric.currency, locale)
-      : `${formatNumber(metric.value, locale)}${metric.unit ? ` ${metric.unit}` : ''}`;
+      : `${formatNumber(metric.value, locale)}${metric.unit && metric.unit !== 'count' ? ` ${metric.unit}` : ''}`;
   } else if (typeof metric.value === 'boolean') value = metric.value ? enabledLabel : disabledLabel;
   else if (metric.value != null && metric.unit) value += ` ${metric.unit}`;
   const progress = metric.progress;
   const percent = progress ? progress.used / progress.total * 100 : undefined;
   const chart = metric.chart ? <ProviderUsageChartView chart={metric.chart} locale={locale} dataLabel={dataLabel} /> : null;
   return <div data-field-id={metric.id} className={`min-w-0 border-b border-border-subtle py-2 last:border-0 ${metric.featured ? 'rounded-lg border border-accent/20 bg-accent/5 p-2' : ''}`}>
-    {metric.sectionLabel ? <div className="mb-1 break-words text-[11px] text-text-subtle">{metric.sectionLabel}</div> : null}
+    {showSectionLabel && metric.sectionLabel ? <div className="mb-1 break-words text-[11px] text-text-subtle">{metric.sectionLabel}</div> : null}
     <div className="flex min-w-0 items-start justify-between gap-3">
       <dt className="min-w-0 break-words text-sm text-text-muted">{label}</dt>
       <dd className="min-w-0 break-words text-sm font-medium tabular-nums text-text text-right">
@@ -74,5 +75,6 @@ export function ProviderUsageMetricRow({ metric, locale, label, dataLabel, enabl
       </div>
     </div> : null}
     {chart ? <dd className="mt-2 min-w-0">{detailed ? chart : <details className="min-w-0"><summary className="cursor-pointer break-words text-xs text-accent">{metric.chart?.title ?? label}</summary>{chart}</details>}</dd> : null}
+    {detailed && numericLabel && typeof metric.usageValue === 'number' ? <div className="mt-1 flex flex-wrap justify-between gap-2 text-xs text-text-subtle"><dt>{numericLabel}</dt><dd className="tabular-nums">{new Intl.NumberFormat(locale, { maximumFractionDigits: 20 }).format(metric.usageValue)}</dd></div> : null}
   </div>;
 }

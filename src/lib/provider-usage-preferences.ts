@@ -1,10 +1,16 @@
 export const PROVIDER_USAGE_PREFERENCES_KEY = 'mission-control-provider-usage-preferences:v1';
 
 export type ProviderUsageFieldGroup = 'windows' | 'balances' | 'metrics';
+export const MAX_PROVIDER_USAGE_COMPACT_FIELDS = 5;
+export interface ProviderUsageFieldRef {
+  group: ProviderUsageFieldGroup;
+  id: string;
+}
 export type ProviderUsageView = 'compact' | 'detailed';
 export type ProviderUsagePreferences = {
   hiddenProviders: string[];
   hiddenFields: Record<string, Record<ProviderUsageFieldGroup, string[]>>;
+  compactFields?: Record<string, ProviderUsageFieldRef[]>;
   providerOrder: string[];
   columns: 1 | 2 | 3;
   view: ProviderUsageView;
@@ -76,6 +82,23 @@ function uniqueStrings(value: unknown): string[] {
   return [...new Set(value.filter((item): item is string => typeof item === 'string' && item.length > 0))];
 }
 
+function normalizeCompactFields(value: unknown): ProviderUsageFieldRef[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const fields: ProviderUsageFieldRef[] = [];
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const { group, id } = candidate;
+    if (!FIELD_GROUPS.includes(group) || typeof id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/.test(id)) continue;
+    const key = `${group}:${id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    fields.push({ group, id });
+    if (fields.length === MAX_PROVIDER_USAGE_COMPACT_FIELDS) break;
+  }
+  return fields;
+}
+
 function browserStorage(): ProviderUsageStorage | null {
   try {
     return typeof window === 'undefined' ? null : window.localStorage;
@@ -104,6 +127,11 @@ export function normalizeProviderUsagePreferences(value: unknown): ProviderUsage
   return {
     hiddenProviders: uniqueStrings(candidate.hiddenProviders),
     hiddenFields,
+    ...(candidate.compactFields && typeof candidate.compactFields === 'object' && !Array.isArray(candidate.compactFields)
+      ? { compactFields: Object.fromEntries(Object.entries(candidate.compactFields)
+        .filter(([, fields]) => Array.isArray(fields))
+        .map(([provider, fields]) => [provider, normalizeCompactFields(fields)])) }
+      : {}),
     providerOrder: uniqueStrings(candidate.providerOrder),
     columns,
     view: candidate.view === 'detailed' ? 'detailed' : 'compact',
@@ -146,25 +174,36 @@ export function orderProviderUsage<T extends ProviderUsageEntry>(
 export function migrateProviderUsagePreferences<T extends ProviderUsageEntry>(providers: T[], preferences: ProviderUsagePreferences): ProviderUsagePreferences {
   let next = preferences;
   for (const provider of providers) {
-    const hidden = preferences.hiddenFields[provider.provider];
-    if (!hidden) continue;
-    const groups = { ...hidden };
-    let changed = false;
-    for (const group of FIELD_GROUPS) {
+    const hidden = Object.hasOwn(preferences.hiddenFields, provider.provider) ? preferences.hiddenFields[provider.provider] : undefined;
+    const compact = preferences.compactFields && Object.hasOwn(preferences.compactFields, provider.provider)
+      ? preferences.compactFields[provider.provider] : undefined;
+    if (!hidden && compact === undefined) continue;
+    const resolvers = Object.fromEntries(FIELD_GROUPS.map((group) => {
       const fields = provider[group] ?? [];
       const canonicalIds = new Set(fields.map((field) => field.id));
       const aliases = new Map<string, Set<string>>();
       for (const field of fields) for (const alias of field.legacyIds ?? []) {
         const targets = aliases.get(alias) ?? new Set<string>();
-        targets.add(field.id); aliases.set(alias, targets);
+        targets.add(field.id);
+        aliases.set(alias, targets);
       }
-      groups[group] = [...new Set(hidden[group].map((id) => {
+      return [group, (id: string): string => {
         const targets = aliases.get(id);
-        if (canonicalIds.has(id) || targets?.size !== 1) return id;
-        changed = true; return [...targets][0];
-      }))];
+        return !canonicalIds.has(id) && targets?.size === 1 ? [...targets][0] : id;
+      }];
+    })) as Record<ProviderUsageFieldGroup, (id: string) => string>;
+    if (hidden) {
+      const groups = Object.fromEntries(FIELD_GROUPS.map((group) => [group, [...new Set(hidden[group].map(resolvers[group]))]])) as typeof hidden;
+      if (FIELD_GROUPS.some((group) => groups[group].some((id, index) => id !== hidden[group][index]) || groups[group].length !== hidden[group].length)) {
+        next = { ...next, hiddenFields: { ...next.hiddenFields, [provider.provider]: groups } };
+      }
     }
-    if (changed) next = { ...next, hiddenFields: { ...next.hiddenFields, [provider.provider]: groups } };
+    if (compact !== undefined) {
+      const migrated = normalizeCompactFields(compact.map(({ group, id }) => ({ group, id: resolvers[group](id) })));
+      if (migrated.length !== compact.length || migrated.some((field, index) => field.id !== compact[index].id || field.group !== compact[index].group)) {
+        next = { ...next, compactFields: { ...next.compactFields, [provider.provider]: migrated } };
+      }
+    }
   }
   return next;
 }
@@ -289,6 +328,16 @@ export function setProviderUsageProviderVisible(
     ? preferences.hiddenProviders.filter((item) => item !== provider)
     : [...new Set([...preferences.hiddenProviders, provider])];
   return { ...preferences, hiddenProviders };
+}
+
+export function setProviderUsageCompactFields(
+  preferences: ProviderUsagePreferences,
+  providerId: string,
+  fields: ProviderUsageFieldRef[] | null,
+): ProviderUsagePreferences {
+  const entries = Object.entries(preferences.compactFields ?? {}).filter(([provider]) => provider !== providerId);
+  if (fields !== null) entries.push([providerId, normalizeCompactFields(fields)]);
+  return { ...preferences, compactFields: Object.fromEntries(entries) };
 }
 
 export function setProviderUsageFieldVisible(

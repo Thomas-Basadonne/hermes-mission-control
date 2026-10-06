@@ -24,6 +24,84 @@ class GenericContractTests(unittest.TestCase):
             "provider": "future-provider", "source": "api", "usage": usage, **extra,
         }])
 
+    def test_cached_semantic_roles_are_optional_validated_metadata(self):
+        roles = ("quota", "spend_limit", "limit_remaining", "account_balance", "spendable_balance",
+                 "balance_component", "credits", "spend_today", "spend_month", "spend",
+                 "paid_access", "reset_credits", "diagnostic")
+        for group in ("windows", "balances", "metrics"):
+            for role in roles:
+                with self.subTest(group=group, role=role):
+                    entry = {"provider": "future-provider", "available": True,
+                             "windows": [], "balances": [], "metrics": []}
+                    field = {"id": "custom", "label": "Unchanged", "role": role,
+                             **({"usedPercent": 7} if group == "windows" else {"value": 7})}
+                    entry[group] = [field]
+                    self.assertEqual(normalize_cached_entry(entry)[group], [field])
+            for invalid in (None, "unknown", "QUOTA", 7, True, [], {}):
+                with self.subTest(group=group, invalid=invalid):
+                    field["role"] = invalid
+                    normalized = normalize_cached_entry(entry)
+                    self.assertEqual(normalized[group], [{key: value for key, value in field.items() if key != "role"}])
+                    self.assertTrue(normalized["available"])
+                    self.assertEqual(normalized["dataState"], "ready")
+                    self.assertIn("invalid_field", normalized.get("warnings", []))
+            field.pop("role")
+            self.assertEqual(normalize_cached_entry(entry)[group], [field])
+
+    def test_common_generated_fields_have_roles_without_provider_dispatch(self):
+        usage = {"primary": {"usedPercent": 7}, "secondary": {"usedPercent": 12},
+                 "tertiary": {"usedPercent": 3},
+                 "extraRateWindows": [{"id": "daily", "title": "Calls", "window": {"remaining": 2}}],
+                 "providerCost": {"used": 2, "personalUsed": 1, "nextRegenAmount": 4,
+                                  "limit": 10, "balance": 8, "currencyCode": "USD"},
+                 "codexResetCredits": {"availableCount": 0}}
+        expected = {"primary": "quota", "secondary": "quota", "tertiary": "quota", "extra:daily": "quota",
+                    "cost_budget": "spend_limit", "balance": "account_balance", "credits_remaining": "credits",
+                    "cost_used": "spend", "cost_personal_used": "spend", "cost_next_regen": "diagnostic",
+                    "reset_credits_available": "reset_credits"}
+        for provider in ("openrouter", "future-provider"):
+            normalized = normalize_codexbar_entry(provider, [{"provider": provider, "usage": usage,
+                                                             "credits": {"remaining": 5}}])
+            roles = {field["id"]: field.get("role") for group in ("windows", "balances", "metrics")
+                     for field in normalized[group]}
+            self.assertEqual(roles, expected)
+            self.assertEqual(normalize_cached_entry(normalized), normalized)
+
+    def test_detail_roles_use_exact_shared_vocabulary_not_formatted_money(self):
+        vocabulary = {
+            "API key": {"API key limit": "spend_limit", "API key remaining": "limit_remaining",
+                        "API key used": "diagnostic", "Today": "spend_today", "This month": "spend_month",
+                        "This week": "diagnostic"},
+            "Credits": {"Remaining": "account_balance", "Used": "diagnostic", "Total added": "diagnostic"},
+        }
+        details = [{"title": section, "rows": [{"label": label, "value": "$12.34"} for label in rows]}
+                   for section, rows in vocabulary.items()]
+        details.extend([
+            {"title": "Billing", "rows": [{"label": "Today", "value": "$99.00"}]},
+            {"title": "API key", "rows": [{"label": "Today extra", "value": "$99.00"},
+                                           {"label": "today", "value": "$99.00"}]},
+            {"title": "Credits", "rows": [{"label": "Remaining balance", "value": "$99.00"}],
+             "chart": {"kind": "bars", "title": "Remaining", "points": [{"label": "Day", "value": 1}]}},
+        ])
+        result = self.normalize({"details": details})
+        for field in result["metrics"]:
+            if field.get("kind") == "chart":
+                self.assertEqual(field.get("role"), "diagnostic")
+            else:
+                expected = vocabulary.get(field.get("sectionLabel"), {}).get(field["label"])
+                self.assertEqual(field.get("role"), expected)
+                self.assertEqual(field["value"], "$12.34" if expected else "$99.00")
+                self.assertNotIn("usageValue", field)
+                self.assertNotIn("currency", field)
+        self.assertEqual(normalize_cached_entry(result), result)
+        old = copy.deepcopy(result)
+        for field in old["metrics"]:
+            field.pop("role", None)
+        cached = normalize_cached_entry(old)
+        self.assertEqual([field["id"] for field in cached["metrics"]], [field["id"] for field in result["metrics"]])
+        self.assertEqual([field["legacyIds"] for field in cached["metrics"] if "legacyIds" in field],
+                         [field["legacyIds"] for field in result["metrics"] if "legacyIds" in field])
+
     def test_empty_usage_is_no_data(self):
         result = self.normalize({})
         self.assertFalse(result["available"])

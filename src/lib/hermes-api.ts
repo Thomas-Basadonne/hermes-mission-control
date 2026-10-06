@@ -1516,6 +1516,8 @@ export async function loadSessionsUsage(accessToken?: string): Promise<MissionCo
 }
 
 import { withProviderUsageDeadline, ProviderUsageHttpError } from './provider-usage-request';
+import { isProviderUsageFieldRole, type ProviderUsageFieldRole } from './provider-usage-semantics';
+export type { ProviderUsageFieldRole } from './provider-usage-semantics';
 
 export type ProviderUsageDataState = 'ready' | 'no_data' | 'error';
 export type ProviderUsageRefreshState = 'idle' | 'running' | 'cooldown' | 'failed';
@@ -1528,7 +1530,7 @@ export interface ProviderUsageMetricExtra {
   usageValue?: number; kind?: 'value' | 'timestamp' | 'chart'; currency?: string; chart?: ProviderUsageChart;
 }
 export interface ProviderUsageFieldExtra {
-  legacyIds?: string[]; updatedAt?: string | null; scope?: 'account' | 'workspace';
+  role?: ProviderUsageFieldRole; legacyIds?: string[]; updatedAt?: string | null; scope?: 'account' | 'workspace';
 }
 export interface ProviderUsageRefreshMetadata {
   dataState?: ProviderUsageDataState; dataConfidence?: string; refreshState?: ProviderUsageRefreshState;
@@ -1710,12 +1712,16 @@ function normalizeUsageChart(value: unknown): ProviderUsageChart | undefined {
   return { kind: value.kind, points, ...(usageText(value.title) ? { title: usageText(value.title) } : {}), ...(usageText(value.unit) ? { unit: usageText(value.unit) } : {}) };
 }
 
-function normalizeUsageFields(input: unknown, group: string): Record<string, unknown> | null {
+function normalizeUsageFields(input: unknown, group: string, warnings: Set<string>): Record<string, unknown> | null {
   if (!isRecord(input) || typeof input.id !== 'string' || !input.id.trim()
     || typeof input.label !== 'string' || !input.label.trim()) return null;
   const label = usageText(input.label);
   if (!label || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/.test(input.id)) return null;
   const output: Record<string, unknown> = { id: input.id, label };
+  if ('role' in input) {
+    if (isProviderUsageFieldRole(input.role)) output.role = input.role;
+    else warnings.add('invalid_field');
+  }
   if (Array.isArray(input.legacyIds)) output.legacyIds = input.legacyIds.filter((id) => typeof id === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/.test(id));
   if (input.updatedAt !== undefined) output.updatedAt = usageTimestamp(input.updatedAt);
   if (input.scope === 'account' || input.scope === 'workspace') output.scope = input.scope;
@@ -1784,7 +1790,7 @@ export function normalizeProviderUsageSnapshot(input: unknown): MissionControlPr
       fields[group] = [];
       if (!Array.isArray(item[group])) { localWarnings.add('invalid_field'); malformedFields[group] = ['*']; continue; }
       for (const field of item[group]) {
-        const normalized = normalizeUsageFields(field, group);
+        const normalized = normalizeUsageFields(field, group, localWarnings);
         if (!normalized || ids.has(normalized.id as string)) {
           localWarnings.add('invalid_field');
           const id = isRecord(field) && typeof field.id === 'string' && usageText(field.id) && /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/.test(field.id) ? field.id : '*';

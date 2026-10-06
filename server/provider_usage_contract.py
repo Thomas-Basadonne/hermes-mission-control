@@ -21,6 +21,19 @@ from typing import Any, Dict, Optional
 
 _SAFE_SOURCES = {"api", "oauth", "web", "cli", "local", "openai-web", "oauth+web", "codex-cli", "claude"}
 _SAFE_UNITS = {"%", "USD", "credits", "tokens", "requests", "messages", "count", "days", "hours"}
+_FIELD_ROLES = {
+    "quota", "spend_limit", "limit_remaining", "account_balance", "spendable_balance",
+    "balance_component", "credits", "spend_today", "spend_month", "spend",
+    "paid_access", "reset_credits", "diagnostic",
+}
+_COMMON_FIELD_ROLES = {
+    "windows": {"cost_budget": "spend_limit"},
+    "balances": {"balance": "account_balance", "total_spendable": "spendable_balance",
+                 "subscription_remaining": "balance_component", "topup_remaining": "balance_component",
+                 "credits_remaining": "credits"},
+    "metrics": {"cost_used": "spend", "cost_personal_used": "spend", "cost_next_regen": "diagnostic",
+                "paid_access": "paid_access", "reset_credits_available": "reset_credits"},
+}
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b")
 _SECRET_TEXT = re.compile(
     r"(?i)\b(?:bearer\s+\S+|(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S+"
@@ -99,6 +112,16 @@ def _currency(value: Any) -> Optional[str]:
 
 def _window_unit(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and (value in _SAFE_UNITS or _currency(value)) else None
+
+
+def _infer_field_role(collection: str, field: Dict[str, Any]) -> Optional[str]:
+    field_id = field["id"]
+    role = _COMMON_FIELD_ROLES[collection].get(field_id)
+    if role:
+        return role
+    if collection == "windows" and (field_id in ("primary", "secondary", "tertiary") or field_id.startswith("extra:")):
+        return "quota"
+    return None
 
 
 def _window(value: Any, window_id: str, label: str, warnings: set[str]) -> Optional[Dict[str, Any]]:
@@ -394,6 +417,11 @@ def normalize_codexbar_entry(provider: str, payload: Any) -> Dict[str, Any]:
         result["dataConfidence"] = confidence
 
     result["metrics"].extend(_normalize_details(usage.get("details"), warnings))
+    for collection in ("windows", "balances", "metrics"):
+        for field in result[collection]:
+            role = _infer_field_role(collection, field)
+            if role:
+                field["role"] = role
 
     result["available"] = any(result[key] for key in ("windows", "balances", "metrics"))
     result["dataState"] = "ready" if result["available"] else "no_data"
@@ -403,6 +431,12 @@ def normalize_codexbar_entry(provider: str, payload: Any) -> Dict[str, Any]:
 
 
 def _field_metadata(raw: Dict[str, Any], result: Dict[str, Any], warnings: set[str]) -> None:
+    if "role" in raw:
+        role = raw["role"]
+        if isinstance(role, str) and role in _FIELD_ROLES:
+            result["role"] = role
+        else:
+            warnings.add("invalid_field")
     if isinstance(raw.get("featured"), bool):
         result["featured"] = raw["featured"]
     if raw.get("updatedAt") is None and "updatedAt" in raw:

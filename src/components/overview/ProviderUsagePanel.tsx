@@ -1,4 +1,4 @@
-import { selectCompactFields, formatProviderUsagePercent, getProviderUsagePanelState } from '../../lib/provider-usage-display';
+import { selectProviderUsageSummary, formatProviderUsagePercent, getProviderUsagePanelState } from '../../lib/provider-usage-display';
 import { createProviderUsageSelectionController, isProviderUsageSelectionUncertain } from '../../lib/provider-usage-selection';
 import { getProviderUsageStatus, isProviderUsageRunning } from '../../lib/provider-usage-freshness';
 import { useI18n } from '../../lib/i18n';
@@ -14,6 +14,7 @@ import {
   type MissionControlProviderCatalogSnapshot,
   type MissionControlProviderUsage,
   type MissionControlProviderUsageBalance,
+  type MissionControlProviderUsageMetric,
   type MissionControlProviderUsageSnapshot,
   type MissionControlProviderUsageWindow,
 } from '../../lib/hermes-api';
@@ -94,6 +95,7 @@ function formatRenews(value: string | null | undefined, locale: string, t: Trans
 }
 
 function windowLabel(window: MissionControlProviderUsageWindow, t: Translate): string {
+  if (window.label === 'Session' && typeof window.windowMinutes === 'number' && window.windowMinutes > 0 && window.windowMinutes % 60 === 0) return t('provider.hourQuota', { hours: window.windowMinutes / 60 });
   if (window.id === 'primary' && window.label === 'Session') return t('provider.session');
   if (window.id === 'secondary' && window.label === 'Weekly') return t('provider.weekly');
   if (window.id === 'subscription' && window.label === 'Subscription') return t('provider.subscription');
@@ -150,10 +152,10 @@ function UsageGauge({
       <div className="h-2 w-full overflow-hidden rounded-full bg-surface-sunken" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={barValue} aria-valuetext={percent ?? t('provider.unavailableShort')}>
         {tone ? <div className={`h-full rounded-full transition-[width] duration-300 ${tone.className ?? ''}`} style={{ width: `${barValue}%`, backgroundColor: tone.color || undefined }} /> : null}
       </div>
-      {detailed ? (
+      {detailed || window.resetsAt || window.resetDescription || typeof window.nextRegenPercent === 'number' ? (
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-text-muted">
           {remaining !== null || total !== null ? <span>{t('provider.remainingOfTotal', { remaining: remaining ?? '—', total: total ?? '—' })}</span> : null}
-          <span>{window.resetDescription ?? formatReset(window.resetsAt, locale, t)}</span>
+          {window.resetsAt || window.resetDescription ? <span>{window.resetsAt ? formatReset(window.resetsAt, locale, t) : t('provider.reset', { date: window.resetDescription! })}</span> : null}
           {typeof window.nextRegenPercent === 'number' ? <span>{t('provider.nextRegen', { percent: formatProviderUsagePercent(window.nextRegenPercent, locale) })}</span> : null}
         </div>
       ) : null}
@@ -161,12 +163,13 @@ function UsageGauge({
   );
 }
 
-export function ProviderCard({ provider, displayName, view = 'compact', locale, nowMs = Date.now() }: {
+export function ProviderCard({ provider, displayName, view = 'compact', locale, nowMs = Date.now(), preferences }: {
   provider: MissionControlProviderUsage;
   displayName?: string;
   view?: ProviderUsageView;
   locale: string;
   nowMs?: number;
+  preferences?: ProviderUsagePreferences;
 }) {
   const { t } = useI18n();
   const label = displayName ?? provider.provider;
@@ -174,10 +177,11 @@ export function ProviderCard({ provider, displayName, view = 'compact', locale, 
   const balances = (Array.isArray(provider.balances) ? provider.balances : []).filter((balance) => typeof balance.value === 'number');
   const metrics = Array.isArray(provider.metrics) ? provider.metrics : [];
   const windows = Array.isArray(provider.windows) ? provider.windows : [];
-  const compactWindows = selectCompactFields(windows, 3);
-  const compactBalances = selectCompactFields(balances, 2);
-  const compactMetrics = selectCompactFields(metrics, 2);
-  const overflowCount = compactWindows.overflow.length + compactBalances.overflow.length + compactMetrics.overflow.length;
+  const summary = selectProviderUsageSummary(provider, preferences?.compactFields?.[provider.provider]);
+  const compactWindows = { visible: summary.visible.filter((item) => item.group === 'windows').map((item) => item.field as MissionControlProviderUsageWindow), overflow: summary.overflow.filter((item) => item.group === 'windows').map((item) => item.field as MissionControlProviderUsageWindow) };
+  const compactBalances = { visible: summary.visible.filter((item) => item.group === 'balances').map((item) => item.field as MissionControlProviderUsageBalance), overflow: summary.overflow.filter((item) => item.group === 'balances').map((item) => item.field as MissionControlProviderUsageBalance) };
+  const compactMetrics = { visible: summary.visible.filter((item) => item.group === 'metrics').map((item) => item.field as MissionControlProviderUsageMetric), overflow: summary.overflow.filter((item) => item.group === 'metrics').map((item) => item.field as MissionControlProviderUsageMetric) };
+  const overflowCount = summary.overflow.length;
   const state = getProviderUsageStatus(provider, nowMs);
   const stale = state === 'stale';
   const status = t({ available: 'provider.available', stale: 'provider.stale', updating: 'provider.updating', no_data: 'provider.noData', unavailable: 'provider.unavailableShort' }[state]);
@@ -185,6 +189,14 @@ export function ProviderCard({ provider, displayName, view = 'compact', locale, 
   const attempted = formatDate(provider.lastAttemptAt, locale);
   const nextRetry = Date.parse(provider.nextRetryAt ?? '') > nowMs ? formatDate(provider.nextRetryAt, locale) : null;
   const renews = formatRenews(provider.renewsAt, locale, t);
+  const diagnostics = <div className="flex flex-col gap-1.5 text-xs text-text-subtle">
+    {attempted ? <time dateTime={provider.lastAttemptAt ?? undefined}>{t('provider.lastAttempt', { time: attempted })}</time> : null}
+    {nextRetry ? <time dateTime={provider.nextRetryAt ?? undefined}>{t('provider.nextRetry', { time: nextRetry })}</time> : null}
+    {provider.dataConfidence ? <span>{t('provider.confidence')}: {provider.dataConfidence}</span> : null}
+    {provider.source ? <span>{t('provider.source')}: {provider.source}</span> : null}
+    {updated ? <time dateTime={provider.updatedAt ?? undefined}>{t('provider.lastSuccess', { time: updated })}</time> : null}
+    {provider.warnings?.length ? <p className="break-words text-warning">{t('provider.warning')}: {provider.warnings.join(', ')}</p> : null}
+  </div>;
 
   const renderFields = (fieldWindows: typeof windows, fieldBalances: typeof balances, fieldMetrics: typeof metrics, detailed: boolean) => (
     <div className="flex min-w-0 flex-col gap-3">
@@ -202,10 +214,13 @@ export function ProviderCard({ provider, displayName, view = 'compact', locale, 
           <dd className="min-w-0 break-words text-right text-sm font-semibold tabular-nums text-text">{formatValue(balance.value, balance.currency, balance.unit, locale)}</dd>
         </div>)}
       </dl> : null}
-      {fieldMetrics.length ? <dl aria-label={t('provider.fields.metrics')} className="min-w-0">
-        {fieldMetrics.map((metric) => <ProviderUsageMetricRow key={metric.id} metric={metric} locale={locale} label={metricLabel(metric, t)}
-          dataLabel={t('provider.chartData')} enabledLabel={t('provider.enabled')} disabledLabel={t('provider.disabled')} detailed={detailed} />)}
-      </dl> : null}
+      {[...new Set(fieldMetrics.map((metric) => metric.kind === 'chart' ? t('provider.charts') : metric.sectionLabel ?? t('provider.otherData')))].map((section) => <section key={section} aria-label={section} className="min-w-0">
+        {detailed ? <h4 className="mb-2 text-xs font-semibold text-text-muted">{section}</h4> : null}
+        <dl className="min-w-0">
+          {fieldMetrics.filter((metric) => (metric.kind === 'chart' ? t('provider.charts') : metric.sectionLabel ?? t('provider.otherData')) === section).map((metric) => <ProviderUsageMetricRow key={metric.id} metric={metric} locale={locale} label={metricLabel(metric, t)}
+            dataLabel={t('provider.chartData')} enabledLabel={t('provider.enabled')} disabledLabel={t('provider.disabled')} detailed={detailed} showSectionLabel={!detailed} numericLabel={t('provider.numericValue')} />)}
+        </dl>
+      </section>)}
     </div>
   );
 
@@ -222,12 +237,12 @@ export function ProviderCard({ provider, displayName, view = 'compact', locale, 
         </span>
       </header>
       {provider.error ? <p className="break-words rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-xs text-warning" role="status">{provider.error}</p> : null}
-      {provider.warnings?.length ? <p className="break-words text-xs text-warning" role="status">{t('provider.warning')}: {provider.warnings.join(', ')}</p> : null}
-      {unavailable ? (
+      {provider.warnings?.length && view === 'compact' ? <p className="text-[11px] text-warning" role="status">{t('provider.partialData')}</p> : null}
+      {unavailable && !provider.error ? (
         <p className="rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-sm text-text-muted" role="status" aria-live="polite">
           {state === 'no_data' ? t('provider.noData') : state === 'updating' ? t('provider.updating') : t('provider.unavailableShort')}
         </p>
-      ) : (
+      ) : !unavailable ? (
         <div className="flex min-w-0 flex-col gap-3">
           {view === 'detailed'
             ? renderFields(windows, balances, metrics, true)
@@ -239,14 +254,15 @@ export function ProviderCard({ provider, displayName, view = 'compact', locale, 
           {renews ? <p className="break-words text-xs text-text-muted">{renews}</p> : null}
           {!windows.length && !balances.length && !metrics.length ? <p className="text-sm text-text-muted">{t('provider.noFields')}</p> : null}
         </div>
-      )}
-      {provider.source || updated || attempted || nextRetry || provider.dataConfidence ? (
+      ) : null}
+      {provider.source || updated || attempted || nextRetry || provider.dataConfidence || provider.warnings?.length ? (
         <footer className="flex flex-wrap justify-between gap-x-3 gap-y-1 border-t border-border-subtle pt-2 text-[11px] text-text-subtle">
-          {attempted ? <time dateTime={provider.lastAttemptAt ?? undefined}>{t('provider.lastAttempt', { time: attempted })}</time> : null}
-          {nextRetry ? <time dateTime={provider.nextRetryAt ?? undefined}>{t('provider.nextRetry', { time: nextRetry })}</time> : null}
-          {provider.dataConfidence ? <span>{t('provider.confidence')}: {provider.dataConfidence}</span> : null}
-          {provider.source ? <span>{t('provider.source')}: {provider.source}</span> : null}
-          {updated ? <time dateTime={provider.updatedAt ?? undefined}>{t('provider.lastSuccess', { time: updated })}</time> : null}
+          {view === 'detailed' ? diagnostics : <>
+            {unavailable && nextRetry ? <time dateTime={provider.nextRetryAt ?? undefined}>{t('provider.nextRetry', { time: nextRetry })}</time>
+              : updated ? <time dateTime={provider.updatedAt ?? undefined}>{t(stale ? 'provider.lastGoodData' : 'provider.lastUpdated', { time: updated })}</time>
+              : null}
+            <details className="w-full min-w-0"><summary className="cursor-pointer text-accent">{t('provider.diagnostics')}</summary><div className="mt-2">{diagnostics}</div></details>
+          </>}
         </footer>
       ) : null}
     </article>
@@ -561,7 +577,7 @@ export function ProviderUsagePanel() {
           <div className="provider-usage-grid-container p-3">
             <div className="provider-usage-grid gap-3" data-max-columns={gridMaxColumns}>
               {visibleProviders.length > 0 ? visibleProviders.map((provider) => (
-                <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} view={preferences.view} locale={numberLocale} nowMs={nowMs} />
+                <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} view={preferences.view} locale={numberLocale} nowMs={nowMs} preferences={preferences} />
               )) : <p className="text-sm text-text-muted" role="status">{t('provider.noneSelected')}</p>}
             </div>
           </div>
