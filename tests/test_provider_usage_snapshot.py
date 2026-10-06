@@ -21,6 +21,76 @@ from provider_usage_snapshot import (
 
 
 class ProviderUsageSnapshotTests(unittest.TestCase):
+    def test_collection_timestamps_are_evaluated_at_completion_not_start(self):
+        from unittest.mock import patch
+        started = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+        completed = started + timedelta(seconds=6)
+        observed = started + timedelta(seconds=4)
+        fresh = {"provider": "codex", "available": True, "source": "oauth",
+                 "updatedAt": observed.isoformat(), "warnings": ["unknown_currency"],
+                 "windows": [{"id": "primary", "label": "Session", "usedPercent": 64}],
+                 "balances": [], "metrics": []}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "usage.json"
+            clock = [started]
+            def collect(due):
+                clock[0] = completed
+                return [fresh]
+            with patch("provider_usage_snapshot._now", side_effect=lambda value=None: value or clock[0]):
+                self.assertTrue(refresh_provider_usage_snapshot(path, ("codex",), collect))
+            persisted = json.loads(path.read_text())
+            entry = persisted["providers"][0]
+            self.assertFalse(entry["stale"], "collection duration is not clock skew")
+            self.assertEqual(entry["warnings"], ["unknown_currency"])
+            self.assertEqual(entry["updatedAt"], observed.isoformat())
+            self.assertEqual(entry["lastAttemptAt"], started.isoformat())
+            self.assertEqual(entry["nextRetryAt"], (started + timedelta(seconds=60)).isoformat())
+            self.assertEqual(entry["freshUntil"], (observed + timedelta(seconds=300)).isoformat())
+            self.assertEqual(persisted["updatedAt"], completed.isoformat())
+            later = read_provider_usage_snapshot(path, ("codex",), now=completed + timedelta(seconds=10))
+            self.assertFalse(later["providers"][0]["stale"])
+
+    def test_successful_refresh_replaces_cached_false_clock_skew(self):
+        from unittest.mock import patch
+        started = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+        completed = started + timedelta(seconds=6)
+        old = {"provider": "nous", "available": True, "source": "portal-account",
+               "updatedAt": (started - timedelta(seconds=60)).isoformat(),
+               "lastAttemptAt": (started - timedelta(seconds=61)).isoformat(),
+               "stale": True, "warnings": ["clock_skew"], "freshUntil": None,
+               "windows": [], "balances": [{"id": "subscription", "label": "Remaining", "value": 2}], "metrics": []}
+        fresh = {"provider": "nous", "available": True, "source": "portal-account",
+                 "updatedAt": (started + timedelta(milliseconds=500)).isoformat(),
+                 "windows": [], "balances": [{"id": "subscription", "label": "Remaining", "value": 3}], "metrics": []}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "usage.json"
+            path.write_text(json.dumps({"schemaVersion": 2, "providers": [old]}))
+            clock = [started]
+            def collect(due):
+                clock[0] = completed
+                return [fresh]
+            with patch("provider_usage_snapshot._now", side_effect=lambda value=None: value or clock[0]):
+                self.assertTrue(refresh_provider_usage_snapshot(path, ("nous",), collect))
+            entry = read_provider_usage_snapshot(path, ("nous",), now=completed)["providers"][0]
+            self.assertFalse(entry["stale"])
+            self.assertNotIn("clock_skew", entry.get("warnings", []))
+            self.assertEqual(entry["balances"][0]["value"], 3)
+            self.assertEqual(entry["lastAttemptAt"], started.isoformat())
+
+    def test_collector_timestamp_after_completion_is_still_clock_skew(self):
+        now = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+        fresh = {"provider": "codex", "available": True, "source": "oauth",
+                 "updatedAt": (now + timedelta(seconds=30)).isoformat(),
+                 "windows": [{"id": "primary", "label": "Session", "usedPercent": 64}],
+                 "balances": [], "metrics": []}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "usage.json"
+            self.assertTrue(refresh_provider_usage_snapshot(path, ("codex",), lambda due: [fresh], now=now))
+            entry = read_provider_usage_snapshot(path, ("codex",), now=now)["providers"][0]
+            self.assertTrue(entry["stale"])
+            self.assertIn("clock_skew", entry["warnings"])
+            self.assertIsNone(entry["freshUntil"])
+
     def test_retry_metadata_cannot_bypass_source_minimum_interval(self):
         now = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
         for source, interval in (("api", 60), ("oauth+web", 300)):

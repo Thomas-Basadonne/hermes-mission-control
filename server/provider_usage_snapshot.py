@@ -298,6 +298,8 @@ def _merge_attempt(
     fresh: dict[str, Any] | None,
     provider: str,
     attempted_at: str,
+    *,
+    evaluated_at: datetime | None = None,
 ) -> dict[str, Any]:
     no_data = bool(fresh and fresh.get("dataState") == "no_data" and not fresh.get("error"))
     if no_data:
@@ -324,7 +326,7 @@ def _merge_attempt(
     result["lastAttemptAt"] = attempted_at
     result.pop("nextRetryAt", None)
     result["refreshState"] = "idle" if no_data or (fresh and fresh.get("available")) else "failed"
-    return _metadata(provider, result, _parse_timestamp(attempted_at))
+    return _metadata(provider, result, evaluated_at if evaluated_at is not None else _parse_timestamp(attempted_at))
 
 
 def _catalog_failure(snapshot: dict[str, Any]) -> dict[str, Any] | None:
@@ -396,11 +398,15 @@ def refresh_provider_usage_snapshot(
             entry["provider"]: entry for raw in fresh_entries
             if (entry := normalize_cached_entry(raw)) is not None and entry["provider"] in due
         }
+        # Collector observations can legitimately be newer than the attempt start.
+        # Evaluate freshness at completion while keeping cooldown anchored to start.
+        completed_at = _now(now)
         for provider in due:
-            entries[provider] = _merge_attempt(entries.get(provider), fresh.get(provider), provider, attempted_at)
+            entries[provider] = _merge_attempt(entries.get(provider), fresh.get(provider), provider, attempted_at,
+                                               evaluated_at=completed_at)
         visible = selection() if selection else tuple(entries)
         entries = {provider: entries[provider] for provider in visible if provider in entries}
-        _write_snapshot(path, tuple(entries), entries, _now(now), orchestration=orchestration)
+        _write_snapshot(path, tuple(entries), entries, completed_at, orchestration=orchestration)
         return True
 
 
