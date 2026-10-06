@@ -86,6 +86,7 @@ function mount(Panel) {
     dialog: () => nodes(tree).find(node => node.type?.name === 'ProviderUsageCustomizeDialog').props,
     customize: () => nodes(tree).find(node => node.type === 'button' && node.props['aria-haspopup'] === 'dialog').props.onClick(),
     cards: () => nodes(tree).filter(node => node.type?.name === 'ProviderCard').map(node => node.props.provider),
+    hasText: text => nodes(tree).some(node => node.props.children === text),
     unmount: () => { for (const slot of slots) slot.cleanup?.(); timers.clear(); },
   };
 }
@@ -94,6 +95,68 @@ const usage = provider => ({ provider, available: true, updatedAt: '2026-10-06T0
 try {
   const { ProviderUsagePanel } = await server.ssrLoadModule('/src/components/overview/ProviderUsagePanel.tsx');
   mock.timers.enable({ apis: ['setTimeout'] });
+  let initialReads = 0;
+  globalThis.fetch = async url => {
+    if (String(url).includes('/catalog')) return { status: 200, ok: true, json: async () => ({ available: true, providers: [descriptor('a')], selectedProviders: ['a'], selectionRevision: 'a'.repeat(64) }) };
+    if (++initialReads === 1) return { status: 503, ok: false };
+    return { status: 200, ok: true, json: async () => ({ success: true, available: true, providers: [usage('a')] }) };
+  };
+  harness = mount(ProviderUsagePanel);
+  await harness.flush();
+  assert.equal(harness.hasText('provider.loading'), true, 'initial transient failure must keep loading while the automatic retry is pending');
+  assert.equal(harness.hasText('provider.unavailable'), false);
+  assert.equal(harness.hasText('provider.refreshFailed'), false, 'do not show an error banner during bounded initialization recovery');
+  const initialRetry = [...timers.values()].find(timer => timer.delay === 5_000);
+  assert.ok(initialRetry, 'initial failure must schedule a retry');
+  initialRetry.fn();
+  await harness.flush();
+  assert.deepEqual(harness.cards().map(provider => provider.provider), ['a']);
+  assert.equal(harness.hasText('provider.loading'), false);
+  globalThis.fetch = async () => ({ status: 503, ok: false });
+  const backgroundPoll = [...timers.entries()].filter(([, timer]) => timer.delay === 60_000).at(-1);
+  assert.ok(backgroundPoll);
+  timers.delete(backgroundPoll[0]); backgroundPoll[1].fn();
+  await harness.flush();
+  assert.deepEqual(harness.cards().map(provider => provider.provider), ['a'], 'background failure must retain the last good cards');
+  assert.equal(harness.hasText('provider.loading'), false);
+  assert.equal(harness.hasText('provider.refreshFailed'), true, 'background failure must remain visible without blocking cached cards');
+  harness.unmount(); harness = null;
+  for (const failure of ['503', '408', '429', 'network', 'timeout', '401', '403', '400', 'malformed', 'invalid-json']) {
+    globalThis.fetch = async url => {
+      if (String(url).includes('/catalog')) return { status: 200, ok: true, json: async () => ({ available: true, providers: [descriptor('a')], selectedProviders: ['a'], selectionRevision: 'a'.repeat(64) }) };
+      if (failure === 'network') throw new TypeError('Failed to fetch');
+      if (failure === 'timeout') return new Promise(() => {});
+      if (failure === 'malformed') return { status: 200, ok: true, json: async () => ({}) };
+      if (failure === 'invalid-json') return { status: 200, ok: true, json: async () => { throw new SyntaxError('Invalid JSON'); } };
+      return { status: Number(failure), ok: false };
+    };
+    harness = mount(ProviderUsagePanel);
+    await harness.flush();
+    const transient = ['503', '408', '429', 'network', 'timeout'].includes(failure);
+    if (failure === 'timeout') { mock.timers.tick(10_000); await harness.flush(); }
+    assert.equal(harness.hasText('provider.loading'), transient, `${failure}: only transient failures may keep initial loading`);
+    if (transient) {
+      for (const delay of [5_000, 15_000]) {
+        const entry = [...timers.entries()].find(([, timer]) => timer.delay === delay);
+        assert.ok(entry, `${failure}: expected retry after ${delay}`);
+        timers.delete(entry[0]); entry[1].fn();
+        await harness.flush();
+        if (failure === 'timeout') { mock.timers.tick(10_000); await harness.flush(); }
+      }
+    }
+    assert.equal(harness.hasText('provider.unavailable'), true, `${failure}: terminal failure must not leave an infinite spinner`);
+    assert.equal(harness.hasText('provider.loading'), false);
+    if (!transient) {
+      globalThis.fetch = async () => ({ status: 503, ok: false });
+      const delay = failure === 'malformed' ? 60_000 : 5_000;
+      const entry = [...timers.entries()].filter(([, timer]) => timer.delay === delay).at(-1);
+      assert.ok(entry);
+      timers.delete(entry[0]); entry[1].fn();
+      await harness.flush();
+      assert.equal(harness.hasText('provider.loading'), false, 'a terminal initialization error must not restart loading on a later transient failure');
+    }
+    harness.unmount(); harness = null;
+  }
   for (const commitBeforeTimeout of [true, false]) {
     let selected = ['a'], revision = 'a'.repeat(64), pendingPut;
     let usageReads = 0;

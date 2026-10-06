@@ -19,6 +19,7 @@ import {
   type MissionControlProviderUsageWindow,
 } from '../../lib/hermes-api';
 import { useMissionControl } from '../../lib/mission-control-store';
+import { ProviderUsageHttpError, ProviderUsageTimeoutError } from '../../lib/provider-usage-request';
 import {
   canCustomizeProviderUsageCatalog,
   createSerializedRefresh,
@@ -279,6 +280,7 @@ export function ProviderUsagePanel() {
   const [providerCatalog, setProviderCatalog] = useState<MissionControlProviderCatalogSnapshot | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
+  const [usageInitializing, setUsageInitializing] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogLoadFailed, setCatalogLoadFailed] = useState(false);
@@ -366,10 +368,15 @@ export function ProviderUsagePanel() {
     let cancelled = false;
     let pollTimer: number | undefined;
     let nextPollDelay = 60_000;
+    let initialFailures = 0;
+    let initialized = false;
+    setUsageInitializing(true);
     const retry = createProviderUsageRetry();
     const refresh = createSerializedRefresh(
       (signal) => loadProviderUsage(storedToken || undefined, signal),
       (next) => {
+        initialized = true;
+        setUsageInitializing(false);
         const running = next.providers.some((provider) => isProviderUsageRunning(provider, Date.now()));
         setSnapshot((current) => mergeProviderUsageSnapshot(current, next));
         setRefreshFailed(!next.available || Boolean(next.error));
@@ -377,7 +384,14 @@ export function ProviderUsagePanel() {
         nextPollDelay = running ? 1_500 : 60_000;
       },
       setRefreshing,
-      () => {
+      (error) => {
+        const transient = error instanceof TypeError || error instanceof ProviderUsageTimeoutError
+          || (error instanceof ProviderUsageHttpError && (error.status === 408 || error.status === 429 || error.status >= 500));
+        // Keep the initial loader through two retries, not indefinitely. A valid
+        // response (even unavailable), auth or invalid JSON ends initialization.
+        const recovering = !initialized && transient && ++initialFailures < 3;
+        if (!recovering) initialized = true;
+        setUsageInitializing(recovering);
         setRefreshFailed(true);
         nextPollDelay = retry.failure();
       },
@@ -495,7 +509,7 @@ export function ProviderUsagePanel() {
   const writerRunning = snapshot?.providers.some((provider) => isProviderUsageRunning(provider, nowMs)) === true;
   const usageRefreshInProgress = refreshing || writerRunning;
   const providers = snapshot?.providers ?? [];
-  const panelState = getProviderUsagePanelState(snapshot, refreshFailed, refreshing || (catalogLoading && !providerCatalog?.available));
+  const panelState = getProviderUsagePanelState(snapshot, refreshFailed, usageInitializing);
   const visibleProviders = getVisibleProviderUsageCards(
     providers,
     getProviderUsageSelectionForDisplay(
@@ -544,7 +558,7 @@ export function ProviderUsagePanel() {
         </div>
       </header>
       {writerRunning ? <p className="px-3 py-2 text-xs text-text-muted" role="status">{t('provider.updating')}</p> : null}
-      {refreshFailed || snapshot?.error ? <p className="break-words border-b border-border-subtle px-3 py-2 text-xs text-warning" role="status">{snapshot?.error || t('provider.refreshFailed')}</p> : null}
+      {(refreshFailed || snapshot?.error) && panelState !== 'loading' ? <p className="break-words border-b border-border-subtle px-3 py-2 text-xs text-warning" role="status">{snapshot?.error || t('provider.refreshFailed')}</p> : null}
       {panelState !== 'ready' ? (
         <div className="flex flex-col items-center gap-2 px-4 py-8 text-center" role={panelState === 'unavailable' ? 'alert' : 'status'} aria-live="polite">
           {panelState === 'unavailable' ? <AlertCircle size={20} className="text-warning" aria-hidden="true" /> : <RefreshCw size={20} className="animate-spin text-text-subtle" aria-hidden="true" />}
