@@ -495,7 +495,7 @@ export function ProviderUsagePanel() {
   const writerRunning = snapshot?.providers.some((provider) => isProviderUsageRunning(provider, nowMs)) === true;
   const usageRefreshInProgress = refreshing || writerRunning;
   const providers = snapshot?.providers ?? [];
-  const panelState = getProviderUsagePanelState(snapshot, refreshFailed);
+  const panelState = getProviderUsagePanelState(snapshot, refreshFailed, catalogLoading && !providerCatalog?.available);
   const visibleProviders = getVisibleProviderUsageCards(
     providers,
     getProviderUsageSelectionForDisplay(
@@ -529,20 +529,6 @@ export function ProviderUsagePanel() {
             <RefreshCw size={13} className={usageRefreshInProgress ? 'animate-spin' : ''} aria-hidden="true" />
             {refreshing ? t('provider.checking') : t('provider.refresh')}
           </button>
-          {catalogLoadFailed ? (
-            <button
-              type="button"
-              onClick={() => {
-                forceCatalogRefreshRef.current = true;
-                setCatalogRefreshKey((key) => key + 1);
-              }}
-              disabled={catalogLoading}
-              className="inline-flex items-center gap-1.5 rounded-md border border-warning/30 px-2 py-1.5 text-xs font-medium text-warning hover:text-text disabled:cursor-wait disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-            >
-              <RefreshCw size={13} className={catalogLoading ? 'animate-spin' : ''} aria-hidden="true" />
-              {t('provider.retry')}
-            </button>
-          ) : null}
           <button
             type="button"
             className="inline-flex items-center gap-1.5 rounded-lg border border-border-subtle px-3 py-2 text-xs font-medium text-text-muted transition-colors hover:border-accent/30 hover:bg-surface-hover hover:text-text disabled:cursor-wait disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"

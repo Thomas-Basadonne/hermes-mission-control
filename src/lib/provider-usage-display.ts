@@ -1,5 +1,10 @@
-export function getProviderUsagePanelState(snapshot: { available: boolean; providers: unknown[] } | null, failed: boolean): 'loading' | 'unavailable' | 'ready' {
+export function getProviderUsagePanelState(
+  snapshot: { available: boolean; providers: unknown[] } | null,
+  failed: boolean,
+  catalogLoading = false,
+): 'loading' | 'unavailable' | 'ready' {
   if (snapshot?.available || snapshot?.providers.length) return 'ready';
+  if (catalogLoading) return 'loading';
   return snapshot || failed ? 'unavailable' : 'loading';
 }
 

@@ -101,6 +101,13 @@ try {
     assert.match(collapsed, /Total spendable/);
     assert.doesNotMatch(collapsed, /Credits remaining/);
   });
+  await test('loading state shows when catalog is loading', async () => {
+    const { getProviderUsagePanelState } = await server.ssrLoadModule('/src/lib/provider-usage-display.ts');
+    assert.equal(getProviderUsagePanelState(null, false, true), 'loading');
+    assert.equal(getProviderUsagePanelState(null, false, false), 'loading');
+    assert.equal(getProviderUsagePanelState(null, true, false), 'unavailable');
+    assert.equal(getProviderUsagePanelState({ available: true, providers: [] }, false, false), 'ready');
+  });
 } finally {
   await server.close();
 }

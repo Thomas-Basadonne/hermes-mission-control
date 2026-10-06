@@ -1361,6 +1361,11 @@ body.modal-open .route-page-scroll {
   border-color: color-mix(in srgb, var(--color-warning) 35%, var(--color-border));
 }
 
+/* Expand last card when it's the only one in its row */
+.provider-usage-grid > article:last-child:nth-child(odd):nth-last-child(1) {
+  grid-column: 1 / -1;
+}
+
 .chat-transcript {
   flex: 1;
   min-height: 0;
