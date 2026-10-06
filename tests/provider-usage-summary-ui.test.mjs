@@ -108,6 +108,17 @@ try {
     assert.equal(getProviderUsagePanelState(null, true, false), 'unavailable');
     assert.equal(getProviderUsagePanelState({ available: true, providers: [] }, false, false), 'ready');
   });
+  await test('loading state shows during full initialization', async () => {
+    const { getProviderUsagePanelState } = await server.ssrLoadModule('/src/lib/provider-usage-display.ts');
+    // Catalogo in caricamento, snapshot null
+    assert.equal(getProviderUsagePanelState(null, false, true), 'loading');
+    // Catalogo pronto, refresh in corso, snapshot null
+    assert.equal(getProviderUsagePanelState(null, false, true), 'loading');
+    // Catalogo pronto, refresh completato, snapshot presente
+    assert.equal(getProviderUsagePanelState({ available: true, providers: [] }, false, false), 'ready');
+    // Catalogo pronto, refresh fallito, snapshot null
+    assert.equal(getProviderUsagePanelState(null, true, false), 'unavailable');
+  });
 } finally {
   await server.close();
 }

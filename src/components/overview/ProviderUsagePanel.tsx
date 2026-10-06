@@ -495,7 +495,7 @@ export function ProviderUsagePanel() {
   const writerRunning = snapshot?.providers.some((provider) => isProviderUsageRunning(provider, nowMs)) === true;
   const usageRefreshInProgress = refreshing || writerRunning;
   const providers = snapshot?.providers ?? [];
-  const panelState = getProviderUsagePanelState(snapshot, refreshFailed, catalogLoading && !providerCatalog?.available);
+  const panelState = getProviderUsagePanelState(snapshot, refreshFailed, refreshing || (catalogLoading && !providerCatalog?.available));
   const visibleProviders = getVisibleProviderUsageCards(
     providers,
     getProviderUsageSelectionForDisplay(
