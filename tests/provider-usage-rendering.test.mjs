@@ -28,7 +28,7 @@ try {
   assert.match(featured, /Featured two/);
   assert.match(featured, /Featured balance/);
   assert.match(featured, /Quota 4/);
-  assert.match(featured, /Show all fields \(4\)/);
+  assert.match(featured, /Show all fields \(10\)/);
   const percentCard = render({ ...good, windows: [
     { id: 'tiny', label: 'Tiny', usedPercent: 0.005 }, { id: 'overage', label: 'Overage', usedPercent: 125 },
   ] });
