@@ -29,7 +29,7 @@ class SnapshotUpdaterTests(unittest.TestCase):
                 patch.object(updater, "refresh_provider_usage_snapshot", return_value=True) as refresh,
             ):
                 self.assertEqual(updater.main(), 0)
-            refresh.assert_called_once_with(cache_path, ("deepseek",), ANY)
+            refresh.assert_called_once_with(cache_path, ("deepseek", "nous"), ANY, selection=ANY, clear_discovery_failure=True)
 
 
 if __name__ == "__main__":

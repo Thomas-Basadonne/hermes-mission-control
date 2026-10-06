@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -25,14 +26,16 @@ class ProviderUsageUpdaterTests(unittest.TestCase):
         ]
         deepseek = {"provider": "deepseek", "available": True, "windows": [], "balances": [], "metrics": []}
         with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.object(updater, "provider_usage_snapshot_path", return_value=Path(temporary) / "usage.json"),
             patch.object(updater, "discover_codexbar_catalog", create=True, return_value=catalog),
             patch.object(updater, "selected_usage_providers", create=True, return_value=("deepseek", "nous")),
-            patch.object(updater, "collect_dynamic_codexbar_usage", create=True, return_value=[deepseek]) as collect,
+            patch.object(updater, "collect_selected_usage", return_value=[deepseek]) as collect,
         ):
-            results = updater.collect_codexbar_usage()
+            self.assertEqual(updater.main(), 0)
 
-        collect.assert_called_once_with(("deepseek",), catalog)
-        self.assertEqual(results, [deepseek])
+        self.assertEqual(collect.call_args.args[0], ("deepseek", "nous"))
+        self.assertEqual({item["provider"] for item in collect.call_args.args[1]}, {"deepseek", "nous"})
 
 
 if __name__ == "__main__":

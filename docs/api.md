@@ -38,12 +38,22 @@ is the `do_GET` / `do_POST` / `do_PUT` / `do_PATCH` / `do_DELETE` handlers in
 | GET | `/api/local/status` | Gateway/runtime status and active model |
 | GET | `/api/local/model/info` | Model details |
 | GET | `/api/local/provider-usage` | Normalized provider usage (see [telemetry.md](telemetry.md#provider-usage-codexbar--nous-portal)) |
-| GET | `/api/local/provider-usage/catalog` | Sanitized CodexBar provider catalog plus Mission Control-native providers; `?refresh=1` requests a rate-limited discovery |
-| PUT | `/api/local/provider-usage/selection` | Save the selected collectable provider IDs (`{"selectedProviders":[...]}`); rejected in read-only mode |
+| GET | `/api/local/provider-usage/catalog` | Sanitized CodexBar provider catalog plus Mission Control-native providers and `selectionRevision`; `?refresh=1` requests a rate-limited discovery |
+| PUT | `/api/local/provider-usage/selection` | Save collectable IDs with `{"selectedProviders":[...],"expectedRevision":"<catalog selectionRevision>"}`; returns canonical IDs and their new `selectionRevision`; `409 selection_conflict` if the revision changed; rejected in read-only mode |
 | GET | `/api/local/sessions` | Session list |
 | GET | `/api/local/sessions/usage` | Session token/cost usage |
 | GET | `/api/local/logs` | Tail of recent Hermes log files (`maxFiles`, `maxLines`) |
 | POST | `/api/local/gateway/restart` | Runs `hermes gateway restart` (requires the `hermes` CLI on `PATH`); answers `202` |
+
+Selection IDs and their opaque 64-character hex revision are read together. The
+sidecar compares the expected revision and atomically replaces the selection
+under the same lock. Every successful write changes the revision, even if the
+IDs return to an earlier value. This fences timed-out PUTs: a delayed old write
+cannot overwrite a newer commit. Missing/invalid revisions return `400` without
+writing. An uncertain PUT must be reconciled by a versioned catalog GET before
+another save. Deploy the matching selection frontend and backend together;
+unversioned catalogs remain readable but the new frontend will not issue unsafe
+selection writes against them.
 
 ## Agents and traces
 

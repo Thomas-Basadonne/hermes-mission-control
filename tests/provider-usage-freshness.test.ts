@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import { getProviderUsageStatus as status, isProviderUsageRunning } from '../src/lib/provider-usage-freshness.ts';
+const now = Date.parse('2026-10-06T01:10:00Z');
+const good = { provider: 'future', available: true, updatedAt: '2026-10-06T01:09:00Z', windows: [], balances: [], metrics: [] };
+assert.equal(status(good, now), 'available');
+assert.equal(status(good, now + 300_000), 'stale');
+for (const updatedAt of [null, 'invalid', '2026-10-06T02:00:00Z']) assert.equal(status({ ...good, updatedAt }, now), 'stale');
+assert.equal(status({ ...good, error: 'Safe failure' }, now), 'stale');
+assert.equal(status({ ...good, refreshState: 'failed' }, now), 'stale', 'failed refresh metadata must not become green when its error text is absent');
+const pending = { ...good, available: false, refreshState: 'running', refreshStartedAt: '2026-10-06T01:09:00Z', refreshDeadlineAt: '2026-10-06T01:11:00Z' };
+assert.equal(status(pending, now), 'updating');
+assert.equal(status(pending, now + 60_000), 'unavailable');
+assert.equal(isProviderUsageRunning({ ...pending, refreshDeadlineAt: undefined }, now), false);
+assert.equal(status({ ...good, available: false, dataState: 'no_data' }, now), 'no_data');
+assert.equal(status({ ...good, staleAfterSeconds: 900, updatedAt: '2026-10-06T01:00:00Z' }, now), 'available');
+assert.equal(status({ ...good, freshUntil: '2026-10-06T01:10:00Z' }, now), 'stale');
+console.log('freshness clock, invalid dates, errors, pending deadline and no-data passed');

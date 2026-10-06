@@ -1,0 +1,186 @@
+[
+  {
+    "provider": "openrouter",
+    "version": "0.70.0",
+    "source": "api",
+    "rateWindowLabels": {
+      "primary": "API key spend cap"
+    },
+    "usage": {
+      "updatedAt": "2026-10-06T00:00:00Z",
+      "primary": {
+        "usedPercent": 0.005,
+        "windowMinutes": 43200
+      },
+      "secondary": null,
+      "tertiary": null,
+      "extraRateWindows": [
+        {
+          "id": "daily",
+          "title": "Daily requests",
+          "window": {
+            "usedPercent": 125,
+            "windowMinutes": 1440
+          }
+        },
+        {
+          "id": "unknown",
+          "title": "Pending quota",
+          "window": {
+            "usedPercent": 100,
+            "resetDescription": "Tomorrow",
+            "nextRegenPercent": 10
+          },
+          "usageKnown": false
+        },
+        {
+          "id": "placeholder",
+          "title": "Missing lane",
+          "window": {
+            "usedPercent": 0,
+            "isSyntheticPlaceholder": true
+          }
+        }
+      ],
+      "providerCost": {
+        "used": 12,
+        "limit": 50,
+        "currencyCode": "USD",
+        "period": "Monthly",
+        "balance": 88,
+        "updatedAt": "2026-10-06T00:00:00Z"
+      },
+      "details": [
+        {
+          "title": "Billing",
+          "rows": [
+            {
+              "id": "account-spend",
+              "label": "Account spend",
+              "value": "$12.00",
+              "secondaryValue": "This month",
+              "usageValue": 12
+            },
+            {
+              "id": "requests",
+              "label": "Requests",
+              "value": "12 / 100",
+              "progress": {
+                "used": 12,
+                "total": 100
+              }
+            }
+          ],
+          "chart": {
+            "kind": "bars",
+            "title": "Daily usage",
+            "unit": "requests",
+            "points": [
+              {
+                "label": "Mon",
+                "value": 2
+              },
+              {
+                "label": "Tue",
+                "value": 10
+              }
+            ]
+          }
+        }
+      ],
+      "subscriptionRenewsAt": "2026-11-01T00:00:00Z"
+    }
+  },
+  {
+    "provider": "fixture-capped",
+    "source": "api",
+    "version": "0.70.0",
+    "usage": {
+      "primary": {
+        "usedPercent": 0.005
+      },
+      "secondary": null,
+      "tertiary": null,
+      "updatedAt": "2026-10-06T00:00:00Z",
+      "details": [
+        {
+          "title": "Credits",
+          "rows": [
+            {
+              "label": "Remaining",
+              "value": "$88.00"
+            },
+            {
+              "label": "Used",
+              "value": "$12.00"
+            },
+            {
+              "label": "Total added",
+              "value": "$100.00"
+            }
+          ]
+        },
+        {
+          "title": "API key",
+          "rows": [
+            {
+              "label": "API key limit",
+              "value": "$50.00",
+              "secondaryValue": "Spending cap, not balance"
+            }
+          ]
+        }
+      ]
+    },
+    "rateWindowLabels": {
+      "primary": "API key spend cap"
+    }
+  },
+  {
+    "provider": "fixture-uncapped",
+    "source": "api",
+    "version": "0.70.0",
+    "usage": {
+      "primary": null,
+      "secondary": null,
+      "tertiary": null,
+      "updatedAt": "2026-10-06T00:00:00Z",
+      "details": [
+        {
+          "title": "Credits",
+          "rows": [
+            {
+              "label": "Remaining",
+              "value": "$88.00"
+            },
+            {
+              "label": "Used",
+              "value": "$12.00"
+            },
+            {
+              "label": "Total added",
+              "value": "$100.00"
+            }
+          ]
+        },
+        {
+          "title": "API key",
+          "rows": [
+            {
+              "label": "API key limit",
+              "value": "No limit configured"
+            }
+          ]
+        }
+      ],
+      "providerCost": {
+        "used": 12,
+        "limit": 0,
+        "currencyCode": "USD",
+        "period": "This month (API key)",
+        "balance": 88,
+        "updatedAt": "2026-10-06T00:00:00Z"
+      }
+    }
+  }
+]

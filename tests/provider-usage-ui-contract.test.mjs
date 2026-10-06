@@ -6,6 +6,7 @@ import react from '@vitejs/plugin-react';
 
 const server = await createServer({
   configFile: false,
+  cacheDir: process.env.MC_DEV_CACHE,
   root: process.cwd(),
   appType: 'custom',
   logLevel: 'silent',
@@ -86,21 +87,23 @@ try {
     providers: [{ provider: 'deepseek', available: true, windows: [], balances: [], metrics: [] }],
   });
   assert.equal(normalizeProviderUsageSnapshot({ success: true, available: true, providers: {} }), null);
-  assert.equal(normalizeProviderUsageSnapshot({ success: true, available: true, providers: [null] }), null);
-  assert.equal(normalizeProviderUsageSnapshot({
+  assert.deepEqual(normalizeProviderUsageSnapshot({ success: true, available: true, providers: [null] }).warnings, ['invalid_provider']);
+  const malformed = normalizeProviderUsageSnapshot({
     success: true,
     available: true,
     providers: [{ provider: 'deepseek', available: true, windows: [null], balances: [], metrics: [] }],
-  }), null);
+  });
+  assert.equal(malformed.providers[0].available, false);
+  assert.ok(malformed.providers[0].warnings.includes('invalid_field'));
 
   const staleCard = renderToStaticMarkup(createElement(I18nProvider, null,
     createElement(ProviderCard, {
       provider: { provider: 'codex', available: true, stale: false, windows: [], balances: [], metrics: [] },
       locale: 'en-US',
-      snapshotStale: true,
+      nowMs: Date.parse('2026-10-06T01:00:00Z'),
     }),
   ));
-  assert.match(staleCard, /Codex: Available/);
+  assert.match(staleCard, /codex: stale/);
 
   const freshLabeledCard = renderToStaticMarkup(createElement(I18nProvider, null,
     createElement(ProviderCard, {

@@ -138,9 +138,7 @@ class ProviderUsageApiTests(unittest.TestCase):
         with (
             patch.object(telemetry, "discover_codexbar_catalog", side_effect=slow_discovery),
             patch.object(telemetry, "stored_usage_providers", return_value=()),
-            patch.object(telemetry, "collect_nous_portal_usage", return_value={
-                "provider": "nous", "available": False, "windows": [], "balances": [], "metrics": [],
-            }),
+            patch.object(telemetry, "request_background_provider_usage_refresh", return_value=None),
         ):
             request = threading.Thread(target=request_usage)
             request.start()
@@ -277,8 +275,8 @@ class ProviderUsageApiTests(unittest.TestCase):
                 "source": "codexbar",
             },
         ]):
-            self._wait_for_catalog()
-            status, payload = self._put({"selectedProviders": ["deepseek", "deepseek", "nous"]})
+            _, catalog = self._wait_for_catalog()
+            status, payload = self._put({"selectedProviders": ["deepseek", "deepseek", "nous"], "expectedRevision": catalog["selectionRevision"]})
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["selectedProviders"], ["deepseek", "nous"])
@@ -287,9 +285,9 @@ class ProviderUsageApiTests(unittest.TestCase):
 
     def test_selection_route_rejects_unknown_ids_and_requires_auth(self) -> None:
         with patch.object(telemetry, "discover_codexbar_catalog", return_value=[]):
-            self._wait_for_catalog()
+            _, catalog = self._wait_for_catalog()
             unauth_status, _ = self._put({"selectedProviders": []}, token=False)
-            invalid_status, payload = self._put({"selectedProviders": ["not-in-catalog"]})
+            invalid_status, payload = self._put({"selectedProviders": ["not-in-catalog"], "expectedRevision": catalog["selectionRevision"]})
 
         self.assertEqual(unauth_status, 401)
         self.assertEqual(invalid_status, 400)
@@ -301,6 +299,92 @@ class ProviderUsageApiTests(unittest.TestCase):
 
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "bad_request")
+
+    def test_late_put_cannot_overwrite_a_newer_save_after_reconciliation(self) -> None:
+        catalog = [{"provider": "deepseek", "displayName": "DeepSeek", "enabled": True,
+                    "defaultEnabled": False, "source": "codexbar"}]
+        from provider_usage_config import save_selected_usage_providers
+
+        save_selected_usage_providers(["nous"], {"nous", "deepseek"})
+        with patch.object(telemetry, "discover_codexbar_catalog", return_value=catalog):
+            _, initial = self._wait_for_catalog()
+            self.assertIn("selectionRevision", initial, "catalog must expose a write-fencing revision")
+            revision = initial["selectionRevision"]
+            original_save = telemetry.save_selected_usage_provider_snapshot
+            entered = threading.Event()
+            release = threading.Event()
+            late_result = []
+
+            def delayed_save(selected, catalog_ids, expected_revision):
+                if selected == ["deepseek"]:
+                    entered.set()
+                    if not release.wait(timeout=2):
+                        raise AssertionError("late PUT was not released")
+                return original_save(selected, catalog_ids, expected_revision)
+
+            with patch.object(telemetry, "save_selected_usage_provider_snapshot", side_effect=delayed_save):
+                late = threading.Thread(target=lambda: late_result.append(self._put({
+                    "selectedProviders": ["deepseek"], "expectedRevision": revision,
+                })))
+                late.start()
+                try:
+                    self.assertTrue(entered.wait(timeout=1))
+                    _, reconciled = self._get()
+                    self.assertEqual(reconciled["selectedProviders"], ["nous"])
+                    self.assertEqual(reconciled["selectionRevision"], revision)
+                    status, saved = self._put({"selectedProviders": [], "expectedRevision": revision})
+                    self.assertEqual(status, 200)
+                    self.assertNotEqual(saved["selectionRevision"], revision)
+                finally:
+                    release.set()
+                    late.join(timeout=3)
+                self.assertFalse(late.is_alive())
+
+            self.assertEqual(late_result[0][0], 409, "old PUT must lose its compare-and-swap after C commits")
+            self.assertEqual(late_result[0][1]["error"], "selection_conflict")
+            _, canonical = self._get()
+            self.assertEqual(canonical["selectedProviders"], [])
+            self.assertEqual(canonical["selectionRevision"], saved["selectionRevision"])
+            persisted = json.loads((Path(self._tmp.name) / "mission-control-usage.json").read_text())
+            self.assertEqual(persisted["selectedProviders"], [])
+
+    def test_selection_route_rejects_missing_invalid_and_stale_revisions_without_writing(self) -> None:
+        with patch.object(telemetry, "discover_codexbar_catalog", return_value=[]):
+            _, initial = self._wait_for_catalog()
+            revision = initial["selectionRevision"]
+            for body in [
+                {"selectedProviders": []},
+                {"selectedProviders": [], "expectedRevision": None},
+                {"selectedProviders": [], "expectedRevision": "invalid"},
+            ]:
+                self.assertEqual(self._put(body)[0], 400)
+            self.assertEqual(self._get()[1]["selectionRevision"], revision)
+            self.assertFalse((Path(self._tmp.name) / "mission-control-usage.json").exists())
+            status, first = self._put({"selectedProviders": [], "expectedRevision": revision})
+            self.assertEqual(status, 200)
+            status, restored = self._put({"selectedProviders": ["nous"], "expectedRevision": first["selectionRevision"]})
+            self.assertEqual(status, 200)
+            self.assertEqual(restored["selectedProviders"], initial["selectedProviders"])
+            self.assertNotEqual(restored["selectionRevision"], revision, "ABA must not revive old PUTs")
+            path = Path(self._tmp.name) / "mission-control-usage.json"
+            before = path.read_bytes()
+            self.assertEqual(self._put({"selectedProviders": [], "expectedRevision": revision})[0], 409)
+            self.assertEqual(path.read_bytes(), before, "conflicting PUT must not touch persisted preferences")
+
+    def test_versioned_selection_remains_read_only_and_preserves_display_rules(self) -> None:
+        path = Path(self._tmp.name) / "mission-control-usage.json"
+        display = {"nous": {"hidden": {"metrics": ["detail:api.requests"]}}}
+        path.write_text(json.dumps({"providers": display}), encoding="utf-8")
+        with patch.object(telemetry, "discover_codexbar_catalog", return_value=[]):
+            _, catalog = self._wait_for_catalog()
+            body = {"selectedProviders": [], "expectedRevision": catalog["selectionRevision"]}
+            before = path.read_bytes()
+            os.environ["MISSION_CONTROL_READ_ONLY"] = "1"
+            self.assertEqual(self._put(body)[0], 403)
+            self.assertEqual(path.read_bytes(), before)
+            os.environ.pop("MISSION_CONTROL_READ_ONLY")
+            self.assertEqual(self._put(body)[0], 200)
+            self.assertEqual(json.loads(path.read_text())["providers"], display)
 
 if __name__ == "__main__":
     unittest.main()

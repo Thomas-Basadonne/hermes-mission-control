@@ -21,7 +21,137 @@ from provider_usage_snapshot import (
 
 
 class ProviderUsageSnapshotTests(unittest.TestCase):
-    def test_future_last_attempt_is_due_immediately(self) -> None:
+    def test_retry_metadata_cannot_bypass_source_minimum_interval(self):
+        now = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+        for source, interval in (("api", 60), ("oauth+web", 300)):
+            entry = {"provider": "deepseek", "available": True, "source": source,
+                     "lastAttemptAt": now.isoformat(), "updatedAt": now.isoformat(),
+                     "nextRetryAt": (now - timedelta(seconds=1)).isoformat()}
+            self.assertEqual(providers_due_for_refresh({"providers": [entry]}, ("deepseek",), now=now), ())
+            self.assertEqual(providers_due_for_refresh({"providers": [entry]}, ("deepseek",), now=now + timedelta(seconds=interval)), ("deepseek",))
+
+    def test_reader_does_not_restat_a_snapshot_replaced_after_open(self):
+        from unittest.mock import patch
+        now = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+        entry = {"provider": "deepseek", "available": True, "source": "api", "updatedAt": now.isoformat(),
+                 "windows": [{"id": "primary", "label": "Quota", "usedPercent": 37}], "balances": [], "metrics": []}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "usage.json"
+            path.write_text(json.dumps({"providers": [entry]}))
+            with patch.object(Path, "stat", side_effect=FileNotFoundError("snapshot replaced after open")):
+                try:
+                    result = read_provider_usage_snapshot(path, ("deepseek",), now=now)
+                except OSError:
+                    result = None
+            self.assertIsNotNone(result, "reader discarded an already-open atomic snapshot")
+            self.assertEqual(result["providers"][0]["windows"][0]["usedPercent"], 37)
+
+    def test_unknown_snapshot_schema_is_not_interpreted_or_rewritten_by_reader(self):
+        now = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+        entry = {"provider": "deepseek", "available": True, "source": "api", "updatedAt": now.isoformat(),
+                 "windows": [{"id": "primary", "label": "Quota", "usedPercent": 37}], "balances": [], "metrics": []}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "usage.json"
+            for version in (1, 2):
+                path.write_text(json.dumps({"schemaVersion": version, "providers": [entry]}))
+                before = path.read_bytes()
+                self.assertTrue(read_provider_usage_snapshot(path, ("deepseek",), now=now)["providers"][0]["available"])
+                self.assertEqual(path.read_bytes(), before)
+            path.write_text(json.dumps({"schemaVersion": 3, "providers": [entry]}))
+            before = path.read_bytes()
+            result = read_provider_usage_snapshot(path, ("deepseek",), now=now)
+            self.assertFalse(result["providers"][0]["available"], "future schema is not the current wire contract")
+            self.assertIn("unsupported_schema", result["warnings"])
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_successful_cli_source_overrides_initial_ollama_web_hint(self):
+        now = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+        entry = {"provider": "ollama", "available": True, "source": "cli", "updatedAt": now.isoformat(),
+                 "windows": [{"id": "primary", "label": "Quota", "usedPercent": 37}], "balances": [], "metrics": []}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "usage.json"
+            refresh_provider_usage_snapshot(path, ("ollama",), lambda due: [entry], now=now)
+            result = read_provider_usage_snapshot(path, ("ollama",), now=now)["providers"][0]
+            self.assertEqual(result["staleAfterSeconds"], 300, "source policy must override the pre-success provider hint")
+            self.assertEqual(result["nextRetryAt"], (now + timedelta(seconds=60)).isoformat())
+
+    def test_writer_reconstructs_collector_output_before_private_atomic_publication(self):
+        now = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+        raw = {"provider": "deepseek", "available": True, "source": "api", "updatedAt": now.isoformat(),
+               "windows": [{"id": "primary", "label": "Quota", "usedPercent": 37}], "balances": [], "metrics": [],
+               "rawAccount": {"secret": "never-store-private-payload"}}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "usage.json"
+            refresh_provider_usage_snapshot(path, ("deepseek",), lambda due: [raw], now=now)
+            self.assertNotIn("never-store-private-payload", path.read_text())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads(path.read_text())["providers"][0]["windows"][0]["usedPercent"], 37)
+
+    def test_expired_read_view_respects_retry_and_corrupt_lease_cannot_block_forever(self):
+        now = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+        entry = {"provider": "deepseek", "available": False, "source": "api", "updatedAt": None,
+                 "lastAttemptAt": now.isoformat(), "refreshState": "running", "refreshStartedAt": now.isoformat(),
+                 "refreshDeadlineAt": (now + timedelta(seconds=90)).isoformat(),
+                 "windows": [], "balances": [], "metrics": []}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "usage.json"
+            path.write_text(json.dumps({"updatedAt": now.isoformat(), "providers": [entry]}))
+            expired = read_provider_usage_snapshot(path, ("deepseek",), now=now + timedelta(seconds=91))
+            self.assertEqual(providers_due_for_refresh(expired, ("deepseek",), now=now + timedelta(seconds=91)), (), "read view bypassed lease retry anchor")
+            self.assertEqual(providers_due_for_refresh(expired, ("deepseek",), now=now + timedelta(seconds=151)), ("deepseek",))
+            entry["refreshDeadlineAt"] = "2099-01-01T00:00:00Z"
+            path.write_text(json.dumps({"updatedAt": now.isoformat(), "providers": [entry]}))
+            invalid = read_provider_usage_snapshot(path, ("deepseek",), now=now)
+            retry = datetime.fromisoformat(invalid["providers"][0]["nextRetryAt"])
+            self.assertLessEqual(retry, now + timedelta(seconds=60), "invalid lease gave an unbounded retry")
+            self.assertEqual(providers_due_for_refresh({"providers": [entry]}, ("deepseek",), now=now + timedelta(seconds=61)), ("deepseek",))
+
+    def test_valid_no_data_after_success_preserves_last_good_without_failure(self):
+        now = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+        from provider_usage_contract import normalize_codexbar_entry
+        good = {"provider": "deepseek", "available": True, "source": "api", "updatedAt": (now - timedelta(seconds=600)).isoformat(),
+                "windows": [{"id": "primary", "label": "Quota", "usedPercent": 37}], "balances": [], "metrics": []}
+        empty = normalize_codexbar_entry("deepseek", [{"provider": "deepseek", "source": "api", "usage": {}}])
+        empty["dataState"] = "no_data"
+        empty["available"] = False
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "usage.json"
+            path.write_text(json.dumps({"providers": [good]}))
+            refresh_provider_usage_snapshot(path, ("deepseek",), lambda due: [empty], now=now)
+            entry = json.loads(path.read_text())["providers"][0]
+            self.assertNotIn("error", entry, "valid empty data must not masquerade as a failed request")
+            self.assertEqual(entry["dataState"], "ready")
+            self.assertEqual(entry["windows"][0]["usedPercent"], 37)
+            self.assertEqual(entry["updatedAt"], good["updatedAt"])
+            self.assertIn("no_data", entry["warnings"])
+            self.assertNotEqual(entry["refreshState"], "failed")
+            path.unlink()
+            refresh_provider_usage_snapshot(path, ("deepseek",), lambda due: [empty], now=now)
+            entry = json.loads(path.read_text())["providers"][0]
+            self.assertEqual(entry["dataState"], "no_data")
+            self.assertFalse(entry["available"])
+            self.assertNotIn("error", entry)
+
+    def test_actual_successful_web_source_drives_freshness_and_attempt_policy(self):
+        now = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
+        fresh = {"provider": "deepseek", "available": True, "source": "oauth+web",
+                 "updatedAt": now.isoformat(), "windows": [{"id": "primary", "label": "Quota", "usedPercent": 37}],
+                 "balances": [], "metrics": []}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "usage.json"
+            self.assertTrue(refresh_provider_usage_snapshot(path, ("deepseek",), lambda due: [fresh], now=now))
+            snapshot = read_provider_usage_snapshot(path, ("deepseek",), now=now + timedelta(seconds=301))
+            entry = snapshot["providers"][0]
+            self.assertFalse(entry["stale"], "successful web data must not use API expiry")
+            self.assertEqual(entry["staleAfterSeconds"], 900)
+            self.assertEqual(entry["freshUntil"], (now + timedelta(seconds=900)).isoformat())
+            self.assertEqual(entry["nextRetryAt"], (now + timedelta(seconds=300)).isoformat())
+            self.assertEqual(entry["dataState"], "ready")
+            self.assertEqual(entry["refreshState"], "idle")
+            self.assertEqual(snapshot["schemaVersion"], 2)
+            self.assertEqual(providers_due_for_refresh(snapshot, ("deepseek",), now=now + timedelta(seconds=61)), ())
+
+    def test_future_last_attempt_has_finite_prudent_cooldown(self) -> None:
         now = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
         snapshot = {"providers": [{
             "provider": "ollama",
@@ -33,7 +163,19 @@ class ProviderUsageSnapshotTests(unittest.TestCase):
             "metrics": [],
         }]}
 
-        self.assertEqual(providers_due_for_refresh(snapshot, ("ollama",), now=now), ("ollama",))
+        self.assertEqual(providers_due_for_refresh(snapshot, ("ollama",), now=now), ())
+        self.assertEqual(providers_due_for_refresh(snapshot, ("ollama",), now=now + timedelta(seconds=331)), ("ollama",))
+        for value in ("2099-01-01T00:00:00Z", "invalid"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temporary:
+                snapshot["updatedAt"] = now.isoformat()
+                snapshot["providers"][0]["lastAttemptAt"] = value
+                path = Path(temporary) / "usage.json"
+                path.write_text(json.dumps(snapshot))
+                entry = read_provider_usage_snapshot(path, ("ollama",), now=now)["providers"][0]
+                self.assertEqual(entry["nextRetryAt"], (now + timedelta(seconds=300)).isoformat())
+                self.assertIn("clock_skew", entry["warnings"])
+                self.assertEqual(providers_due_for_refresh(snapshot, ("ollama",), now=now), ())
+                self.assertEqual(providers_due_for_refresh(snapshot, ("ollama",), now=now + timedelta(seconds=301)), ("ollama",))
 
     def test_future_updated_timestamp_is_stale(self) -> None:
         now = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)

@@ -16,6 +16,39 @@ from provider_usage_contract import normalize_codexbar_entry
 
 
 class ProviderUsageCollectorTests(unittest.TestCase):
+    def test_duplicate_account_payload_is_rejected_without_exposing_identity(self) -> None:
+        payload = json.dumps([
+            {"provider": "deepseek", "account": "fixture-one@example.invalid", "usage": {"primary": {"usedPercent": 1}}},
+            {"provider": "deepseek", "account": "fixture-two@example.invalid", "usage": {"primary": {"usedPercent": 2}}},
+            {"provider": "claude", "usage": {"primary": {"usedPercent": 3}}},
+        ])
+        completed = type("Completed", (), {"returncode": 0, "stdout": payload})()
+        catalog = [{"provider": provider, "source": "codexbar"} for provider in ("deepseek", "claude")]
+        with patch("provider_usage_collector.shutil.which", return_value="/test/codexbar"), \
+             patch("provider_usage_collector.subprocess.run", return_value=completed):
+            results = collect_codexbar_usage(("deepseek", "claude"), catalog)
+        self.assertFalse(results[0]["available"])
+        self.assertEqual(results[0]["dataState"], "error")
+        self.assertEqual(results[0]["error"], "Multiple CodexBar accounts returned for provider.")
+        self.assertEqual(results[0]["windows"], [])
+        self.assertEqual(results[1]["windows"][0]["usedPercent"], 3)
+        self.assertNotIn("example.invalid", repr(results))
+
+    def test_serialized_cli_fixture_reaches_dynamic_collector_without_provider_mapping(self) -> None:
+        path = Path(__file__).resolve().parent / "fixtures/provider-usage/codexbar-v0.70.0.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload[0]["provider"] = "future-provider"
+        completed = type("Completed", (), {"returncode": 0, "stdout": json.dumps(payload)})()
+        with patch("provider_usage_collector.shutil.which", return_value="/test/codexbar"), \
+             patch("provider_usage_collector.subprocess.run", return_value=completed) as run:
+            result = collect_codexbar_usage(("future-provider",), [{"provider": "future-provider", "source": "codexbar"}])[0]
+        self.assertEqual(result["windows"][0]["label"], "API key spend cap")
+        self.assertEqual(result["balances"][0]["value"], 88)
+        self.assertTrue(any(row.get("kind") == "chart" for row in result["metrics"]))
+        self.assertEqual(next(row["value"] for row in result["metrics"] if row["label"] == "Account spend"), "$12.00")
+        self.assertEqual(run.call_args.kwargs["timeout"], 30)
+        self.assertEqual(run.call_args.args[0][3], "future-provider")
+
     def test_selected_dynamic_ids_are_invoked_individually_and_normalized(self) -> None:
         payload = json.dumps([
             {

@@ -14,9 +14,9 @@ export type ProviderUsageStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
 type ProviderUsageEntry = {
   provider: string;
-  windows?: Array<{ id: string }>;
-  balances?: Array<{ id: string }>;
-  metrics?: Array<{ id: string }>;
+  windows?: Array<{ id: string; legacyIds?: string[] }>;
+  balances?: Array<{ id: string; legacyIds?: string[] }>;
+  metrics?: Array<{ id: string; legacyIds?: string[] }>;
 };
 
 type ProviderUsageCatalogEntry = {
@@ -143,10 +143,37 @@ export function orderProviderUsage<T extends ProviderUsageEntry>(
     .map(({ provider }) => provider);
 }
 
+export function migrateProviderUsagePreferences<T extends ProviderUsageEntry>(providers: T[], preferences: ProviderUsagePreferences): ProviderUsagePreferences {
+  let next = preferences;
+  for (const provider of providers) {
+    const hidden = preferences.hiddenFields[provider.provider];
+    if (!hidden) continue;
+    const groups = { ...hidden };
+    let changed = false;
+    for (const group of FIELD_GROUPS) {
+      const fields = provider[group] ?? [];
+      const canonicalIds = new Set(fields.map((field) => field.id));
+      const aliases = new Map<string, Set<string>>();
+      for (const field of fields) for (const alias of field.legacyIds ?? []) {
+        const targets = aliases.get(alias) ?? new Set<string>();
+        targets.add(field.id); aliases.set(alias, targets);
+      }
+      groups[group] = [...new Set(hidden[group].map((id) => {
+        const targets = aliases.get(id);
+        if (canonicalIds.has(id) || targets?.size !== 1) return id;
+        changed = true; return [...targets][0];
+      }))];
+    }
+    if (changed) next = { ...next, hiddenFields: { ...next.hiddenFields, [provider.provider]: groups } };
+  }
+  return next;
+}
+
 export function applyProviderUsagePreferences<T extends ProviderUsageEntry>(
   providers: T[],
   preferences: ProviderUsagePreferences,
 ): T[] {
+  preferences = migrateProviderUsagePreferences(providers, preferences);
   const hiddenProviders = new Set(preferences.hiddenProviders);
   return orderProviderUsage(providers, preferences)
     .filter((provider) => !hiddenProviders.has(provider.provider))

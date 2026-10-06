@@ -1,6 +1,10 @@
+import { selectCompactFields, formatProviderUsagePercent, getProviderUsagePanelState } from '../../lib/provider-usage-display';
+import { createProviderUsageSelectionController, isProviderUsageSelectionUncertain } from '../../lib/provider-usage-selection';
+import { getProviderUsageStatus, isProviderUsageRunning } from '../../lib/provider-usage-freshness';
 import { useI18n } from '../../lib/i18n';
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Cloud, RefreshCw, Search, SlidersHorizontal } from 'lucide-react';
+import { ProviderUsageMetricRow } from './ProviderUsageDetails';
 import { Card } from '../ui/Card';
 import { Modal } from '../Modal';
 import {
@@ -18,16 +22,15 @@ import {
   canCustomizeProviderUsageCatalog,
   createSerializedRefresh,
   getProviderUsageCatalogPollDelay,
-  preserveLastAvailableSnapshot,
+  mergeProviderUsageSnapshot,
+  createProviderUsageRetry,
 } from '../../lib/provider-usage-refresh';
 import {
   formatCurrency as formatLocalizedCurrency,
   formatDateTime,
   formatNumber as formatLocalizedNumber,
-  formatPercent,
 } from '../../lib/format';
 import {
-  applyProviderUsagePreferences,
   DEFAULT_PROVIDER_USAGE_PREFERENCES,
   getProviderUsageCatalogRows,
   getProviderUsageGridColumns,
@@ -39,6 +42,7 @@ import {
   hasProviderUsageSelectionChanges,
   loadProviderUsagePreferences,
   moveProviderUsagePreference,
+  migrateProviderUsagePreferences,
   saveProviderUsagePreferences,
   setProviderUsageFieldVisible,
   setProviderUsageProviderVisible,
@@ -55,13 +59,6 @@ const FIELD_GROUPS: Array<{ id: ProviderUsageFieldGroup; label: string }> = [
 ];
 
 type Translate = (key: string, values?: Record<string, string | number>) => string;
-
-const PROVIDER_LABELS: Record<string, string> = {
-  codex: 'Codex',
-  ollama: 'Ollama Cloud',
-  openrouter: 'OpenRouter',
-  nous: 'Nous Portal',
-};
 
 function formatNumber(value: number, locale: string): string {
   return formatLocalizedNumber(value, locale);
@@ -104,44 +101,24 @@ function windowLabel(window: MissionControlProviderUsageWindow, t: Translate): s
 }
 
 function balanceLabel(balance: MissionControlProviderUsageBalance, t: Translate): string {
-  const labels: Record<string, string> = {
-    balance: t('provider.balance'),
-    subscription_remaining: t('provider.subscriptionRemaining'),
-    topup_remaining: t('provider.topupRemaining'),
-    total_spendable: t('provider.totalSpendable'),
-    credits_remaining: t('provider.creditsRemaining'),
+  const labels: Record<string, [string, string]> = {
+    balance: ['Balance', 'provider.balance'], subscription_remaining: ['Subscription remaining', 'provider.subscriptionRemaining'],
+    topup_remaining: ['Top-up remaining', 'provider.topupRemaining'], total_spendable: ['Total spendable', 'provider.totalSpendable'],
+    credits_remaining: ['Credits remaining', 'provider.creditsRemaining'],
   };
-  return labels[balance.id] ?? balance.label;
+  const alias = labels[balance.id];
+  return alias && balance.label === alias[0] ? t(alias[1]) : balance.label;
 }
 
 function metricLabel(metric: { id: string; label: string }, t: Translate): string {
-  if (metric.id === 'reset_credits_available') return t('provider.resetCredits');
+  if (metric.id === 'reset_credits_available' && metric.label === 'Reset credits available') return t('provider.resetCredits');
   return metric.label;
-}
-
-function metricValue(value: number | string | boolean | null | undefined, unit: string | undefined, locale: string, t: Translate): string {
-  if (typeof value === 'boolean') return value ? t('provider.enabled') : t('provider.disabled');
-  if (typeof value === 'number') return `${formatNumber(value, locale)}${unit ? ` ${unit}` : ''}`;
-  return value == null ? '—' : `${value}${unit ? ` ${unit}` : ''}`;
 }
 
 function gaugeTone(value: number): { className?: string; color: string } {
   if (value >= 85) return { className: 'bg-negative', color: '' };
   if (value >= 60) return { className: 'bg-warning', color: '' };
   return { color: 'var(--color-usage-session)' };
-}
-
-function MetricRow({ metric, locale, t }: {
-  metric: MissionControlProviderUsage['metrics'][number];
-  locale: string;
-  t: Translate;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-3 border-b border-border-subtle py-2 last:border-0">
-      <dt className="text-sm text-text-muted">{metricLabel(metric, t)}</dt>
-      <dd className="text-sm font-medium tabular-nums text-text text-right">{metricValue(metric.value, metric.unit, locale, t)}</dd>
-    </div>
-  );
 }
 
 function UsageGauge({
@@ -157,152 +134,119 @@ function UsageGauge({
   detailed: boolean;
   t: Translate;
 }) {
-  const value = typeof window.usedPercent === 'number'
-    ? Math.max(0, Math.min(100, window.usedPercent))
-    : null;
+  const value = window.usageKnown !== false && typeof window.usedPercent === 'number' && Number.isFinite(window.usedPercent) ? window.usedPercent : null;
+  const barValue = value === null ? undefined : Math.max(0, Math.min(100, value));
   const tone = value === null ? null : gaugeTone(value);
-  const percent = value === null ? null : formatPercent(value / 100, locale);
-  const currency = window.unit === 'USD' ? 'USD' : undefined;
+  const percent = value === null ? null : formatProviderUsagePercent(value, locale);
+  const currency = window.unit && /^[A-Z]{3}$/.test(window.unit) ? window.unit : undefined;
   const remaining = typeof window.remaining === 'number' ? formatValue(window.remaining, currency, window.unit, locale) : null;
   const total = typeof window.total === 'number' ? formatValue(window.total, currency, window.unit, locale) : null;
   return (
     <div className={`flex flex-col ${detailed ? 'gap-2 rounded-lg border border-border-subtle p-3' : 'gap-1.5'}`}>
       <div className="flex items-center justify-between gap-2 text-xs">
-        <span className="font-medium text-text">{label}</span>
-        <span className="text-text tabular-nums font-semibold">{percent ?? '—'}</span>
+        <span className="min-w-0 break-words font-medium text-text">{label}</span>
+        <span className="shrink-0 text-text tabular-nums font-semibold">{percent ?? '—'}</span>
       </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-surface-sunken" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={value ?? undefined} aria-valuetext={percent ?? t('provider.unavailableShort')}>
-        {tone ? <div className={`h-full rounded-full transition-[width] duration-300 ${tone.className ?? ''}`} style={{ width: `${value}%`, backgroundColor: tone.color || undefined }} /> : null}
+      <div className="h-2 w-full overflow-hidden rounded-full bg-surface-sunken" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={barValue} aria-valuetext={percent ?? t('provider.unavailableShort')}>
+        {tone ? <div className={`h-full rounded-full transition-[width] duration-300 ${tone.className ?? ''}`} style={{ width: `${barValue}%`, backgroundColor: tone.color || undefined }} /> : null}
       </div>
       {detailed ? (
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-text-muted">
           {remaining !== null || total !== null ? <span>{t('provider.remainingOfTotal', { remaining: remaining ?? '—', total: total ?? '—' })}</span> : null}
-          <span>{formatReset(window.resetsAt, locale, t)}</span>
+          <span>{window.resetDescription ?? formatReset(window.resetsAt, locale, t)}</span>
+          {typeof window.nextRegenPercent === 'number' ? <span>{t('provider.nextRegen', { percent: formatProviderUsagePercent(window.nextRegenPercent, locale) })}</span> : null}
         </div>
       ) : null}
     </div>
   );
 }
 
-export function ProviderCard({ provider, displayName, view = 'compact', locale }: {
+export function ProviderCard({ provider, displayName, view = 'compact', locale, nowMs = Date.now() }: {
   provider: MissionControlProviderUsage;
   displayName?: string;
   view?: ProviderUsageView;
   locale: string;
+  nowMs?: number;
 }) {
   const { t } = useI18n();
-  const label = displayName ?? PROVIDER_LABELS[provider.provider] ?? provider.provider;
+  const label = displayName ?? provider.provider;
   const unavailable = !provider.available;
   const balances = (Array.isArray(provider.balances) ? provider.balances : []).filter((balance) => typeof balance.value === 'number');
-  const primaryBalance = balances.find((balance) => balance.id === 'total_spendable' || balance.id === 'balance') ?? balances[0];
-  const secondaryBalances = balances.filter((balance) => balance !== primaryBalance);
-  const metrics = (Array.isArray(provider.metrics) ? provider.metrics : []).filter((metric) => metric.value !== null && metric.value !== undefined);
+  const metrics = Array.isArray(provider.metrics) ? provider.metrics : [];
   const windows = Array.isArray(provider.windows) ? provider.windows : [];
-  const resetCreditMetrics = provider.provider === 'codex'
-    ? metrics.filter((metric) => metric.id === 'reset_credits_available')
-    : [];
-  const displayMetrics = metrics.filter((metric) => !resetCreditMetrics.includes(metric));
-  const featuredMetrics = metrics.filter((metric) => metric.featured && !resetCreditMetrics.includes(metric));
-  const regularMetrics = metrics.filter((metric) => !metric.featured && !resetCreditMetrics.includes(metric));
-  const stale = provider.stale === true;
-  const status = unavailable ? t('provider.unavailableShort') : stale ? t('provider.stale') : t('provider.available');
+  const compactWindows = selectCompactFields(windows, 3);
+  const compactBalances = selectCompactFields(balances, 2);
+  const compactMetrics = selectCompactFields(metrics, 2);
+  const overflowCount = compactWindows.overflow.length + compactBalances.overflow.length + compactMetrics.overflow.length;
+  const state = getProviderUsageStatus(provider, nowMs);
+  const stale = state === 'stale';
+  const status = t({ available: 'provider.available', stale: 'provider.stale', updating: 'provider.updating', no_data: 'provider.noData', unavailable: 'provider.unavailableShort' }[state]);
   const updated = formatDate(provider.updatedAt, locale);
+  const attempted = formatDate(provider.lastAttemptAt, locale);
+  const nextRetry = Date.parse(provider.nextRetryAt ?? '') > nowMs ? formatDate(provider.nextRetryAt, locale) : null;
   const renews = formatRenews(provider.renewsAt, locale, t);
+
+  const renderFields = (fieldWindows: typeof windows, fieldBalances: typeof balances, fieldMetrics: typeof metrics, detailed: boolean) => (
+    <div className="flex min-w-0 flex-col gap-3">
+      {fieldWindows.length ? <section aria-label={t('provider.fields.windows')} className="flex min-w-0 flex-col gap-3">
+        {fieldWindows.map((window) => <div key={window.id} className={window.featured ? 'rounded-lg border border-accent/20 bg-accent/5 p-2' : undefined} data-field-id={window.id}>
+          <UsageGauge label={windowLabel(window, t)} window={window} locale={locale} detailed={detailed} t={t} />
+        </div>)}
+      </section> : null}
+      {fieldBalances.length ? <dl aria-label={t('provider.fields.balances')} className="min-w-0">
+        {fieldBalances.map((balance) => <div key={balance.id} data-field-id={balance.id} className={`flex min-w-0 items-start justify-between gap-3 border-b border-border-subtle py-2 ${balance.featured ? 'rounded-lg border border-accent/20 bg-accent/5 p-2' : ''}`}>
+          <dt className="min-w-0 break-words text-xs text-text-muted">{balanceLabel(balance, t)}
+            {balance.scope ? <span className="mt-1 block text-[11px]">{t(balance.scope === 'workspace' ? 'provider.workspaceBalance' : 'provider.accountBalance')}</span> : null}
+            {formatDate(balance.updatedAt, locale) ? <time className="mt-1 block text-[11px]" dateTime={balance.updatedAt ?? undefined}>{t('provider.balanceObserved', { time: formatDate(balance.updatedAt, locale)! })}</time> : null}
+          </dt>
+          <dd className="min-w-0 break-words text-right text-sm font-semibold tabular-nums text-text">{formatValue(balance.value, balance.currency, balance.unit, locale)}</dd>
+        </div>)}
+      </dl> : null}
+      {fieldMetrics.length ? <dl aria-label={t('provider.fields.metrics')} className="min-w-0">
+        {fieldMetrics.map((metric) => <ProviderUsageMetricRow key={metric.id} metric={metric} locale={locale} label={metricLabel(metric, t)}
+          dataLabel={t('provider.chartData')} enabledLabel={t('provider.enabled')} disabledLabel={t('provider.disabled')} detailed={detailed} />)}
+      </dl> : null}
+    </div>
+  );
 
   return (
     <article className="flex min-w-0 flex-col gap-3 rounded-xl border border-border-subtle bg-surface/50 p-3 shadow-sm" role="group" aria-label={`${label}: ${status}`}>
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="truncate text-sm font-semibold text-text">{label}</h3>
-          {provider.plan ? <p className="mt-0.5 truncate text-xs text-text-muted">{provider.plan}</p> : null}
+          <h3 className="break-words text-sm font-semibold text-text">{label}</h3>
+          {provider.plan ? <p className="mt-0.5 break-words text-xs text-text-muted">{provider.plan}</p> : null}
         </div>
         <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${unavailable || stale ? 'border-warning/30 text-warning' : 'border-positive/30 text-positive'}`} role="status">
           {unavailable || stale ? <AlertCircle size={12} aria-hidden="true" /> : <CheckCircle2 size={12} aria-hidden="true" />}
           {status}
         </span>
       </header>
+      {provider.error ? <p className="break-words rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-xs text-warning" role="status">{provider.error}</p> : null}
+      {provider.warnings?.length ? <p className="break-words text-xs text-warning" role="status">{t('provider.warning')}: {provider.warnings.join(', ')}</p> : null}
       {unavailable ? (
         <p className="rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-sm text-text-muted" role="status" aria-live="polite">
-          {provider.error || t('provider.unavailableShort')}
+          {state === 'no_data' ? t('provider.noData') : state === 'updating' ? t('provider.updating') : t('provider.unavailableShort')}
         </p>
-      ) : view === 'compact' ? (
-        <div className="flex flex-col gap-3">
-          {featuredMetrics[0] ? (
-            <div className="rounded-lg border border-accent/20 bg-accent/5 px-3 py-2">
-              <span className="text-xs text-text-muted">{metricLabel(featuredMetrics[0], t)}</span>
-              <p className="mt-0.5 text-xl font-semibold tabular-nums text-text">{metricValue(featuredMetrics[0].value, featuredMetrics[0].unit, locale, t)}</p>
-            </div>
-          ) : null}
-          {primaryBalance ? (
-            <div className="flex items-end justify-between gap-3">
-              <span className="text-xs text-text-muted">{balanceLabel(primaryBalance, t)}</span>
-              <span className="text-lg font-semibold tabular-nums text-text">{formatValue(primaryBalance.value, primaryBalance.currency, primaryBalance.unit, locale)}</span>
-            </div>
-          ) : null}
-          {windows.length > 0 ? (
-            <div className="flex flex-col gap-3">
-              {windows.map((window) => <UsageGauge key={window.id} label={windowLabel(window, t)} window={window} locale={locale} detailed={false} t={t} />)}
-            </div>
-          ) : null}
-          {secondaryBalances.length > 0 ? (
-            <dl className="grid grid-cols-2 gap-x-3 gap-y-2 border-t border-border-subtle pt-2">
-              {secondaryBalances.slice(0, 2).map((balance) => (
-                <div key={balance.id} className="min-w-0">
-                  <dt className="truncate text-[11px] text-text-muted">{balanceLabel(balance, t)}</dt>
-                  <dd className="mt-0.5 truncate text-sm font-medium tabular-nums text-text">{formatValue(balance.value, balance.currency, balance.unit, locale)}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : null}
-          {regularMetrics.length > 0 ? (
-            <dl className="flex flex-wrap gap-x-3 gap-y-1 border-t border-border-subtle pt-2">
-              {regularMetrics.slice(0, 2).map((metric) => (
-                <div key={metric.id} className="flex gap-1 text-xs text-text-muted">
-                  <dt>{metricLabel(metric, t)}:</dt>
-                  <dd className="font-medium text-text">{metricValue(metric.value, metric.unit, locale, t)}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : null}
-          {renews ? <p className="text-xs text-text-muted">{renews}</p> : null}
-        </div>
       ) : (
-        <div className="flex flex-col gap-4">
-          {windows.length > 0 ? (
-            <section aria-label={t('provider.fields.windows')} className="flex flex-col gap-2">
-              {windows.map((window) => <UsageGauge key={window.id} label={windowLabel(window, t)} window={window} locale={locale} detailed t={t} />)}
-            </section>
-          ) : null}
-          {balances.length > 0 ? (
-            <dl aria-label={t('provider.fields.balances')} className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-              {balances.map((balance) => (
-                <div key={balance.id} className="flex items-start justify-between gap-3 border-b border-border-subtle py-2 last:border-0">
-                  <dt className="text-sm text-text-muted">{balanceLabel(balance, t)}</dt>
-                  <dd className="text-sm font-medium tabular-nums text-text text-right">{formatValue(balance.value, balance.currency, balance.unit, locale)}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : null}
-          {displayMetrics.length > 0 ? (
-            <dl aria-label={t('provider.fields.metrics')}>
-              {displayMetrics.map((metric) => <MetricRow key={metric.id} metric={metric} locale={locale} t={t} />)}
-            </dl>
-          ) : null}
-          {renews ? <p className="border-t border-border-subtle pt-2 text-xs text-text-muted">{renews}</p> : null}
-          {windows.length === 0 && balances.length === 0 && metrics.length === 0 ? <p className="text-sm text-text-muted">{t('provider.noFields')}</p> : null}
+        <div className="flex min-w-0 flex-col gap-3">
+          {view === 'detailed'
+            ? renderFields(windows, balances, metrics, true)
+            : renderFields(compactWindows.visible, compactBalances.visible, compactMetrics.visible, false)}
+          {view === 'compact' && overflowCount > 0 ? <details className="min-w-0 text-xs provider-fields-overflow">
+            <summary className="cursor-pointer text-accent">{t('provider.showAllFields', { count: overflowCount })}</summary>
+            <div className="mt-3">{renderFields(compactWindows.overflow, compactBalances.overflow, compactMetrics.overflow, true)}</div>
+          </details> : null}
+          {renews ? <p className="break-words text-xs text-text-muted">{renews}</p> : null}
+          {!windows.length && !balances.length && !metrics.length ? <p className="text-sm text-text-muted">{t('provider.noFields')}</p> : null}
         </div>
       )}
-      {provider.source || updated || resetCreditMetrics.length > 0 ? (
+      {provider.source || updated || attempted || nextRetry || provider.dataConfidence ? (
         <footer className="flex flex-wrap justify-between gap-x-3 gap-y-1 border-t border-border-subtle pt-2 text-[11px] text-text-subtle">
-          {resetCreditMetrics.length > 0 ? (
-            <div className="provider-reset-footer flex flex-wrap gap-x-3 gap-y-1" role="group" aria-label={t('provider.resetCredits')}>
-              {resetCreditMetrics.map((metric) => (
-                <span key={metric.id}>{metricLabel(metric, t)}: <strong className="font-semibold text-text">{metricValue(metric.value, metric.unit, locale, t)}</strong></span>
-              ))}
-            </div>
-          ) : null}
+          {attempted ? <time dateTime={provider.lastAttemptAt ?? undefined}>{t('provider.lastAttempt', { time: attempted })}</time> : null}
+          {nextRetry ? <time dateTime={provider.nextRetryAt ?? undefined}>{t('provider.nextRetry', { time: nextRetry })}</time> : null}
+          {provider.dataConfidence ? <span>{t('provider.confidence')}: {provider.dataConfidence}</span> : null}
           {provider.source ? <span>{t('provider.source')}: {provider.source}</span> : null}
-          {updated ? <time dateTime={provider.updatedAt ?? undefined}>{t('provider.lastUpdated', { time: updated })}</time> : null}
+          {updated ? <time dateTime={provider.updatedAt ?? undefined}>{t('provider.lastSuccess', { time: updated })}</time> : null}
         </footer>
       ) : null}
     </article>
@@ -313,6 +257,8 @@ export function ProviderUsagePanel() {
   const { t, locale } = useI18n();
   const { storedToken } = useMissionControl();
   const numberLocale = locale === 'it' ? 'it-IT' : 'en-US';
+  const [nowMs, setNowMs] = useState(Date.now);
+  const [reconcilingSelection, setReconcilingSelection] = useState(false);
   const [snapshot, setSnapshot] = useState<MissionControlProviderUsageSnapshot | null>(null);
   const [providerCatalog, setProviderCatalog] = useState<MissionControlProviderCatalogSnapshot | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -332,29 +278,62 @@ export function ProviderUsagePanel() {
   const [preferences, setPreferences] = useState(loadProviderUsagePreferences);
   const customizeButtonRef = useRef<HTMLButtonElement>(null);
   const customizeWasOpen = useRef(false);
-  const providerUsageRefreshingRef = useRef(false);
   const forceCatalogRefreshRef = useRef(false);
+  const selectionController = useRef(createProviderUsageSelectionController());
+  const catalogAbortRef = useRef<AbortController | null>(null);
+  const selectionAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const clock = window.setInterval(() => setNowMs(Date.now()), 15_000);
+    return () => {
+      mountedRef.current = false;
+      window.clearInterval(clock);
+      catalogAbortRef.current?.abort();
+      selectionAbortRef.current?.abort();
+      selectionController.current.invalidate();
+    };
+  }, []);
 
   useEffect(() => {
     saveProviderUsagePreferences(preferences);
   }, [preferences]);
 
   useEffect(() => {
+    if (snapshot) setPreferences((current) => migrateProviderUsagePreferences(snapshot.providers, current));
+  }, [snapshot]);
+
+  useEffect(() => {
     let cancelled = false;
     let pollTimer: number | undefined;
+    const controller = new AbortController();
+    catalogAbortRef.current = controller;
+    const retry = createProviderUsageRetry();
     const load = async (forceRefresh = false) => {
+      const captured = selectionController.current.beginRead();
+      if (captured === null) return;
       let nextPollDelay = 60_000;
       setCatalogLoading(true);
       try {
-        const catalog = await loadProviderUsageCatalog(storedToken || undefined, forceRefresh);
-        if (cancelled) return;
-        setProviderCatalog(catalog);
+        const catalog = await loadProviderUsageCatalog(storedToken || undefined, forceRefresh, controller.signal);
+        const reconciledSave = !selectionController.current.canSave();
+        if (cancelled || controller.signal.aborted || !selectionController.current.acceptRead(captured, catalog.available, catalog.selectionRevision)) return;
+        setProviderCatalog((current) => catalog.available || !current?.available ? catalog : { ...current, error: catalog.error, refreshing: catalog.refreshing });
+        if (reconciledSave) {
+          setDraftSelection(catalog.selectedProviders);
+          setSelectionError(null);
+          setRefreshKey((key) => key + 1);
+        }
+        setReconcilingSelection(!selectionController.current.canSave());
         setCatalogLoadFailed(!catalog.available || Boolean(catalog.error));
+        retry.success();
         nextPollDelay = getProviderUsageCatalogPollDelay(catalog);
       } catch {
-        if (!cancelled) setCatalogLoadFailed(true);
+        if (!cancelled && !controller.signal.aborted) setCatalogLoadFailed(true);
+        nextPollDelay = retry.failure();
       } finally {
-        if (!cancelled) {
+        if (!cancelled && !controller.signal.aborted) {
           setCatalogLoading(false);
           pollTimer = window.setTimeout(() => void load(), nextPollDelay);
         }
@@ -365,6 +344,7 @@ export function ProviderUsagePanel() {
     void load(forceRefresh);
     return () => {
       cancelled = true;
+      controller.abort();
       if (pollTimer !== undefined) window.clearTimeout(pollTimer);
     };
   }, [catalogRefreshKey, storedToken]);
@@ -372,23 +352,26 @@ export function ProviderUsagePanel() {
   useEffect(() => {
     let cancelled = false;
     let pollTimer: number | undefined;
+    let nextPollDelay = 60_000;
+    const retry = createProviderUsageRetry();
     const refresh = createSerializedRefresh(
       (signal) => loadProviderUsage(storedToken || undefined, signal),
       (next) => {
-        providerUsageRefreshingRef.current = next.refreshing === true;
-        setSnapshot((current) => preserveLastAvailableSnapshot(current, next));
-        setRefreshFailed(!next.available);
+        const running = next.providers.some((provider) => isProviderUsageRunning(provider, Date.now()));
+        setSnapshot((current) => mergeProviderUsageSnapshot(current, next));
+        setRefreshFailed(!next.available || Boolean(next.error));
+        retry.success();
+        nextPollDelay = running ? 1_500 : 60_000;
       },
       setRefreshing,
+      () => {
+        setRefreshFailed(true);
+        nextPollDelay = retry.failure();
+      },
     );
     const run = async () => {
       await refresh.run();
-      if (!cancelled) {
-        pollTimer = window.setTimeout(
-          () => void run(),
-          providerUsageRefreshingRef.current ? 1_500 : 60_000,
-        );
-      }
+      if (!cancelled) pollTimer = window.setTimeout(() => void run(), nextPollDelay);
     };
     void run();
     return () => {
@@ -454,19 +437,38 @@ export function ProviderUsagePanel() {
       : [...current, provider]);
   };
 
+  const checkNow = () => {
+    setRefreshKey((key) => key + 1);
+    forceCatalogRefreshRef.current = false;
+    setCatalogRefreshKey((key) => key + 1);
+  };
+
   const saveSelection = async () => {
-    if (savingSelection) return;
+    if (!selectionController.current.beginSave(providerCatalog?.selectionRevision)) return;
+    catalogAbortRef.current?.abort();
+    setCatalogLoading(false);
+    const controller = new AbortController();
+    selectionAbortRef.current = controller;
     setSavingSelection(true);
     setSelectionError(null);
+    let uncertain = false;
     try {
-      const result = await saveProviderUsageSelection(draftSelection, storedToken || undefined);
-      setProviderCatalog((current) => current ? { ...current, selectedProviders: result.selectedProviders } : current);
+      const result = await saveProviderUsageSelection(draftSelection, storedToken || undefined, controller.signal, providerCatalog?.selectionRevision);
+      if (!mountedRef.current) return;
+      setProviderCatalog((current) => current ? { ...current, selectedProviders: result.selectedProviders, selectionRevision: result.selectionRevision } : current);
       setCustomizeOpen(false);
       setRefreshKey((key) => key + 1);
     } catch (error) {
-      setSelectionError(error instanceof Error ? error.message : t('provider.selectionSaveFailed'));
+      if (!mountedRef.current || controller.signal.aborted) return;
+      uncertain = isProviderUsageSelectionUncertain(error);
+      setSelectionError(t(uncertain ? 'provider.selectionReconcile' : 'provider.selectionSaveFailed'));
     } finally {
-      setSavingSelection(false);
+      selectionController.current.settleSave(uncertain);
+      if (mountedRef.current) {
+        setReconcilingSelection(uncertain);
+        setSavingSelection(false);
+        setCatalogRefreshKey((key) => key + 1);
+      }
     }
   };
 
@@ -477,8 +479,10 @@ export function ProviderUsagePanel() {
     return !query || `${provider.displayName} ${provider.provider}`.toLowerCase().includes(query);
   });
   const canCustomize = canCustomizeProviderUsageCatalog(providerCatalog, catalogLoading);
-  const usageRefreshInProgress = refreshing || snapshot?.refreshing === true;
+  const writerRunning = snapshot?.providers.some((provider) => isProviderUsageRunning(provider, nowMs)) === true;
+  const usageRefreshInProgress = refreshing || writerRunning;
   const providers = snapshot?.providers ?? [];
+  const panelState = getProviderUsagePanelState(snapshot, refreshFailed);
   const visibleProviders = getVisibleProviderUsageCards(
     providers,
     getProviderUsageSelectionForDisplay(
@@ -504,13 +508,13 @@ export function ProviderUsagePanel() {
           <span className="text-[11px] text-text-subtle">{t('provider.autoRefresh')}</span>
           <button
             type="button"
-            onClick={() => setRefreshKey((key) => key + 1)}
-            disabled={usageRefreshInProgress}
+            onClick={checkNow}
+            disabled={refreshing}
             title={t('provider.refreshHelp')}
             className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2 py-1.5 text-xs font-medium text-text-muted hover:text-text disabled:cursor-wait disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
           >
             <RefreshCw size={13} className={usageRefreshInProgress ? 'animate-spin' : ''} aria-hidden="true" />
-            {snapshot?.refreshing ? t('provider.refreshing') : t('provider.refresh')}
+            {refreshing ? t('provider.checking') : t('provider.refresh')}
           </button>
           {catalogLoadFailed ? (
             <button
@@ -540,23 +544,24 @@ export function ProviderUsagePanel() {
           </button>
         </div>
       </header>
-      {!snapshot?.available ? (
-        <div className="flex flex-col items-center gap-2 px-4 py-8 text-center" role={snapshot ? 'alert' : 'status'} aria-live="polite">
-          {snapshot ? <AlertCircle size={20} className="text-warning" aria-hidden="true" /> : <RefreshCw size={20} className="animate-spin text-text-subtle" aria-hidden="true" />}
-          <p className="text-sm text-text-muted">{snapshot ? t('provider.unavailable') : t('provider.loading')}</p>
-          {snapshot ? (
-            <button type="button" onClick={() => setRefreshKey((key) => key + 1)} disabled={refreshing} className="text-xs font-medium text-accent hover:underline disabled:cursor-wait disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+      {writerRunning ? <p className="px-3 py-2 text-xs text-text-muted" role="status">{t('provider.updating')}</p> : null}
+      {refreshFailed || snapshot?.error ? <p className="break-words border-b border-border-subtle px-3 py-2 text-xs text-warning" role="status">{snapshot?.error || t('provider.refreshFailed')}</p> : null}
+      {panelState !== 'ready' ? (
+        <div className="flex flex-col items-center gap-2 px-4 py-8 text-center" role={panelState === 'unavailable' ? 'alert' : 'status'} aria-live="polite">
+          {panelState === 'unavailable' ? <AlertCircle size={20} className="text-warning" aria-hidden="true" /> : <RefreshCw size={20} className="animate-spin text-text-subtle" aria-hidden="true" />}
+          <p className="text-sm text-text-muted">{panelState === 'unavailable' ? t('provider.unavailable') : t('provider.loading')}</p>
+          {panelState === 'unavailable' ? (
+            <button type="button" onClick={checkNow} disabled={refreshing} className="text-xs font-medium text-accent hover:underline disabled:cursor-wait disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
               {t('provider.retry')}
             </button>
           ) : null}
         </div>
       ) : (
         <>
-          {refreshFailed ? <p className="flex items-center gap-2 border-b border-border-subtle px-3 py-2 text-xs text-warning" role="status" aria-live="polite"><AlertCircle size={13} aria-hidden="true" />{t('provider.refreshFailed')}</p> : null}
           <div className="provider-usage-grid-container p-3">
             <div className="provider-usage-grid gap-3" data-max-columns={gridMaxColumns}>
               {visibleProviders.length > 0 ? visibleProviders.map((provider) => (
-                <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} view={preferences.view} locale={numberLocale} />
+                <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} view={preferences.view} locale={numberLocale} nowMs={nowMs} />
               )) : <p className="text-sm text-text-muted" role="status">{t('provider.noneSelected')}</p>}
             </div>
           </div>
@@ -570,11 +575,11 @@ export function ProviderUsagePanel() {
         preferences={preferences}
         setPreferences={setPreferences}
         catalog={providerCatalog}
-        catalogLoading={catalogLoading}
+        catalogLoading={catalogLoading && !providerCatalog?.available}
         draftSelection={draftSelection}
         filteredCatalogRows={filteredCatalogRows}
         search={providerSearch}
-        saving={savingSelection}
+        saving={savingSelection || reconcilingSelection || !providerCatalog?.selectionRevision}
         error={selectionError}
         onSearch={setProviderSearch}
         onToggle={toggleProvider}
@@ -673,7 +678,7 @@ function ProviderUsageCustomizeDialog({
     ? providers.find(({ provider }) => provider === activeDisplayRow.provider)
     : undefined;
   const activeProviderLabel = activeProvider
-    ? providerNames.get(activeProvider.provider) ?? PROVIDER_LABELS[activeProvider.provider] ?? activeProvider.provider
+    ? providerNames.get(activeProvider.provider) ?? activeProvider.provider
     : activeDisplayRow?.displayName ?? '';
   const activeFields = activeProvider
     ? FIELD_GROUPS.some(({ id }) => (activeProvider[id] ?? []).length > 0)
@@ -867,7 +872,7 @@ function ProviderUsageCustomizeDialog({
                             onChange={(event) => setPreferences((current) => setProviderUsageFieldVisible(current, activeProvider.provider, id, field.id, event.target.checked))}
                             className="h-4 w-4 shrink-0 accent-accent"
                           />
-                          <span className="truncate">{field.label}</span>
+                          <span className="min-w-0 break-words">{field.label}{'sectionLabel' in field && field.sectionLabel ? <small className="block text-text-subtle">{field.sectionLabel}</small> : null}{'kind' in field && field.kind === 'chart' ? <small className="block text-text-subtle">{t('provider.chart')}</small> : null}</span>
                         </label>
                       ))}
                     </div>

@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
@@ -38,13 +38,13 @@ class ProviderUsageRuntimeTests(unittest.TestCase):
                 "providers": [{"provider": "codex", "source": "codexbar"}],
             }),
             patch.object(telemetry, "selected_usage_providers", create=True, return_value=("codex",)),
-            patch.object(telemetry, "_schedule_provider_usage_refresh", create=True) as schedule,
+            patch.object(telemetry, "request_background_provider_usage_refresh", create=True) as schedule,
             patch("provider_usage_paths.hermes_cache_dir", return_value=self._home / "cache"),
             patch.object(telemetry.subprocess, "run", side_effect=FileNotFoundError("codexbar")),
         ):
             snapshot = telemetry.collect_provider_usage()
 
-        schedule.assert_called_once_with()
+        schedule.assert_called_once_with(ANY, ANY, ANY, selection=ANY, clear_discovery_failure=True)
         self.assertEqual(len(snapshot["providers"]), 1)
         provider = snapshot["providers"][0]
         self.assertFalse(provider["available"])
@@ -68,15 +68,16 @@ class ProviderUsageRuntimeTests(unittest.TestCase):
             patch.object(telemetry, "provider_usage_catalog_snapshot", create=True, return_value={"available": True, "providers": catalog}),
             patch.object(telemetry, "selected_usage_providers", create=True, return_value=("deepseek", "nous")),
             patch.object(telemetry, "collect_codexbar_usage", create=True, return_value=[deepseek]) as collect,
-            patch.object(telemetry, "_schedule_provider_usage_refresh", create=True) as schedule,
-            patch.object(telemetry, "collect_nous_portal_usage", return_value=nous),
+            patch.object(telemetry, "request_background_provider_usage_refresh", create=True) as schedule,
+            patch.object(telemetry, "collect_selected_usage", return_value=[deepseek, nous]) as unified,
             patch("provider_usage_paths.hermes_cache_dir", return_value=self._home / "cache"),
             patch.object(telemetry.subprocess, "run", side_effect=FileNotFoundError("test guard")),
         ):
             snapshot = telemetry.collect_provider_usage()
 
         collect.assert_not_called()
-        schedule.assert_called_once_with()
+        unified.assert_not_called()
+        schedule.assert_called_once_with(ANY, ANY, ANY, selection=ANY, clear_discovery_failure=True)
         self.assertEqual([item["provider"] for item in snapshot["providers"]], ["deepseek", "nous"])
         self.assertFalse(snapshot["providers"][0]["available"])
 
@@ -104,13 +105,13 @@ class ProviderUsageRuntimeTests(unittest.TestCase):
         with (
             patch.object(telemetry, "provider_usage_catalog_snapshot", create=True, return_value={"available": True, "providers": catalog}),
             patch.object(telemetry, "selected_usage_providers", create=True, return_value=("deepseek",)),
-            patch.object(telemetry, "_schedule_provider_usage_refresh", create=True) as schedule,
+            patch.object(telemetry, "request_background_provider_usage_refresh", create=True) as schedule,
             patch("provider_usage_paths.hermes_cache_dir", return_value=cache_dir),
             patch.object(telemetry.subprocess, "run", side_effect=FileNotFoundError("test guard")),
         ):
             snapshot = telemetry.collect_provider_usage()
 
-        schedule.assert_not_called()
+        schedule.assert_called_once_with(ANY, ("deepseek",), ANY, selection=ANY, clear_discovery_failure=True)
         self.assertEqual([item["provider"] for item in snapshot["providers"]], ["deepseek"])
         self.assertEqual(snapshot["providers"][0]["windows"][0]["usedPercent"], 32)
 
@@ -131,13 +132,13 @@ class ProviderUsageRuntimeTests(unittest.TestCase):
             patch.dict(os.environ, {"MISSION_CONTROL_CACHE_DIR": str(override_cache)}),
             patch.object(telemetry, "provider_usage_catalog_snapshot", return_value={"available": True, "providers": catalog}),
             patch.object(telemetry, "selected_usage_providers", return_value=("deepseek",)),
-            patch.object(telemetry, "_schedule_provider_usage_refresh") as schedule,
+            patch.object(telemetry, "request_background_provider_usage_refresh") as schedule,
             patch("provider_usage_paths.hermes_cache_dir", return_value=self._home / "different-cache"),
             patch.object(telemetry.subprocess, "run", side_effect=AssertionError("GET must not run CodexBar")),
         ):
             snapshot = telemetry.collect_provider_usage()
 
-        schedule.assert_not_called()
+        schedule.assert_called_once_with(ANY, ("deepseek",), ANY, selection=ANY, clear_discovery_failure=True)
         self.assertTrue(snapshot["providers"][0]["available"])
         self.assertEqual(snapshot["providers"][0]["windows"][0]["usedPercent"], 32)
 
@@ -150,15 +151,15 @@ class ProviderUsageRuntimeTests(unittest.TestCase):
                 "available": True, "providers": [{"provider": "deepseek", "source": "codexbar"}],
             }),
             patch.object(telemetry, "selected_usage_providers", return_value=("deepseek",)),
-            patch.object(telemetry, "_schedule_provider_usage_refresh") as schedule,
+            patch.object(telemetry, "request_background_provider_usage_refresh") as schedule,
             patch("provider_usage_paths.hermes_cache_dir", return_value=cache_dir),
         ):
             snapshot = telemetry.collect_provider_usage()
 
-        schedule.assert_called_once_with()
+        schedule.assert_called_once_with(ANY, ANY, ANY, selection=ANY, clear_discovery_failure=True)
         self.assertEqual([item["provider"] for item in snapshot["providers"]], ["deepseek"])
         self.assertFalse(snapshot["providers"][0]["available"])
-        self.assertEqual(snapshot["providers"][0]["error"], "Usage data is pending refresh.")
+        self.assertEqual(snapshot["providers"][0]["error"], "Provider usage refresh pending.")
 
     def test_stale_provider_retries_independently_of_fresh_global_timestamp(self) -> None:
         cache_dir = self._home / "cache"
@@ -181,13 +182,13 @@ class ProviderUsageRuntimeTests(unittest.TestCase):
                 "available": True, "providers": [{"provider": "deepseek", "source": "codexbar"}],
             }),
             patch.object(telemetry, "selected_usage_providers", return_value=("deepseek",)),
-            patch.object(telemetry, "_schedule_provider_usage_refresh") as schedule,
+            patch.object(telemetry, "request_background_provider_usage_refresh") as schedule,
             patch("provider_usage_paths.hermes_cache_dir", return_value=cache_dir),
             patch.object(telemetry.subprocess, "run", side_effect=AssertionError("GET must not run CodexBar")),
         ):
             snapshot = telemetry.collect_provider_usage()
 
-        schedule.assert_called_once_with()
+        schedule.assert_called_once_with(ANY, ANY, ANY, selection=ANY, clear_discovery_failure=True)
         self.assertTrue(snapshot["providers"][0]["stale"])
 
 

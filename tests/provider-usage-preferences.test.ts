@@ -11,6 +11,7 @@ import {
   hasProviderUsageSelectionChanges,
   loadProviderUsagePreferences,
   moveProviderUsagePreference,
+  migrateProviderUsagePreferences,
   PROVIDER_USAGE_PREFERENCES_KEY,
   saveProviderUsagePreferences,
   setProviderUsageFieldVisible,
@@ -204,6 +205,37 @@ test('keeps snapshot cards visible when the catalog selection is unavailable', (
   assert.deepEqual(getProviderUsageSelectionForDisplay(providers, null), ['codex', 'deepseek']);
   assert.deepEqual(getProviderUsageSelectionForDisplay(providers, ['nous'], false), ['codex', 'deepseek']);
   assert.deepEqual(getProviderUsageSelectionForDisplay(providers, ['deepseek']), ['deepseek']);
+});
+
+test('migrates an unambiguous legacy field preference through stable IDs and reorder', () => {
+  const prefs = { hiddenProviders: [], hiddenFields: { future: { windows: [], balances: [], metrics: ['detail-0-0'] } }, providerOrder: [], columns: 3 as const, view: 'compact' as const };
+  const providers = [{ provider: 'future', available: true, windows: [], balances: [], metrics: [
+    { id: 'detail:stable', label: 'Row', value: 1, legacyIds: ['detail-0-0'] }, { id: 'detail:chart', kind: 'chart', value: null, legacyIds: ['detail-0-1'] },
+  ] }];
+  assert.deepEqual(applyProviderUsagePreferences(providers, prefs)[0].metrics.map(f => f.id), ['detail:chart']);
+  const reordered = [{ ...providers[0], metrics: [{ ...providers[0].metrics[1] }, { ...providers[0].metrics[0], value: 99 }] }];
+  assert.deepEqual(applyProviderUsagePreferences(reordered, prefs)[0].metrics.map(f => f.id), ['detail:chart']);
+  assert.equal(providers[0].available, true, 'presentation filters must not change availability');
+});
+
+test('persists migrated stable IDs and leaves ambiguous aliases untouched', () => {
+  const prefs = { hiddenProviders: [], hiddenFields: { future: { windows: [], balances: [], metrics: ['detail-0-0', 'chart-legacy', 'ambiguous'] } }, providerOrder: [], columns: 3 as const, view: 'compact' as const };
+  const providers = [{ provider: 'future', windows: [], balances: [], metrics: [
+    { id: 'detail:stable', value: 1, legacyIds: ['detail-0-0'] }, { id: 'detail:chart', value: null, kind: 'chart', legacyIds: ['chart-legacy'] },
+    { id: 'detail:a', legacyIds: ['ambiguous'] }, { id: 'detail:b', legacyIds: ['ambiguous'] },
+  ] }];
+  const migrated = migrateProviderUsagePreferences(providers, prefs);
+  assert.deepEqual(migrated.hiddenFields.future.metrics, ['detail:stable', 'detail:chart', 'ambiguous']);
+  const changed = [{ ...providers[0], metrics: [
+    { id: 'detail:new', value: 99, legacyIds: ['detail-0-0'] }, { id: 'detail:stable', value: 500, legacyIds: ['detail-2-4'] },
+  ] }];
+  assert.deepEqual(applyProviderUsagePreferences(changed, migrated)[0].metrics.map(field => field.id), ['detail:new']);
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  saveProviderUsagePreferences(migrated, storage);
+  assert.deepEqual(loadProviderUsagePreferences(storage), migrated);
+  assert.equal(migrateProviderUsagePreferences(providers, migrated), migrated);
+  assert.doesNotThrow(() => loadProviderUsagePreferences({ getItem: () => { throw new Error('denied'); }, setItem: () => {} }));
 });
 
 test('persists normalized preferences without failing when browser storage is unavailable', () => {

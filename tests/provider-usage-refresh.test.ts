@@ -4,6 +4,7 @@ import {
   createSerializedRefresh,
   getProviderUsageCatalogPollDelay,
   preserveLastAvailableSnapshot,
+  createProviderUsageRetry,
 } from '../src/lib/provider-usage-refresh.ts';
 
 function deferred<T>() {
@@ -67,7 +68,7 @@ assert.equal(
   'a stale cached catalog must remain editable when background discovery fails',
 );
 assert.equal(canCustomizeProviderUsageCatalog({ available: false }, false), false);
-assert.equal(canCustomizeProviderUsageCatalog({ available: true }, true), false);
+assert.equal(canCustomizeProviderUsageCatalog({ available: true }, true), true, 'background polling must not lock a usable catalog');
 
 assert.equal(
   getProviderUsageCatalogPollDelay({ available: true, refreshing: false }),
@@ -80,4 +81,18 @@ assert.equal(
   'an active catalog discovery should be polled promptly',
 );
 
+let attempts = 0;
+const failures: unknown[] = [];
+const recovered: string[] = [];
+const recoverLoading: boolean[] = [];
+const recover = createSerializedRefresh(async () => { if (attempts++ === 0) throw new Error('Transport'); return 'recovered'; }, value => recovered.push(value), value => recoverLoading.push(value), error => failures.push(error));
+await recover.run();
+await recover.run();
+assert.equal(failures.length, 1);
+assert.deepEqual(recovered, ['recovered']);
+assert.deepEqual(recoverLoading, [true, false, true, false]);
+const retry = createProviderUsageRetry();
+assert.deepEqual([retry.failure(), retry.failure(), retry.failure(), retry.failure(), retry.failure()], [5_000, 15_000, 30_000, 60_000, 60_000]);
+retry.success();
+assert.equal(retry.failure(), 5_000);
 console.log('provider usage refresh tests passed');

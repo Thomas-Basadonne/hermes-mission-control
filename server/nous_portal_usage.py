@@ -14,8 +14,6 @@ import json
 import math
 import shutil
 import subprocess
-import threading
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,22 +22,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_paths import get_hermes_home, hermes_root
-from provider_usage_contract import unavailable_provider
+from provider_usage_contract import normalize_cached_entry, unavailable_provider
 
 _DEFAULT_PORTAL_BASE_URL = "https://portal.nousresearch.com"
 _ALLOWED_PORTAL_HOSTS = {"portal.nousresearch.com"}
 _REQUEST_TIMEOUT_SECONDS = 8
-_CACHE_TTL_SECONDS = 60.0
-
-_CACHE_LOCK = threading.Lock()
-_CACHE: tuple[float, dict[str, Any]] | None = None
-
-
-def reset_nous_portal_usage_cache() -> None:
-    """Clear the process-local snapshot; intended for tests and diagnostics."""
-    global _CACHE
-    with _CACHE_LOCK:
-        _CACHE = None
 
 
 def _auth_paths() -> list[Path]:
@@ -217,9 +204,11 @@ def normalize_account_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "unit": "boolean",
         })
 
-    return {
+    available = bool(windows or balances or metrics)
+    result = {
         "provider": "nous",
-        "available": True,
+        "available": available,
+        "dataState": "ready" if available else "no_data",
         "source": "portal-account",
         "updatedAt": datetime.now(timezone.utc).isoformat(),
         "plan": _string(subscription.get("plan")),
@@ -230,6 +219,7 @@ def normalize_account_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "balances": balances,
         "metrics": metrics,
     }
+    return normalize_cached_entry(result)
 
 
 def fetch_nous_portal_usage() -> dict[str, Any]:
@@ -273,26 +263,3 @@ def fetch_nous_portal_usage() -> dict[str, Any]:
     if not isinstance(payload, dict):
         return _unavailable("Invalid Nous Portal account response.")
     return normalize_account_payload(payload)
-
-
-def collect_nous_portal_usage(*, force: bool = False) -> dict[str, Any]:
-    """Return a 60-second process-local snapshot, preserving last good data."""
-    global _CACHE
-    now = time.monotonic()
-    with _CACHE_LOCK:
-        if not force and _CACHE is not None and now - _CACHE[0] < _CACHE_TTL_SECONDS:
-            return dict(_CACHE[1])
-
-    result = fetch_nous_portal_usage()
-    if result.get("available"):
-        with _CACHE_LOCK:
-            _CACHE = (time.monotonic(), result)
-        return dict(result)
-
-    with _CACHE_LOCK:
-        if _CACHE is not None and _CACHE[1].get("available"):
-            stale = dict(_CACHE[1])
-            stale["stale"] = True
-            stale["error"] = result.get("error")
-            return stale
-    return result

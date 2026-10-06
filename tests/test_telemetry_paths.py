@@ -40,6 +40,9 @@ class TelemetryPathResolutionTests(unittest.TestCase):
         os.environ["HERMES_HOME"] = str(self._tmp / "hermes")
         os.environ.pop("MISSION_CONTROL_VAULT_PATH", None)
         self._hermes_home = Path(os.environ["HERMES_HOME"])
+        background = patch.object(local_telemetry_server, "request_background_provider_usage_refresh", return_value=False)
+        background.start()
+        self.addCleanup(background.stop)
 
     def tearDown(self):
         if self._home_backup is None:
@@ -65,32 +68,27 @@ class TelemetryPathResolutionTests(unittest.TestCase):
     def test_provider_usage_reads_profile_aware_cache(self):
         cache = self._hermes_home / "cache" / "mission-control-provider-usage.json"
         cache.parent.mkdir(parents=True)
-        payload = {"success": True, "available": True, "providers": [{"provider": "codex"}]}
+        payload = {"schemaVersion": 1, "success": True, "available": True, "providers": [{
+            "provider": "codex", "available": True, "windows": [], "balances": [],
+            "metrics": [{"id": "observed", "label": "Observed", "value": 7}],
+        }]}
         cache.write_text(json.dumps(payload), encoding="utf-8")
+        os.environ["MISSION_CONTROL_USAGE_PROVIDERS"] = "codex,nous"
 
         with patch.object(
-            local_telemetry_server,
-            "collect_nous_portal_usage",
-            return_value={
-                "provider": "nous",
-                "available": False,
-                "source": "portal-account",
-                "windows": [],
-                "balances": [],
-                "metrics": [],
-            },
-        ), patch.object(
             local_telemetry_server,
             "provider_usage_catalog_snapshot",
             return_value={"available": False, "providers": [{"provider": "nous", "source": "mission-control", "enabled": True}]},
         ):
             result = local_telemetry_server.collect_provider_usage()
 
-        self.assertEqual(result["schemaVersion"], 1)
+        self.assertEqual(result["schemaVersion"], 2)
         self.assertTrue(result["available"])
         self.assertEqual(result["providers"][0]["provider"], "codex")
         self.assertEqual(result["providers"][0]["windows"], [])
+        self.assertEqual(result["providers"][0]["metrics"][0]["value"], 7)
         self.assertEqual(result["providers"][-1]["provider"], "nous")
+        self.assertEqual(json.loads(cache.read_text()), payload)
 
     def test_local_allowlist_filters_hidden_provider_from_cache_and_fetches(self):
         cache = self._hermes_home / "cache" / "mission-control-provider-usage.json"
@@ -107,13 +105,10 @@ class TelemetryPathResolutionTests(unittest.TestCase):
             encoding="utf-8",
         )
         os.environ["MISSION_CONTROL_USAGE_PROVIDERS"] = "codex,nous"
-        nous = {"provider": "nous", "available": True, "windows": [], "balances": [], "metrics": []}
-
-        with patch.object(local_telemetry_server, "collect_nous_portal_usage", return_value=nous), \
-             patch.object(local_telemetry_server, "provider_usage_catalog_snapshot", return_value={
-                 "available": False,
-                 "providers": [{"provider": "nous", "source": "mission-control", "enabled": True}],
-             }), \
+        with patch.object(local_telemetry_server, "provider_usage_catalog_snapshot", return_value={
+            "available": False,
+            "providers": [{"provider": "nous", "source": "mission-control", "enabled": True}],
+        }), \
              patch.object(local_telemetry_server.subprocess, "run") as run:
             result = local_telemetry_server.collect_provider_usage()
 
@@ -139,20 +134,25 @@ class TelemetryPathResolutionTests(unittest.TestCase):
         cache.write_text(
             json.dumps({
                 "schemaVersion": 1,
+                "success": True,
                 "available": True,
                 "providers": [{
                     "provider": "codex",
                     "available": True,
                     "windows": [],
-                    "balances": [{"id": "credits_remaining", "value": 0, "unit": "credits"}],
-                    "metrics": [{"id": "reset_credits_available", "value": 1, "unit": "count"}],
+                    "balances": [{"id": "credits_remaining", "label": "Credits remaining", "value": 0, "unit": "credits"}],
+                    "metrics": [{"id": "reset_credits_available", "label": "Reset credits available", "value": 1, "unit": "count"}],
                 }],
             }),
             encoding="utf-8",
         )
         os.environ["MISSION_CONTROL_USAGE_PROVIDERS"] = "codex"
 
-        result = local_telemetry_server.collect_provider_usage()
+        with patch.object(local_telemetry_server, "provider_usage_catalog_snapshot", return_value={
+            "available": False,
+            "providers": [{"provider": "codex", "source": "codexbar", "enabled": True}],
+        }):
+            result = local_telemetry_server.collect_provider_usage()
         provider = result["providers"][0]
 
         self.assertEqual(provider["balances"], [])
