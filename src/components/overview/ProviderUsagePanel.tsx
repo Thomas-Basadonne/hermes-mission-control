@@ -3,7 +3,7 @@ import { createProviderUsageSelectionController, isProviderUsageSelectionUncerta
 import { getProviderUsageStatus, isProviderUsageRunning } from '../../lib/provider-usage-freshness';
 import { useI18n } from '../../lib/i18n';
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
-import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Cloud, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
+import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Cloud, RefreshCw, Search, SlidersHorizontal } from 'lucide-react';
 import { ProviderUsageMetricRow } from './ProviderUsageDetails';
 import { Card } from '../ui/Card';
 import { Modal } from '../Modal';
@@ -43,15 +43,12 @@ import {
   hasProviderUsageSelectionChanges,
   loadProviderUsagePreferences,
   moveProviderUsagePreference,
-  migrateProviderUsagePreferences,
   saveProviderUsagePreferences,
-  setProviderUsageFieldVisible,
   setProviderUsageProviderVisible,
-  setProviderUsageCompactFields,
-  MAX_PROVIDER_USAGE_COMPACT_FIELDS,
+  getFieldVisibility,
+  setFieldVisibility,
   type ProviderUsageCatalogRow,
   type ProviderUsageFieldGroup,
-  type ProviderUsageFieldRef,
   type ProviderUsagePreferences,
   type ProviderUsageView,
 } from '../../lib/provider-usage-preferences';
@@ -180,7 +177,7 @@ export function ProviderCard({ provider, displayName, view = 'compact', locale, 
   const balances = (Array.isArray(provider.balances) ? provider.balances : []).filter((balance) => typeof balance.value === 'number');
   const metrics = Array.isArray(provider.metrics) ? provider.metrics : [];
   const windows = Array.isArray(provider.windows) ? provider.windows : [];
-  const summary = selectProviderUsageSummary(provider, preferences?.compactFields?.[provider.provider]);
+  const summary = selectProviderUsageSummary(provider, preferences?.fieldVisibility?.[provider.provider]);
   const compactWindows = { visible: summary.visible.filter((item) => item.group === 'windows').map((item) => item.field as MissionControlProviderUsageWindow), overflow: summary.overflow.filter((item) => item.group === 'windows').map((item) => item.field as MissionControlProviderUsageWindow) };
   const compactBalances = { visible: summary.visible.filter((item) => item.group === 'balances').map((item) => item.field as MissionControlProviderUsageBalance), overflow: summary.overflow.filter((item) => item.group === 'balances').map((item) => item.field as MissionControlProviderUsageBalance) };
   const compactMetrics = { visible: summary.visible.filter((item) => item.group === 'metrics').map((item) => item.field as MissionControlProviderUsageMetric), overflow: summary.overflow.filter((item) => item.group === 'metrics').map((item) => item.field as MissionControlProviderUsageMetric) };
@@ -319,9 +316,6 @@ export function ProviderUsagePanel() {
     saveProviderUsagePreferences(preferences);
   }, [preferences]);
 
-  useEffect(() => {
-    if (snapshot) setPreferences((current) => migrateProviderUsagePreferences(snapshot.providers, current));
-  }, [snapshot]);
 
   useEffect(() => {
     let cancelled = false;
@@ -702,36 +696,6 @@ function ProviderUsageCustomizeDialog({
   const activeFields = activeProvider
     ? FIELD_GROUPS.some(({ id }) => (activeProvider[id] ?? []).length > 0)
     : false;
-  const compactOverride = preferences.compactFields?.[activeProvider?.provider ?? ''];
-  const [compactMode, setCompactMode] = useState<'auto' | 'custom'>(compactOverride === undefined ? 'auto' : 'custom');
-  const [compactSelection, setCompactSelection] = useState<ProviderUsageFieldRef[]>(compactOverride ?? []);
-  const compactAvailableFields = activeProvider
-    ? FIELD_GROUPS.flatMap(({ id: group }) =>
-        (activeProvider[group] ?? [])
-          .filter((field) => !compactSelection.some((ref) => ref.group === group && ref.id === field.id))
-          .map((field) => ({ group: group as ProviderUsageFieldGroup, field })),
-      )
-    : [];
-  const addCompactField = (group: ProviderUsageFieldGroup, id: string) => {
-    if (compactSelection.length >= MAX_PROVIDER_USAGE_COMPACT_FIELDS) return;
-    setCompactSelection((current) => [...current, { group, id }]);
-  };
-  const removeCompactField = (index: number) => {
-    setCompactSelection((current) => current.filter((_, i) => i !== index));
-  };
-  const moveCompactField = (index: number, direction: -1 | 1) => {
-    const next = [...compactSelection];
-    const target = index + direction;
-    if (target < 0 || target >= next.length) return;
-    [next[index], next[target]] = [next[target], next[index]];
-    setCompactSelection(next);
-  };
-  const saveCompactSelection = () => {
-    if (!activeProvider) return;
-    setPreferences((current) =>
-      setProviderUsageCompactFields(current, activeProvider.provider, compactMode === 'custom' ? compactSelection : null),
-    );
-  };
   const selectionChanged = hasProviderUsageSelectionChanges(draftSelection, providerCatalog.selectedProviders);
   return (
     <Modal
@@ -908,123 +872,40 @@ function ProviderUsageCustomizeDialog({
               {activeProvider ? FIELD_GROUPS.map(({ id, label }) => {
                 const fields = activeProvider[id] ?? [];
                 if (fields.length === 0) return null;
-                const hiddenFields = new Set(preferences.hiddenFields[activeProvider.provider]?.[id] ?? []);
                 return (
                   <div key={id} className="mb-3 last:mb-0 rounded-xl border border-border-subtle bg-surface-raised/30 p-3">
                     <h3 className="mb-2 text-xs font-semibold text-text-muted">{t(label)}</h3>
                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      {fields.map((field) => (
-                        <label key={field.id} className="inline-flex min-w-0 items-center gap-2 rounded-lg border border-border-subtle px-3 py-2 text-sm text-text">
-                          <input
-                            type="checkbox"
-                            checked={!hiddenFields.has(field.id)}
-                            onChange={(event) => setPreferences((current) => setProviderUsageFieldVisible(current, activeProvider.provider, id, field.id, event.target.checked))}
-                            className="h-4 w-4 shrink-0 accent-accent"
-                          />
-                          <span className="min-w-0 break-words">{field.label}{'sectionLabel' in field && field.sectionLabel ? <small className="block text-text-subtle">{field.sectionLabel}</small> : null}{'kind' in field && field.kind === 'chart' ? <small className="block text-text-subtle">{t('provider.chart')}</small> : null}</span>
-                        </label>
-                      ))}
+                      {fields.map((field) => {
+                        const visibility = getFieldVisibility(preferences, activeProvider.provider, field.id);
+                        return (
+                          <div key={field.id} className="flex flex-col gap-1 rounded-lg border border-border-subtle px-3 py-2">
+                            <span className="min-w-0 break-words text-sm text-text">
+                              {field.label}
+                              {'sectionLabel' in field && field.sectionLabel ? <small className="block text-text-subtle">{field.sectionLabel}</small> : null}
+                              {'kind' in field && field.kind === 'chart' ? <small className="block text-text-subtle">{t('provider.chart')}</small> : null}
+                            </span>
+                            <div className="flex gap-1">
+                              {(['both', 'detailed', 'hidden'] as const).map((v) => (
+                                <label key={v} className="inline-flex items-center gap-1 text-xs text-text-muted">
+                                  <input
+                                    type="radio"
+                                    name={`visibility-${activeProvider.provider}-${field.id}`}
+                                    className="h-3 w-3 accent-accent"
+                                    checked={visibility === v}
+                                    onChange={() => setPreferences((current) => setFieldVisibility(current, activeProvider.provider, field.id, v))}
+                                  />
+                                  {t(`provider.visibility.${v}`)}
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
               }) : null}
-              <fieldset className="min-w-0 border-t border-border-subtle pt-4">
-                <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
-                  {t('provider.compact.title')}
-                </legend>
-                <div className="mb-3 grid grid-cols-2 gap-2">
-                  {(['auto', 'custom'] as const).map((mode) => (
-                    <label key={mode} className={`flex cursor-pointer items-start gap-2 rounded-xl border p-3 transition-colors ${compactMode === mode ? 'border-accent/40 bg-accent/5' : 'border-border-subtle hover:bg-surface-hover'}`}>
-                      <input
-                        type="radio"
-                        name="provider-compact-mode"
-                        className="mt-0.5 shrink-0 accent-accent"
-                        checked={compactMode === mode}
-                        onChange={() => setCompactMode(mode)}
-                      />
-                      <span className="min-w-0">
-                        <span className="block text-sm font-medium text-text">{t(`provider.compact.${mode}`)}</span>
-                        <span className="mt-0.5 block text-xs text-text-subtle">{t(`provider.compact.${mode}Help`)}</span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-
-                {compactMode === 'custom' && activeProvider ? (
-                  <div className="flex flex-col gap-3">
-                    <div className="flex items-center justify-between text-xs text-text-muted">
-                      <span>{t('provider.compact.selected', { count: compactSelection.length, max: MAX_PROVIDER_USAGE_COMPACT_FIELDS })}</span>
-                      {compactSelection.length >= MAX_PROVIDER_USAGE_COMPACT_FIELDS ? (
-                        <span className="text-warning">{t('provider.compact.full', { max: MAX_PROVIDER_USAGE_COMPACT_FIELDS })}</span>
-                      ) : null}
-                    </div>
-
-                    {compactSelection.length === 0 ? (
-                      <p className="text-sm text-text-muted">{t('provider.compact.empty', { max: MAX_PROVIDER_USAGE_COMPACT_FIELDS })}</p>
-                    ) : (
-                      <ul className="flex flex-col gap-1">
-                        {compactSelection.map((ref, index) => {
-                          const field = (activeProvider[ref.group] ?? []).find((f) => f.id === ref.id);
-                          if (!field) return null;
-                          return (
-                            <li key={`${ref.group}:${ref.id}`} className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-raised/30 px-3 py-2">
-                              <span className="min-w-0 flex-1 break-words text-sm text-text">
-                                {field.label}
-                                {'sectionLabel' in field && field.sectionLabel ? <small className="block text-text-subtle">{field.sectionLabel}</small> : null}
-                              </span>
-                              <div className="flex shrink-0 gap-1">
-                                <button type="button" aria-label={t('provider.compact.moveUp', { field: field.label })} disabled={index === 0} onClick={() => moveCompactField(index, -1)} className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle text-text-muted hover:bg-surface-hover disabled:opacity-30">
-                                  <ArrowUp size={12} aria-hidden="true" />
-                                </button>
-                                <button type="button" aria-label={t('provider.compact.moveDown', { field: field.label })} disabled={index === compactSelection.length - 1} onClick={() => moveCompactField(index, 1)} className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle text-text-muted hover:bg-surface-hover disabled:opacity-30">
-                                  <ArrowDown size={12} aria-hidden="true" />
-                                </button>
-                                <button type="button" aria-label={t('provider.compact.remove', { field: field.label })} onClick={() => removeCompactField(index)} className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle text-text-muted hover:bg-surface-hover hover:text-negative">
-                                  <X size={12} aria-hidden="true" />
-                                </button>
-                              </div>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-
-                    {compactAvailableFields.length > 0 && compactSelection.length < MAX_PROVIDER_USAGE_COMPACT_FIELDS ? (
-                      <div className="flex flex-col gap-1">
-                        <span className="text-xs font-medium text-text-muted">{t('provider.compact.available')}</span>
-                        {compactAvailableFields.map(({ group, field }) => (
-                          <div key={`${group}:${field.id}`} className="flex items-center gap-2 rounded-lg border border-border-subtle px-3 py-2">
-                            <span className="min-w-0 flex-1 break-words text-sm text-text-muted">
-                              {field.label}
-                              {'sectionLabel' in field && field.sectionLabel ? <small className="block text-text-subtle">{field.sectionLabel}</small> : null}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => addCompactField(group, field.id)}
-                              className="shrink-0 rounded-md border border-border-subtle px-2 py-1 text-xs font-medium text-text-muted hover:bg-surface-hover hover:text-text"
-                            >
-                              {t('provider.compact.add')}
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-
-                    <button
-                      type="button"
-                      onClick={saveCompactSelection}
-                      disabled={compactSelection.length === 0}
-                      className="self-start rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {t('provider.saveCompact')}
-                    </button>
-                  </div>
-                ) : compactMode === 'custom' && !activeProvider ? (
-                  <p className="text-sm text-text-muted">{t('provider.selectProviderForFields')}</p>
-                ) : (
-                  <p className="text-xs text-text-subtle">{t('provider.compact.autoActive')}</p>
-                )}
-              </fieldset>
             </fieldset>
           </div>
         )}

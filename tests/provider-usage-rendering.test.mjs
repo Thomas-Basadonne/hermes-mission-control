@@ -65,7 +65,7 @@ try {
     for (const point of points) assert.match(chartOnly, new RegExp('>' + point.value + '<\\/td>'));
   }
   const { applyProviderUsagePreferences } = await server.ssrLoadModule('/src/lib/provider-usage-preferences.ts');
-  const hidden = applyProviderUsagePreferences([{ ...good, metrics: [{ id: 'featured', label: 'Hidden featured', value: 1, featured: true }] }], { hiddenProviders: [], hiddenFields: { 'future-provider': { windows: [], balances: [], metrics: ['featured'] } }, providerOrder: [], columns: 3, view: 'compact' });
+  const hidden = applyProviderUsagePreferences([{ ...good, metrics: [{ id: 'featured', label: 'Hidden featured', value: 1, featured: true }] }], { hiddenProviders: [], fieldVisibility: { 'future-provider': { featured: 'hidden' } }, providerOrder: [], columns: 3, view: 'compact' });
   assert.doesNotMatch(render(hidden[0]), /Hidden featured/);
   assert.match(render({ ...good, windows: [{ id: 'primary', label: 'Literal quota', usageKnown: false, usedPercent: 0 }] }), /aria-valuetext="Unavailable"/);
   const { default: en } = await server.ssrLoadModule('/src/locales/en.json');
