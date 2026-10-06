@@ -281,6 +281,8 @@ export function ProviderUsagePanel() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
   const [usageInitializing, setUsageInitializing] = useState(true);
+  const [manualCheck, setManualCheck] = useState<'idle' | 'checking' | 'collecting' | 'complete' | 'failed'>('idle');
+  const manualCheckPending = useRef(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogLoadFailed, setCatalogLoadFailed] = useState(false);
@@ -378,6 +380,15 @@ export function ProviderUsagePanel() {
         initialized = true;
         setUsageInitializing(false);
         const running = next.providers.some((provider) => isProviderUsageRunning(provider, Date.now()));
+        if (manualCheckPending.current) {
+          if (running) setManualCheck('collecting');
+          else {
+            manualCheckPending.current = false;
+            const failed = !next.available || Boolean(next.error)
+              || next.providers.some((provider) => provider.refreshState === 'failed' || provider.refreshState === 'running' || provider.dataState === 'error');
+            setManualCheck(failed ? 'failed' : 'complete');
+          }
+        }
         setSnapshot((current) => mergeProviderUsageSnapshot(current, next));
         setRefreshFailed(!next.available || Boolean(next.error));
         retry.success();
@@ -385,6 +396,10 @@ export function ProviderUsagePanel() {
       },
       setRefreshing,
       (error) => {
+        if (manualCheckPending.current) {
+          manualCheckPending.current = false;
+          setManualCheck('failed');
+        }
         const transient = error instanceof TypeError || error instanceof ProviderUsageTimeoutError
           || (error instanceof ProviderUsageHttpError && (error.status === 408 || error.status === 429 || error.status >= 500));
         // Keep the initial loader through two retries, not indefinitely. A valid
@@ -465,6 +480,10 @@ export function ProviderUsagePanel() {
   };
 
   const checkNow = () => {
+    if (manualCheckPending.current || refreshing || (manualCheck !== 'failed' && snapshot?.providers.some((provider) => isProviderUsageRunning(provider, Date.now())))) return;
+    manualCheckPending.current = true;
+    setManualCheck('checking');
+    setRefreshFailed(false);
     setRefreshKey((key) => key + 1);
     forceCatalogRefreshRef.current = false;
     setCatalogRefreshKey((key) => key + 1);
@@ -507,7 +526,8 @@ export function ProviderUsagePanel() {
   });
   const canCustomize = canCustomizeProviderUsageCatalog(providerCatalog, catalogLoading);
   const writerRunning = snapshot?.providers.some((provider) => isProviderUsageRunning(provider, nowMs)) === true;
-  const usageRefreshInProgress = refreshing || writerRunning;
+  const manualCheckInProgress = manualCheck === 'checking' || manualCheck === 'collecting';
+  const usageRefreshInProgress = manualCheckInProgress || refreshing || (writerRunning && manualCheck !== 'failed');
   const providers = snapshot?.providers ?? [];
   const panelState = getProviderUsagePanelState(snapshot, refreshFailed, usageInitializing);
   const visibleProviders = getVisibleProviderUsageCards(
@@ -536,12 +556,14 @@ export function ProviderUsagePanel() {
           <button
             type="button"
             onClick={checkNow}
-            disabled={refreshing}
+            disabled={usageRefreshInProgress}
+            aria-busy={usageRefreshInProgress}
+            aria-describedby="provider-usage-check-status"
             title={t('provider.refreshHelp')}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2 py-1.5 text-xs font-medium text-text-muted hover:text-text disabled:cursor-wait disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            className="inline-flex min-w-28 items-center justify-center gap-1.5 rounded-md border border-border-subtle px-3 py-2 text-xs font-medium text-text-muted transition-colors hover:border-accent/40 hover:bg-surface-hover hover:text-text active:translate-y-px disabled:cursor-wait disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
           >
             <RefreshCw size={13} className={usageRefreshInProgress ? 'animate-spin' : ''} aria-hidden="true" />
-            {refreshing ? t('provider.checking') : t('provider.refresh')}
+            {usageRefreshInProgress ? t('provider.checking') : t('provider.refresh')}
           </button>
           <button
             type="button"
@@ -557,14 +579,22 @@ export function ProviderUsagePanel() {
           </button>
         </div>
       </header>
-      {writerRunning ? <p className="px-3 py-2 text-xs text-text-muted" role="status">{t('provider.updating')}</p> : null}
-      {(refreshFailed || snapshot?.error) && panelState !== 'loading' ? <p className="break-words border-b border-border-subtle px-3 py-2 text-xs text-warning" role="status">{snapshot?.error || t('provider.refreshFailed')}</p> : null}
+      <div id="provider-usage-check-status" className="flex min-h-8 items-center gap-2 border-b border-border-subtle px-3 py-2 text-xs text-text-muted" role="status" aria-live="polite" aria-atomic="true">
+        {usageRefreshInProgress ? <RefreshCw size={13} className="shrink-0 animate-spin text-accent" aria-hidden="true" />
+          : manualCheck === 'complete' ? <CheckCircle2 size={13} className="shrink-0 text-accent" aria-hidden="true" />
+            : manualCheck === 'failed' ? <AlertCircle size={13} className="shrink-0 text-warning" aria-hidden="true" /> : null}
+        <p>{manualCheck === 'failed' ? snapshot?.error || t('provider.checkFailed')
+          : manualCheck === 'collecting' || writerRunning ? t('provider.updating')
+            : manualCheck === 'checking' ? t('provider.checkProgress')
+              : manualCheck === 'complete' ? t('provider.checkComplete') : t('provider.refreshHelp')}</p>
+      </div>
+      {(refreshFailed || snapshot?.error) && panelState !== 'loading' && manualCheck !== 'failed' ? <p className="break-words border-b border-border-subtle px-3 py-2 text-xs text-warning" role="status">{snapshot?.error || t('provider.refreshFailed')}</p> : null}
       {panelState !== 'ready' ? (
         <div className="flex flex-col items-center gap-2 px-4 py-8 text-center" role={panelState === 'unavailable' ? 'alert' : 'status'} aria-live="polite">
           {panelState === 'unavailable' ? <AlertCircle size={20} className="text-warning" aria-hidden="true" /> : <RefreshCw size={20} className="animate-spin text-text-subtle" aria-hidden="true" />}
           <p className="text-sm text-text-muted">{panelState === 'unavailable' ? t('provider.unavailable') : t('provider.loading')}</p>
           {panelState === 'unavailable' ? (
-            <button type="button" onClick={checkNow} disabled={refreshing} className="text-xs font-medium text-accent hover:underline disabled:cursor-wait disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+            <button type="button" onClick={checkNow} disabled={usageRefreshInProgress} className="text-xs font-medium text-accent hover:underline disabled:cursor-wait disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
               {t('provider.retry')}
             </button>
           ) : null}

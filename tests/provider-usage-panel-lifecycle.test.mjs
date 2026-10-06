@@ -87,6 +87,7 @@ function mount(Panel) {
     customize: () => nodes(tree).find(node => node.type === 'button' && node.props['aria-haspopup'] === 'dialog').props.onClick(),
     cards: () => nodes(tree).filter(node => node.type?.name === 'ProviderCard').map(node => node.props.provider),
     hasText: text => nodes(tree).some(node => node.props.children === text),
+    checkButton: () => nodes(tree).find(node => node.type === 'button' && node.props.title === 'provider.refreshHelp').props,
     unmount: () => { for (const slot of slots) slot.cleanup?.(); timers.clear(); },
   };
 }
@@ -95,6 +96,59 @@ const usage = provider => ({ provider, available: true, updatedAt: '2026-10-06T0
 try {
   const { ProviderUsagePanel } = await server.ssrLoadModule('/src/components/overview/ProviderUsagePanel.tsx');
   mock.timers.enable({ apis: ['setTimeout'] });
+  let manualReads = 0, finishManual;
+  const catalogResponse = () => ({ status: 200, ok: true, json: async () => ({ available: true, providers: [descriptor('a')], selectedProviders: ['a'], selectionRevision: 'a'.repeat(64) }) });
+  globalThis.fetch = async url => {
+    if (String(url).includes('/catalog')) return catalogResponse();
+    manualReads++;
+    if (manualReads === 1) return { status: 200, ok: true, json: async () => ({ success: true, available: true, providers: [usage('a')] }) };
+    return { status: 200, ok: true, json: () => new Promise(resolve => { finishManual = resolve; }) };
+  };
+  harness = mount(ProviderUsagePanel);
+  await harness.flush();
+  const clickCheck = harness.checkButton().onClick;
+  clickCheck(); clickCheck();
+  await harness.flush();
+  assert.equal(manualReads, 2, 'double click must start only one manual usage read');
+  assert.equal(harness.checkButton().disabled, true);
+  assert.equal(harness.checkButton()['aria-busy'], true, 'manual check must expose its busy state');
+  assert.deepEqual(harness.cards().map(provider => provider.provider), ['a'], 'manual check must retain cards');
+  finishManual({ success: true, available: true, providers: [usage('a')] });
+  await harness.flush();
+  assert.equal(harness.hasText('provider.checkComplete'), true, 'manual check must acknowledge completion even when data is cached');
+  assert.equal(harness.checkButton().disabled, false);
+  harness.unmount(); harness = null;
+  for (const outcome of ['ready', 'provider-error', 'transport-error', 'expired']) {
+    let reads = 0;
+    globalThis.fetch = async url => {
+      if (String(url).includes('/catalog')) return catalogResponse();
+      reads++;
+      if (reads === 3 && outcome === 'transport-error') throw new TypeError('Network unavailable');
+      const provider = reads === 2 ? { ...usage('a'), refreshState: 'running', refreshStartedAt: new Date(Date.now() - 1_000).toISOString(), refreshDeadlineAt: new Date(Date.now() + 5_000).toISOString() }
+        : reads === 3 && outcome === 'provider-error' ? { ...usage('a'), refreshState: 'failed', error: 'Collector failed' }
+          : reads === 3 && outcome === 'expired' ? { ...usage('a'), refreshState: 'running', refreshStartedAt: new Date(Date.now() - 10_000).toISOString(), refreshDeadlineAt: new Date(Date.now() - 1_000).toISOString() }
+            : usage('a');
+      return { status: 200, ok: true, json: async () => ({ success: true, available: true, providers: [provider] }) };
+    };
+    harness = mount(ProviderUsagePanel);
+    await harness.flush();
+    harness.checkButton().onClick();
+    await harness.flush();
+    assert.equal(harness.checkButton().disabled, true, 'Check now must remain disabled between background collection polls');
+    assert.equal(harness.hasText('provider.updating'), true);
+    assert.equal(harness.hasText('provider.checkComplete'), false);
+    harness.checkButton().onClick();
+    await harness.flush();
+    assert.equal(reads, 2, 'clicks during collection must not restart the request');
+    const poll = [...timers.entries()].find(([, timer]) => timer.delay === 1_500);
+    assert.ok(poll);
+    timers.delete(poll[0]); poll[1].fn();
+    await harness.flush();
+    assert.equal(harness.checkButton().disabled, false);
+    assert.equal(harness.hasText(outcome === 'ready' ? 'provider.checkComplete' : 'provider.checkFailed'), true, `${outcome}: manual check must report its actual outcome`);
+    assert.deepEqual(harness.cards().map(provider => provider.provider), ['a']);
+    harness.unmount(); harness = null;
+  }
   let initialReads = 0;
   globalThis.fetch = async url => {
     if (String(url).includes('/catalog')) return { status: 200, ok: true, json: async () => ({ available: true, providers: [descriptor('a')], selectedProviders: ['a'], selectionRevision: 'a'.repeat(64) }) };
