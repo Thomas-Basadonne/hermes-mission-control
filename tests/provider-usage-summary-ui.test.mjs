@@ -81,6 +81,32 @@ try {
     assert.doesNotMatch(collapsed, /Top-up remaining/);
     assert.doesNotMatch(collapsed, /Key spend/);
   });
+  await test('compact pin override replaces auto ranking', () => {
+    const html = render({
+      balances: [
+        { id: 'total_spendable', label: 'Total spendable', value: 100, currency: 'USD' },
+        { id: 'credits_remaining', label: 'Credits remaining', value: 50, unit: 'credits' },
+      ],
+      metrics: [
+        { id: 'cost_used', label: 'Spend', value: 10, currency: 'USD' },
+        { id: 'reset_credits_available', label: 'Reset credits available', value: 2, unit: 'count' },
+      ],
+    }, {
+      preferences: {
+        compactFields: {
+          'future-cloud': [
+            { group: 'metrics', id: 'reset_credits_available' },
+            { group: 'metrics', id: 'cost_used' },
+          ],
+        },
+      },
+    });
+    const collapsed = summary(html);
+    assert.match(collapsed, /Reset credits available/);
+    assert.match(collapsed, /Spend/);
+    assert.doesNotMatch(collapsed, /Total spendable/);
+    assert.doesNotMatch(collapsed, /Credits remaining/);
+  });
 } finally {
   await server.close();
 }

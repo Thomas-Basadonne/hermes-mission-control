@@ -17,6 +17,7 @@ import {
   saveProviderUsagePreferences,
   setProviderUsageFieldVisible,
   setProviderUsageProviderVisible,
+  setProviderUsageCompactFields,
 } from '../src/lib/provider-usage-preferences.ts';
 
 test('normalizes optional compact overrides into bounded ordered safe field references', () => {
@@ -344,4 +345,16 @@ test('persists normalized preferences without failing when browser storage is un
     getItem: () => null,
     setItem: () => { throw new Error('storage denied'); },
   }));
+});
+
+test('compact pin override with empty array and null', () => {
+  const preferences = normalizeProviderUsagePreferences({});
+  const withPins = setProviderUsageCompactFields(preferences, 'future', [
+    { group: 'metrics', id: 'row' },
+  ]);
+  assert.deepEqual(withPins.compactFields!.future, [{ group: 'metrics', id: 'row' }]);
+  const withEmpty = setProviderUsageCompactFields(withPins, 'future', []);
+  assert.deepEqual(withEmpty.compactFields!.future, []);
+  const withNull = setProviderUsageCompactFields(withEmpty, 'future', null);
+  assert.equal(Object.hasOwn(withNull.compactFields!, 'future'), false);
 });
