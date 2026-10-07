@@ -167,7 +167,7 @@ try {
       ? { available: true, providers: Array.from({ length: count }, (_, i) => descriptor(`p${i}`)), selectedProviders: Array.from({ length: count }, (_, i) => `p${i}`), selectionRevision: 'a'.repeat(64) }
       : { success: true, available: true, providers: Array.from({ length: count }, (_, i) => usage(`p${i}`)) } });
     harness = mount(ProviderUsagePanel); await harness.flush();
-    const cards = harness.elements().find(node => node.props.className === 'provider-usage-cards gap-3');
+    const cards = harness.elements().find(node => node.props.className === 'provider-usage-cards');
     assert.ok(cards, 'ready panels use the automatic card container');
     assert.equal(cards.props.style, undefined, 'no JavaScript-calculated layout');
     assert.equal(Object.hasOwn(cards.props, 'data-max-columns'), false);

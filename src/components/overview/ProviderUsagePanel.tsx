@@ -673,7 +673,7 @@ export function ProviderUsagePanel() {
       ) : (
         <>
           <div className="p-3">
-            <div className="provider-usage-cards gap-3">
+            <div className="provider-usage-cards">
               {visibleProviders.length > 0 ? visibleProviders.map((provider) => (
                 <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} view={preferences.view} locale={numberLocale} nowMs={nowMs} preferences={preferences} />
               )) : <p className="w-full text-sm text-text-muted" role="status">{t('provider.noneSelected')}</p>}

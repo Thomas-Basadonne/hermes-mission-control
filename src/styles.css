@@ -37,14 +37,34 @@
   --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+/* Provider cards: one column on phones, two from 26rem and three from 40rem of
+   PANEL width. The Overview panel is roughly 40% of the viewport (sidebar plus a
+   second dashboard column), so viewport-sized breakpoints would leave it
+   single-column on ordinary 1280-1440px laptops. The gap lives here because the
+   column math uses it. */
 .provider-usage-cards {
+  --provider-usage-card-gap: 0.75rem;
+  container-type: inline-size;
   display: flex;
   flex-wrap: wrap;
+  gap: var(--provider-usage-card-gap);
 }
 
 .provider-usage-cards > article {
-  flex: 1 1 22rem;
+  flex: 1 1 100%;
   min-width: 0;
+}
+
+@container (min-width: 26rem) {
+  .provider-usage-cards > article {
+    flex-basis: calc(100% / 2 - var(--provider-usage-card-gap) / 2);
+  }
+}
+
+@container (min-width: 40rem) {
+  .provider-usage-cards > article {
+    flex-basis: calc(100% / 3 - var(--provider-usage-card-gap) * 2 / 3);
+  }
 }
 
 
