@@ -10,6 +10,7 @@ import {
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
+  Search,
   ScrollText,
   Settings,
   Timer,
@@ -94,6 +95,11 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
 
   const [sideOpen, setSideOpen] = useState(false);
   const [sideCollapsed, setSideCollapsed] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState('');
+  const paletteRef = useRef<HTMLElement | null>(null);
+  const paletteInputRef = useRef<HTMLInputElement | null>(null);
+  const paletteReturnFocusRef = useRef<HTMLElement | null>(null);
   const [showMobileScrollTop, setShowMobileScrollTop] = useState(false);
   const [chatOpen, setChatOpenState] = useState<boolean>(() => {
     try { return sessionStorage.getItem('mission-control-chat-open') === '1'; } catch { return false; }
@@ -116,6 +122,51 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
   const serverLastRoomRef = useRef<{ roomId: string; revision: number } | null>(null);
   const tokenInputRef = useRef<HTMLInputElement | null>(null);
   const chatButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  const openPalette = useCallback(() => {
+    paletteReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setPaletteQuery('');
+    setPaletteOpen(true);
+  }, []);
+  const closePalette = useCallback(() => {
+    setPaletteOpen(false);
+    requestAnimationFrame(() => paletteReturnFocusRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.key.toLowerCase() !== 'k') return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select, [contenteditable="true"], .cm-editor, [role="textbox"]'))) return;
+      if (authRequired || chatOpen || sideOpen) return;
+      event.preventDefault();
+      if (paletteOpen) closePalette();
+      else openPalette();
+    };
+    window.addEventListener('keydown', onShortcut);
+    return () => window.removeEventListener('keydown', onShortcut);
+  }, [authRequired, chatOpen, closePalette, openPalette, paletteOpen, sideOpen]);
+
+  useEffect(() => {
+    if (!paletteOpen) return;
+    paletteInputRef.current?.focus();
+    const onDialogKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        closePalette();
+        return;
+      }
+      if (event.key !== 'Tab' || !paletteRef.current) return;
+      const focusable = [...paletteRef.current.querySelectorAll<HTMLElement>('button, input:not([disabled])')];
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.addEventListener('keydown', onDialogKeyDown);
+    return () => window.removeEventListener('keydown', onDialogKeyDown);
+  }, [closePalette, paletteOpen]);
 
   const closeChat = useCallback(() => {
     setChatOpen(false);
@@ -214,6 +265,13 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
 
   const activeNav = navItems.find((item) => (item.to === '/' ? location.pathname === '/' : location.pathname.startsWith(item.to)));
   const isOverviewRoute = activeNav?.to === '/';
+  const paletteItems = [
+    ...navItems.map((item) => ({ kind: 'route' as const, label: item.label.includes('.') ? t(item.label) : item.label, to: item.to, icon: item.icon })),
+    { kind: 'chat' as const, label: t('chat.button'), to: '', icon: 'MessageSquare' },
+  ].filter((item) => {
+    const query = paletteQuery.trim().toLocaleLowerCase();
+    return !query || item.label.toLocaleLowerCase().includes(query) || item.to.toLocaleLowerCase().includes(query);
+  });
 
   useEffect(() => {
     setSideOpen(false);
@@ -441,6 +499,18 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
               </div>
             </div>
             <Button
+              variant="secondary"
+              size="md"
+              icon={<Search size={16} />}
+              className="palette-open-button"
+              type="button"
+              onClick={openPalette}
+              aria-label={t('palette.open')}
+              title={t('palette.open')}
+            >
+              <span>{t('palette.open')}</span><kbd>{typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl+K'}</kbd>
+            </Button>
+            <Button
               ref={chatButtonRef}
               variant="secondary"
               size="md"
@@ -459,6 +529,46 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
               {presence.unreadCount > 0 ? <span className="chat-unread-badge">{presence.unreadCount > 9 ? '9+' : presence.unreadCount}</span> : null}
             </Button>
           </header>
+
+          {paletteOpen ? (
+            <div className="navigation-palette-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closePalette(); }}>
+              <section ref={paletteRef} className="navigation-palette" role="dialog" aria-modal="true" aria-label={t('palette.title')}>
+                <div className="navigation-palette-search">
+                  <Search size={18} aria-hidden="true" />
+                  <input
+                    ref={paletteInputRef}
+                    type="search"
+                    value={paletteQuery}
+                    onChange={(event) => setPaletteQuery(event.target.value)}
+                    placeholder={t('palette.search')}
+                    aria-label={t('palette.search')}
+                  />
+                  <button type="button" onClick={closePalette} aria-label={t('palette.close')}>Esc</button>
+                </div>
+                <div className="navigation-palette-results">
+                  {paletteItems.length ? paletteItems.map((item) => {
+                    const Icon = resolveIcon(item.icon) ?? ((props: any) => <span {...props} />);
+                    return (
+                      <button
+                        className="navigation-palette-item"
+                        key={`${item.kind}:${item.to || item.label}`}
+                        type="button"
+                        onClick={() => {
+                          if (item.kind === 'chat') setChatOpen(true);
+                          else navigate(item.to);
+                          closePalette();
+                        }}
+                      >
+                        <Icon size={17} aria-hidden="true" />
+                        <span>{item.label}</span>
+                        {item.kind === 'route' ? <kbd>{item.to}</kbd> : null}
+                      </button>
+                    );
+                  }) : <p className="navigation-palette-empty">{t('palette.noResults')}</p>}
+                </div>
+              </section>
+            </div>
+          ) : null}
 
           <section className={`route-stage ${isOverviewRoute ? 'is-overview' : ''}`}>
             <Suspense fallback={<div className="route-loading" role="status">Loading page…</div>}>
