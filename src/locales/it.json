@@ -344,6 +344,7 @@
   "provider.checkComplete": "Controllo completato. Mostro gli ultimi dati disponibili; restano validi i limiti di raccolta dei provider.",
   "provider.checkFailed": "Controllo non completato del tutto. Mostro i dati disponibili; puoi riprovare.",
   "provider.selectionReconcile": "Esito del salvataggio incerto. Verifica della selezione salvata prima di salvare ancora.",
+  "provider.selectionConflict": "La selezione è stata modificata altrove. Controlla la selezione attuale prima di salvare.",
   "provider.selectionConflictResolved": "La selezione è stata modificata altrove. Le tue modifiche sono state scartate; controlla la selezione attuale prima di salvare.",
   "provider.reviewChanges": "Rivedi le modifiche",
   "provider.showAllFields": "Mostra tutti i campi ({count})",

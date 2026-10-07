@@ -1,5 +1,5 @@
 import { selectProviderUsageSummary, formatProviderUsagePercent, getProviderUsagePanelState } from '../../lib/provider-usage-display';
-import { createProviderUsageSelectionController, isProviderUsageSelectionUncertain } from '../../lib/provider-usage-selection';
+import { createProviderUsageSelectionController, isProviderUsageSelectionUncertain, isProviderUsageSelectionConflict } from '../../lib/provider-usage-selection';
 import { getProviderUsageStatus, isProviderUsageRunning } from '../../lib/provider-usage-freshness';
 import { useI18n } from '../../lib/i18n';
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
@@ -294,6 +294,7 @@ export function ProviderUsagePanel() {
   const [providerSearch, setProviderSearch] = useState('');
   const [savingSelection, setSavingSelection] = useState(false);
   const [selectionError, setSelectionError] = useState<string | null>(null);
+  const [selectionConflict, setSelectionConflict] = useState(false);
   const [setupProvider, setSetupProvider] = useState<{ name: string; command: string | null } | null>(null);
   const [commandCopied, setCommandCopied] = useState(false);
   const [commandCopyFailed, setCommandCopyFailed] = useState(false);
@@ -477,6 +478,7 @@ export function ProviderUsagePanel() {
     setDraftRevision(providerCatalog?.selectionRevision);
     setProviderSearch('');
     setSelectionError(null);
+    setSelectionConflict(false);
     setCustomizeOpen(true);
   };
 
@@ -508,6 +510,7 @@ export function ProviderUsagePanel() {
     selectionAbortRef.current = controller;
     setSavingSelection(true);
     setSelectionError(null);
+    setSelectionConflict(false);
     let uncertain = false;
     try {
       const result = await saveProviderUsageSelection(draftSelection, storedToken || undefined, controller.signal, draftRevision);
@@ -518,7 +521,14 @@ export function ProviderUsagePanel() {
     } catch (error) {
       if (!mountedRef.current || controller.signal.aborted) return;
       uncertain = isProviderUsageSelectionUncertain(error);
-      setSelectionError(t(uncertain ? 'provider.selectionReconcile' : 'provider.selectionSaveFailed'));
+      if (isProviderUsageSelectionConflict(error)) {
+        // A definite conflict, not an uncertain outcome: keep the dialog open and
+        // require an explicit reconcile against the canonical revision.
+        setSelectionConflict(true);
+        setSelectionError(t('provider.selectionConflict'));
+      } else {
+        setSelectionError(t(uncertain ? 'provider.selectionReconcile' : 'provider.selectionSaveFailed'));
+      }
     } finally {
       selectionController.current.settleSave(uncertain);
       if (mountedRef.current) {
@@ -529,12 +539,24 @@ export function ProviderUsagePanel() {
     }
   };
 
-  const reconcileSelectionConflict = () => {
+  const reconcileSelectionConflict = async () => {
     if (!selectionController.current.canSave()) return;
-    setDraftSelection(providerCatalog?.selectedProviders ?? []);
-    setDraftRevision(providerCatalog?.selectionRevision);
-    setSelectionError(t('provider.selectionConflictResolved'));
-    setReconcilingSelection(false);
+    setReconcilingSelection(true);
+    try {
+      // Read the canonical revision directly: never depend on poll timing. A
+      // plain read reflects the committed selection; no forced provider refresh.
+      const catalog = await loadProviderUsageCatalog(storedToken || undefined, false);
+      if (!mountedRef.current) return;
+      setProviderCatalog((current) => catalog.available || !current?.available ? catalog : { ...current, error: catalog.error, refreshing: catalog.refreshing });
+      setDraftSelection(catalog.selectedProviders);
+      setDraftRevision(catalog.selectionRevision);
+      setSelectionConflict(false);
+      setSelectionError(t('provider.selectionConflictResolved'));
+    } catch {
+      if (mountedRef.current) setSelectionError(t('provider.selectionReconcile'));
+    } finally {
+      if (mountedRef.current) setReconcilingSelection(false);
+    }
   };
 
   const providerNames = new Map((providerCatalog?.providers ?? []).map((provider) => [provider.provider, provider.displayName]));
@@ -642,6 +664,7 @@ export function ProviderUsagePanel() {
         search={providerSearch}
         saving={savingSelection || reconcilingSelection || !draftRevision}
         error={selectionError}
+        selectionConflict={selectionConflict}
         onReconcileSelection={reconcileSelectionConflict}
         onSearch={setProviderSearch}
         onToggle={toggleProvider}
@@ -705,6 +728,7 @@ function ProviderUsageCustomizeDialog({
   search,
   saving,
   error,
+  selectionConflict,
   onSearch,
   onToggle,
   onRequestSetup,
@@ -724,6 +748,7 @@ function ProviderUsageCustomizeDialog({
   search: string;
   saving: boolean;
   error: string | null;
+  selectionConflict: boolean;
   onSearch: (value: string) => void;
   onToggle: (provider: string) => void;
   onRequestSetup: (name: string, command: string | null) => void;
@@ -769,7 +794,7 @@ function ProviderUsageCustomizeDialog({
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="text-xs text-text-subtle">{t('provider.selectedCount', { count: draftSelection.length })}</span>
-            {error === 'provider.selectionConflictResolved' ? (
+            {selectionConflict ? (
               <button
                 type="button"
                 onClick={onReconcileSelection}

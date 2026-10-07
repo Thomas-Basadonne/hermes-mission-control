@@ -5,6 +5,10 @@ export function isProviderUsageSelectionUncertain(error: unknown): boolean {
   return !(error instanceof Error && error.name === 'MissionControlAuthError');
 }
 
+export function isProviderUsageSelectionConflict(error: unknown): boolean {
+  return error instanceof ProviderUsageHttpError && error.status === 409;
+}
+
 export function createProviderUsageGeneration() {
   let generation = 0;
   return { capture: () => generation, invalidate: () => { generation += 1; }, isCurrent: (captured: number) => captured === generation };
