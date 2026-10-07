@@ -200,6 +200,7 @@ export function useGatewayChat(
   initialSessionId?: string | null,
   botProfile?: string | null,
   freshSessionId?: string | null,
+  resumeRequestKey?: string | null,
 ) {
   const initial = useMemo(readPersistedChat, []);
   const persistenceScheduler = useMemo(() => createChatPersistenceScheduler(), []);
@@ -235,7 +236,7 @@ export function useGatewayChat(
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modelPickerRefresh, setModelPickerRefresh] = useState(false);
   const [commandPrefill, setCommandPrefill] = useState<string | null>(null);
-  const [previewMode, setPreviewMode] = useState<boolean>(() => shouldPreviewChatSession(initialSessionId, freshSessionId));
+  const [previewMode, setPreviewMode] = useState<boolean>(() => shouldPreviewChatSession(initialSessionId, freshSessionId, Boolean(resumeRequestKey)));
   const [resumedRuntime, setResumedRuntime] = useState<ResumedRuntimePresence | null>(null);
   const [pointerRevision, setPointerRevision] = useState<number | null>(initial.revision);
   const wsRef = useRef<WebSocket | null>(null);
@@ -267,7 +268,8 @@ export function useGatewayChat(
   const intentionalCloseRef = useRef(false);
   const requestedSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const sessionProfileRef = useRef<string | null>(botProfile?.trim() || initial.profile || null);
-  const previewModeRef = useRef<boolean>(shouldPreviewChatSession(initialSessionId, freshSessionId));
+  const previewModeRef = useRef<boolean>(shouldPreviewChatSession(initialSessionId, freshSessionId, Boolean(resumeRequestKey)));
+  const resumeSessionRef = useRef<() => Promise<string | null>>(async () => null);
   const connectRef = useRef<() => Promise<void>>(async () => {});
   const readyResolveRef = useRef<(() => void) | null>(null);
   const eventWatermarksRef = useRef(new Map<string, number>());
@@ -324,7 +326,7 @@ export function useGatewayChat(
     // default store, where it misses and the drawer falls back to an empty
     // preview — the "I open a chat and it empties" symptom.
     sessionProfileRef.current = nextSessionProfile(sessionProfileRef.current, botProfile, Boolean(requested));
-    const preview = shouldPreviewChatSession(requested, freshSessionId);
+    const preview = shouldPreviewChatSession(requested, freshSessionId, Boolean(resumeRequestKey));
     requestedSessionIdRef.current = requested;
     previewModeRef.current = preview;
     setPreviewMode(preview);
@@ -350,7 +352,7 @@ export function useGatewayChat(
     setModelPickerRefresh(false);
     setInteraction(null);
     setActivity(null);
-  }, [botProfile, initialSessionId, freshSessionId, persistenceScheduler]);
+  }, [botProfile, initialSessionId, freshSessionId, persistenceScheduler, resumeRequestKey]);
 
   useEffect(() => {
     if (!transcriptReadyRef.current) return;
@@ -1103,6 +1105,8 @@ export function useGatewayChat(
     }
   }, [bootstrapPointer, claimLastChatPointer, ensureSession, initialSessionId, refreshContext, refreshModel, replayPendingPrompt]);
 
+  useEffect(() => { resumeSessionRef.current = resumeSession; }, [resumeSession]);
+
   useEffect(() => {
     if (!open || previewMode || connectionState !== 'connected' || !resumedRuntime) return;
 
@@ -1405,10 +1409,13 @@ export function useGatewayChat(
           if (wsRef.current !== ws || intentionalCloseRef.current) return;
           setConnectionState('connected');
           setStatusText('Connected');
-          // Auto-resume only for the generic chat (no specific session target).
-          // When a session was picked from the list, stay in preview mode until
-          // the user clicks "Resume session".
+          // Preview links remain explicit. Picker selection resumes only after
+          // THIS socket is ready, never against a stale connected-state render.
           if (previewModeRef.current) return;
+          if (resumeRequestKey && initialSessionId) {
+            void resumeSessionRef.current();
+            return;
+          }
           const eventReplay = prepareEventReplay();
           void ensureSession().then((activeSessionId) => finishEventReplay(eventReplay).then(() => {
             void refreshModel(activeSessionId);
@@ -1451,7 +1458,7 @@ export function useGatewayChat(
       setStatusText('Connection failed');
       setError(err instanceof Error ? err.message : 'Chat connection failed.');
     }
-  }, [adoptModel, bootstrapPointer, ensureSession, finishEventReplay, initialSessionId, open, prepareEventReplay, queueSnapshotReconcile, refreshContext, refreshModel, refreshReasoning, rejectPending, replayPendingPrompt, scheduleReconnect, storedToken]);
+  }, [adoptModel, bootstrapPointer, ensureSession, finishEventReplay, initialSessionId, open, prepareEventReplay, queueSnapshotReconcile, refreshContext, refreshModel, refreshReasoning, rejectPending, replayPendingPrompt, resumeRequestKey, scheduleReconnect, storedToken]);
 
   useEffect(() => {
     connectRef.current = connect;

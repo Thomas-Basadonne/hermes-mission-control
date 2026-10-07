@@ -1,4 +1,5 @@
 import { normalizeTodoPlanSnapshot, type TodoPlan } from './todo-plan';
+import { buildSessionListQuery, type SessionListRequestOptions } from './session-list-request';
 import { isInternalContextMessage } from './chat-protocol';
 import { getPluginRegistry } from '../core/plugin-registry';
 
@@ -1460,15 +1461,10 @@ async function fetchMissionControlAgentSessions(
   sessionId?: string | null,
   filters?: MissionControlAgentSessionFilters,
   profile?: string | null,
+  options?: SessionListRequestOptions,
 ): Promise<OfficialMissionControlAgentSessionsPayload | null> {
-  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  if (sessionId) params.set('session_id', sessionId);
-  if (profile?.trim()) params.set('profile', profile.trim());
-  for (const [key, value] of Object.entries(filters ?? {})) {
-    if (value && value !== 'all') params.set(key, value);
-  }
-  const query = `/mission-control/sessions?${params.toString()}`;
-  const { payload: local } = await maybeFetchLocalJson<OfficialMissionControlAgentSessionsPayload>(query, accessToken);
+  const query = `/mission-control/sessions?${buildSessionListQuery({ limit, offset, sessionId, filters, profile, ...options })}`;
+  const { payload: local } = await maybeFetchLocalJson<OfficialMissionControlAgentSessionsPayload>(query, accessToken, options?.signal);
   return local ?? null;
 }
 
@@ -2217,8 +2213,9 @@ export async function loadMissionControlAgentSessions(
   offset = 0,
   filters?: MissionControlAgentSessionFilters,
   profile?: string | null,
+  options?: SessionListRequestOptions,
 ): Promise<MissionControlAgentsSessionsSnapshot> {
-  const payload = await fetchMissionControlAgentSessions(accessToken, limit, offset, null, filters, profile);
+  const payload = await fetchMissionControlAgentSessions(accessToken, limit, offset, null, filters, profile, options);
   if (!payload) {
     throw new Error('Mission Control sessions endpoint unavailable.');
   }

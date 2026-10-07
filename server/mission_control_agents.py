@@ -24,6 +24,7 @@ _SCHEMA_VERSION = "2"
 _CONVERSATION_ORIGINS = {"tui", "desktop", "discord", "telegram", "mission-control"}
 _AUTOMATION_ORIGINS = {"cron", "kanban"}
 _SYSTEM_ORIGINS = {"cli", "system", "test", "smoke"}
+_RESUMABLE_ORIGINS = _CONVERSATION_ORIGINS | {"cli", "bot_room", "acp", "api_server"}
 _ORIGIN_LABELS = {
     "tui": "TUI",
     "desktop": "Desktop",
@@ -785,7 +786,9 @@ def _classify_session_origin(source: str, platform: str, index_entry: dict[str, 
             category = "unknown"
     label = _normalize_text((index_entry or {}).get("origin_label")) or _ORIGIN_LABELS.get(origin) or (origin if origin else "Unknown")
     explicit_resumable = (index_entry or {}).get("is_resumable")
-    resumable = explicit_resumable if isinstance(explicit_resumable, bool) else category == "conversation"
+    # Display category is not a gateway capability: CLI history remains in
+    # System, but its stored conversation can still be resumed.
+    resumable = explicit_resumable if isinstance(explicit_resumable, bool) else category == "conversation" or origin in _RESUMABLE_ORIGINS
     return {"category": category, "originLabel": label, "isResumable": resumable}
 
 
@@ -945,10 +948,10 @@ def _presence_aliases(presence: dict[str, Any]) -> list[str]:
 
 def _presence_matches_profile(presence: dict[str, Any], profile: str | None) -> bool:
     """Keep a profile-scoped runtime lease out of other profiles' snapshots."""
-    lease_profile = _normalize_text(presence.get("profile")) or None
-    if lease_profile is None:
-        # Old clients did not publish a profile; retain their legacy behavior.
-        return True
+    # Legacy clients omit the owner only for the default store. Treating that
+    # omission as a wildcard injects one runtime into every profile and causes
+    # a second row beside its canonical conversation in the global picker.
+    lease_profile = _normalize_text(presence.get("profile")) or "default"
     return lease_profile == (profile or "default")
 
 
@@ -973,31 +976,33 @@ def _apply_runtime_presence(
     if not presences:
         return
 
-    by_id = {
-        alias: item
-        for item in items
-        for alias in _item_aliases(item)
-    }
+    # Resolve exact durable IDs first. A runtime row can share sessionKey with
+    # its stored row, so an alias dictionary alone lets it shadow that history.
+    by_id = {str(item.get("sessionId") or ""): item for item in items}
     for presence in presences:
         if not _presence_matches_profile(presence, profile):
             continue
         aliases = _presence_aliases(presence)
         if not aliases:
             continue
-        item = next((by_id.get(alias) for alias in aliases if by_id.get(alias) is not None), None)
+        durable_refs = [str(presence.get("resumedFrom") or ""), str(presence.get("sessionKey") or "")]
+        item = next((by_id.get(ref) for ref in durable_refs if by_id.get(ref) is not None), None)
+        if item is None:
+            item = by_id.get(str(presence.get("runtimeSessionId") or ""))
         if item is None:
             item = _build_runtime_presence_item(presence)
             if _session_matches_filters(item, filters):
                 items.append(item)
-                for alias in _item_aliases(item):
-                    by_id[alias] = item
+                by_id[str(item["sessionId"])] = item
             continue
-        # Prefer the canonical SessionDB item (resumedFrom/sessionKey) when the
-        # runtime has a different ephemeral id. This prevents one conversation
-        # from rendering twice while preserving the runtime id as metadata.
+        runtime = by_id.get(str(presence.get("runtimeSessionId") or ""))
+        if runtime is not None and runtime is not item:
+            items[:] = [row for row in items if row is not runtime]
+        # Keep the canonical row, its history and model. Runtime identity is
+        # metadata, not a second selectable conversation.
         _overlay_runtime_presence_item(item, presence)
         for alias in aliases:
-            by_id.setdefault(alias, item)
+            by_id[alias] = item
 
 
 def _build_session_facets(items: list[dict[str, Any]]) -> dict[str, dict[str, int]]:

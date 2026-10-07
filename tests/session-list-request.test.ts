@@ -1,0 +1,13 @@
+import { strict as assert } from 'node:assert';
+import * as request from '../src/lib/session-list-request.ts';
+assert.equal(typeof request.buildSessionListQuery, 'function', 'lightweight picker queries must be expressible');
+const query = new URLSearchParams(request.buildSessionListQuery({ limit:25, offset:50, filters:{query:'older chat', origin:'telegram',tab:'all'}, profile:'default', includeRecentMessages:false }));
+assert.equal(query.get('offset'),'50');
+assert.equal(query.get('limit'),'25');
+assert.equal(query.get('profile'),'default');
+assert.equal(query.get('query'),'older chat');
+assert.equal(query.get('origin'),'telegram');
+assert.equal(query.get('include_recent_messages'),'false');
+assert.equal(query.has('tab'),false);
+assert.equal(new URLSearchParams(request.buildSessionListQuery({limit:1,offset:0})).has('include_recent_messages'),false,'existing preview consumers retain messages');
+console.log('session-list-request: ok');

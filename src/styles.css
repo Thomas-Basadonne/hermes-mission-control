@@ -5972,7 +5972,9 @@ button {
   to { transform: translateY(0); }
 }
 
-/* Chat mode tabs: Chat | Rooms switching inside the drawer */
+/* Chat | Rooms navigation and the Sessions picker in the same rail. */
+.chat-mode-choices { display: flex; gap: 2px; min-width: 0; }
+.chat-sessions-trigger { margin-left: auto; }
 .chat-mode-tabs {
   display: flex;
   gap: 2px;

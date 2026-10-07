@@ -58,6 +58,29 @@ class RuntimePresenceLeaseTest(unittest.TestCase):
                 "phase": "live-forever",
             })
 
+    def test_legacy_presence_without_profile_stays_in_default_store(self) -> None:
+        lease = {'runtimeSessionId': 'runtime-1', 'resumedFrom': 'stored-1'}
+        self.assertTrue(mission_control_agents._presence_matches_profile(lease, None))
+        self.assertTrue(mission_control_agents._presence_matches_profile(lease, 'default'))
+        self.assertFalse(mission_control_agents._presence_matches_profile(lease, 'other-bot'))
+        explicit = {**lease, 'profile': 'other-bot'}
+        self.assertFalse(mission_control_agents._presence_matches_profile(explicit, None))
+        self.assertTrue(mission_control_agents._presence_matches_profile(explicit, 'other-bot'))
+
+    def test_runtime_and_stored_rows_collapse_by_resume_identity_not_title(self) -> None:
+        stored = {'sessionId':'stored-1', 'sessionKey':'stored-1', 'profile':'default', 'title':'Same title', 'status':'ended', 'messageCount':10, 'lastActiveAt':90}
+        runtime = {'sessionId':'runtime-1', 'sessionKey':'stored-1', 'profile':'default', 'title':'Same title', 'status':'live', 'messageCount':0, 'lastActiveAt':100}
+        distinct = {'sessionId':'stored-2', 'sessionKey':'stored-2', 'profile':'default', 'title':'Same title', 'status':'ended', 'messageCount':10, 'lastActiveAt':80}
+        lease = {'runtimeSessionId':'runtime-1', 'resumedFrom':'stored-1', 'sessionKey':'stored-1', 'profile':'default', 'updatedAt':101}
+        for rows in [[runtime, stored, distinct], [stored, runtime, distinct]]:
+            with patch.object(mission_control_agents, 'active_runtime_presences', return_value=[lease]):
+                mission_control_agents._apply_runtime_presence(rows)
+            self.assertEqual({item['sessionId'] for item in rows}, {'stored-1', 'stored-2'})
+            canonical = next(item for item in rows if item['sessionId'] == 'stored-1')
+            self.assertEqual(canonical['runtimeSessionId'], 'runtime-1')
+            self.assertEqual(canonical['messageCount'], 10)
+            self.assertEqual(canonical['status'], 'live')
+
     def test_runtime_lease_merges_into_canonical_session_without_duplicate(self) -> None:
         item = {
             "sessionId": "stored-1",

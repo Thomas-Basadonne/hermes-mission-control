@@ -42,6 +42,7 @@ import {
 import { ChatStatusRuntime } from './ChatStatusRuntime';
 import { ChatComposer } from './ChatComposer';
 import { ChatTodoPlan } from './chat/ChatTodoPlan';
+import { AutoHideModeTabs, useTabAttention } from './chat/ChatModeTabs';
 import { ToolRunSummary } from './chat/ToolRunSummary';
 import { Modal } from './Modal';
 import { Button } from './ui/Button';
@@ -100,6 +101,7 @@ type ChatDrawerProps = {
   storedToken: string;
   initialSessionId?: string | null;
   freshSessionId?: string | null;
+  resumeRequestKey?: string | null;
   chatMode?: 'general' | 'canonical' | 'task' | 'room';
   roomId?: string | null;
   botProfile?: string | null;
@@ -107,6 +109,7 @@ type ChatDrawerProps = {
   onStartTaskChat?: () => void;
   onNewChat?: () => void;
   onOpenRooms?: () => void;
+  onResumeSession?: (session: MissionControlAgentSessionItem) => void;
   onRoomChange?: (roomId: string | null, roomName?: string | null) => void;
 };
 
@@ -183,156 +186,8 @@ function ChatPreviewBubble({ message }: { message: MissionControlSessionPreviewM
 
 type CanonicalChatDrawerProps = Omit<ChatDrawerProps, 'chatMode'> & { chatMode?: 'general' | 'canonical' | 'task' };
 
-function TabLed({ state }: { state: 'none' | 'done' | 'help' }) {
-  if (state === 'none') return null;
-  return <span className={`tab-led ${state === 'done' ? 'is-done' : 'is-help'}`} aria-hidden />;
-}
 
-function ChatModeTabs({ active, onSelect, chatLed = 'none', roomsLed = 'none' }: {
-  active: 'chat' | 'rooms';
-  onSelect: (mode: 'chat' | 'rooms') => void;
-  chatLed?: 'none' | 'done' | 'help';
-  roomsLed?: 'none' | 'done' | 'help';
-}) {
-  const { t } = useI18n();
-  return (
-    <div className="chat-mode-tabs" role="tablist" aria-label="Chat mode">
-      <button type="button" className={`chat-mode-tab ${active === 'chat' ? 'is-active' : ''}`} role="tab" aria-selected={active === 'chat'} onClick={() => onSelect('chat')}>
-        <MessageSquare size={14} />{t('chatDrawer.title')}<TabLed state={chatLed} />
-      </button>
-      <button type="button" className={`chat-mode-tab ${active === 'rooms' ? 'is-active' : ''}`} role="tab" aria-selected={active === 'rooms'} onClick={() => onSelect('rooms')}>
-        <Users size={14} />{t('rooms.title')}<TabLed state={roomsLed} />
-      </button>
-    </div>
-  );
-}
-
-/** Attention state for a mode tab. `done` = finished/new content below the
- *  fold (green), `help` = blocked/approval pending (amber). The dot clears
- *  when the user scrolls to the bottom, resolves the action, or switches
- *  into the mode. */
-export type TabAttention = 'none' | 'done' | 'help';
-
-function useTabAttention({ needsAction, atBottom, contentCount }: {
-  needsAction: boolean;
-  atBottom: boolean;
-  contentCount: number;
-}): TabAttention {
-  const [state, setState] = useState<TabAttention>('none');
-  const stateRef = useRef<TabAttention>('none');
-  const prevCountRef = useRef(contentCount);
-  const grownRef = useRef(false);
-  useEffect(() => {
-    if (atBottom) {
-      // Reading the content clears the attention dot immediately.
-      grownRef.current = false;
-      if (stateRef.current !== 'none') { stateRef.current = 'none'; setState('none'); }
-      return;
-    }
-    if (contentCount !== prevCountRef.current) {
-      grownRef.current = contentCount > prevCountRef.current || grownRef.current;
-      if (contentCount < prevCountRef.current) grownRef.current = false;
-      prevCountRef.current = contentCount;
-    }
-    const target: TabAttention = needsAction ? 'help' : grownRef.current ? 'done' : 'none';
-    if (target !== stateRef.current) { stateRef.current = target; setState(target); }
-  }, [atBottom, contentCount, needsAction]);
-  return state;
-}
-
-/**
- * Auto-hides the mode tab bar while the drawer content scrolls FAST and
- * re-shows it when the user slows down, reaches the bottom (auto-follow
- * keeps it visible), or pauses for a while.
- *
- * Velocity-based with HYSTERESIS to avoid flicker: hide only above
- * HIDE_SPEED, re-show only below SHOW_SPEED (or at the bottom). Between the
- * two thresholds the rail keeps its current state, so the natural speed
- * decay of a flicked scroll (which oscillates around a single threshold)
- * can't flip the rail hide/show/hide. Speed is averaged over a small rolling
- * window of scroll samples to smooth trackpad bursts. Capture-phase listen
- * because scroll doesn't bubble; first scroll per element is baseline.
- */
-const TAB_SCROLL_RESUME_MS = 700;
-const SCROLL_SPEED_HIDE_PX_MS = 0.3; // ≥ 300px/s hides
-const SCROLL_SPEED_SHOW_PX_MS = 0.1; // ≤ 100px/s shows (dead zone in between)
-const SPEED_WINDOW_SAMPLES = 4;
-const BOTTOM_EPSILON_PX = 24;
-function AutoHideModeTabs({ active, onSelect, containerRef, chatLed = 'none', roomsLed = 'none' }: {
-  active: 'chat' | 'rooms';
-  onSelect: (mode: 'chat' | 'rooms') => void;
-  containerRef: React.RefObject<HTMLElement | null>;
-  chatLed?: 'none' | 'done' | 'help';
-  roomsLed?: 'none' | 'done' | 'help';
-}) {
-  const [hidden, setHidden] = useState(false);
-  const hiddenRef = useRef(false);
-  const shownAtRef = useRef(0);
-  const seenRef = useRef(new WeakSet<HTMLElement>());
-  const samplesRef = useRef(new Map<HTMLElement, number[]>());
-  const prevTopRef = useRef(new Map<HTMLElement, { top: number; at: number }>());
-  const setHiddenBoth = (next: boolean) => {
-    hiddenRef.current = next;
-    setHidden(next);
-  };
-
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node) return;
-    const regionEls = () => node.querySelectorAll<HTMLElement>('.chat-transcript, [data-scroll-region]');
-    const atBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_EPSILON_PX;
-
-    const onScroll = (event: Event) => {
-      const target = event.target as HTMLElement | null;
-      if (!target || typeof target.scrollTop !== 'number') return;
-      const now = performance.now();
-      const prev = prevTopRef.current.get(target);
-      prevTopRef.current.set(target, { top: target.scrollTop, at: now });
-      if (!seenRef.current.has(target)) {
-        // first event for this element: auto-follow on mount, baseline only
-        seenRef.current.add(target);
-        return;
-      }
-      if (atBottom(target)) {
-        setHiddenBoth(false);
-        return;
-      }
-      if (!prev) return;
-      const speed = Math.abs(target.scrollTop - prev.top) / Math.max(1, now - prev.at);
-      const windowed = samplesRef.current.get(target) ?? [];
-      windowed.push(speed);
-      if (windowed.length > SPEED_WINDOW_SAMPLES) windowed.shift();
-      samplesRef.current.set(target, windowed);
-      const avg = windowed.reduce((a, b) => a + b, 0) / windowed.length;
-
-      if (hiddenRef.current) {
-        if (avg <= SCROLL_SPEED_SHOW_PX_MS) setHiddenBoth(false);
-      } else if (avg >= SCROLL_SPEED_HIDE_PX_MS) {
-        shownAtRef.current = now;
-        setHiddenBoth(true);
-      }
-    };
-    const resumeTimer = window.setInterval(() => {
-      regionEls().forEach((el) => { if (atBottom(el)) setHiddenBoth(false); });
-      if (shownAtRef.current !== 0 && performance.now() - shownAtRef.current >= TAB_SCROLL_RESUME_MS) {
-        setHiddenBoth(false);
-      }
-    }, 200);
-    node.addEventListener('scroll', onScroll, true);
-    return () => {
-      node.removeEventListener('scroll', onScroll, true);
-      window.clearInterval(resumeTimer);
-    };
-  }, [containerRef]);
-
-  return (
-    <div className={`chat-mode-tabs-shell ${hidden ? 'is-hidden' : ''}`} aria-hidden={hidden}>
-      <ChatModeTabs active={active} onSelect={onSelect} chatLed={chatLed} roomsLed={roomsLed} />
-    </div>
-  );
-}
-
-const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToken, initialSessionId, freshSessionId, chatMode = 'general', botProfile, onClose, onStartTaskChat, onNewChat, onOpenRooms }: CanonicalChatDrawerProps) {
+const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToken, initialSessionId, freshSessionId, resumeRequestKey, chatMode = 'general', botProfile, onClose, onStartTaskChat, onNewChat, onOpenRooms, onResumeSession }: CanonicalChatDrawerProps) {
   const { t } = useI18n();
   const [draft, setDraft] = useState('');
   const [runtimeChanging, setRuntimeChanging] = useState(false);
@@ -454,7 +309,7 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
     respondInteraction,
     interrupt,
     reset,
-  } = useGatewayChat(storedToken, open, initialSessionId, botProfile, freshSessionId);
+  } = useGatewayChat(storedToken, open, initialSessionId, botProfile, freshSessionId, resumeRequestKey);
   const chatHelpAttention = useTabAttention({ needsAction: Boolean(interaction) || Boolean(error), atBottom: nearBottom, contentCount: messages.length });
   // The chat drawer has no room transcript in scope, so the Rooms tab shows no
   // background signal here. It must not pretend to: a dot driven by hardcoded
@@ -1914,7 +1769,7 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
             </div>
           </div>
         </header>
-        {!modelPickerOpen && onOpenRooms ? <AutoHideModeTabs active="chat" onSelect={(mode) => { if (mode === 'rooms') onOpenRooms(); }} containerRef={drawerRef} chatLed={chatHelpAttention} /> : null}
+        {!modelPickerOpen && onOpenRooms ? <AutoHideModeTabs active="chat" onSelect={(mode) => { if (mode === 'rooms') onOpenRooms(); }} containerRef={drawerRef} chatLed={chatHelpAttention} storedToken={storedToken} enabled={open} currentSessionId={sessionId} currentProfile={botProfile} onResumeSession={onResumeSession} /> : null}
 
         <div ref={scrollRef} onScroll={handleTranscriptScroll} className={`chat-transcript ${previewMode ? 'is-preview' : ''} ${showTodoPlan ? 'has-todo-plan' : ''} ${isDragging ? 'is-dragging' : ''}`} aria-live="polite">
           {isDragging ? (
@@ -2152,7 +2007,7 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
   );
 });
 
-function GroupChatDrawer({ open, roomId, storedToken, onClose, onRoomChange }: ChatDrawerProps) {
+function GroupChatDrawer({ open, roomId, storedToken, onClose, onRoomChange, onResumeSession }: ChatDrawerProps) {
   const { t } = useI18n();
   const client = useMemo(() => createGroupGatewayClient(storedToken?.trim() || undefined), [storedToken]);
   const state = useGroupRoom({ client, enabled: open, initialRoomId: roomId ?? null, accessToken: storedToken?.trim() || undefined });
@@ -2288,7 +2143,7 @@ function GroupChatDrawer({ open, roomId, storedToken, onClose, onRoomChange }: C
             </div>
           ) : null}
         </header>
-        <AutoHideModeTabs active="rooms" onSelect={(mode) => { if (mode === 'chat') onRoomChange ? onRoomChange(null) : onClose(); }} containerRef={drawerRef} chatLed="none" roomsLed={roomAttention} />
+        <AutoHideModeTabs active="rooms" onSelect={(mode) => { if (mode === 'chat') onRoomChange ? onRoomChange(null) : onClose(); }} containerRef={drawerRef} chatLed="none" roomsLed={roomAttention} storedToken={storedToken} enabled={open} onResumeSession={onResumeSession} />
         <div className="flex min-h-0 flex-1 flex-col">
           {!canUseRooms && !state.loading ? <div className="chat-error m-4" role="status">{t('rooms.driverUnavailable')}</div> : null}
           {creating ? <div className="chat-transcript rooms-empty"><CreateRoomForm members={botCandidates.length > 0 ? botCandidates : mentionRoster} onCancel={() => setCreating(false)} onCreate={createRoomFromDrawer} /></div> : state.room && canUseRooms ? <GroupRoomView state={state} mentionRoster={botCandidates.length > 0 ? botCandidates : mentionRoster} onSend={(text) => state.send(text, `room:${state.room?.id ?? state.selectedRoomId}`)} onNearBottomChange={(near) => { roomsNearBottomRef.current = near; setRoomsNearBottom(near); }} /> : canUseRooms ? <div className="chat-transcript rooms-empty"><p className="chat-empty">{t('rooms.chooseRoom')}</p></div> : null}

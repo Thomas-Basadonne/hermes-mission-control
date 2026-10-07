@@ -24,7 +24,8 @@ import { ChatDrawer } from './ChatDrawer';
 import { useChatPresence } from '../lib/chat-presence';
 import { useLastRoutePersistence } from '../lib/last-route';
 import { readLocalLastRoom, writeLocalLastRoom, claimLastRoomPointer, fetchServerLastRoom } from '../lib/room-persistence';
-import { clearNewChatParams } from '../lib/chat-session-params';
+import { clearNewChatParams, selectChatSessionParams } from '../lib/chat-session-params';
+import type { MissionControlAgentSessionItem } from '../lib/hermes-api';
 import { recordReloadDiagnostic } from '../lib/reload-diagnostics';
 import { getRouteScroller, handleRouteScrollShortcut, scrollRouteToTop } from '../lib/route-scroll-shortcuts';
 import { Button } from './ui/Button';
@@ -110,6 +111,8 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
   const freshBotChatId = chatMode === 'task' && chatBotProfile && location.state && typeof location.state === 'object' && 'freshBotChatId' in location.state
     && location.state.freshBotChatId === chatRecoverySessionId ? chatRecoverySessionId : null;
   const chatRoomId = chatSearchParams.get('roomId');
+  const resumeRequestKey = location.state && typeof location.state === 'object' && 'sessionResumeRequest' in location.state
+    && typeof location.state.sessionResumeRequest === 'string' ? location.state.sessionResumeRequest : null;
   const serverLastRoomRef = useRef<{ roomId: string; revision: number } | null>(null);
   const tokenInputRef = useRef<HTMLInputElement | null>(null);
   const chatButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -199,6 +202,14 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
     params.set('chatMode', 'task');
     const search = params.toString();
     navigate(`${location.pathname}${search ? `?${search}` : ''}`, { replace: true });
+  }, [location.pathname, location.search, navigate]);
+
+  const resumeSelectionRef = useRef(0);
+  const resumePickedSession = useCallback((session: MissionControlAgentSessionItem) => {
+    if (!session.isResumable) return;
+    const search = selectChatSessionParams(location.search, session);
+    setChatOpen(true);
+    navigate(`${location.pathname}?${search}`, { replace: true, state: { sessionResumeRequest: String(++resumeSelectionRef.current) } });
   }, [location.pathname, location.search, navigate]);
 
   const activeNav = navItems.find((item) => (item.to === '/' ? location.pathname === '/' : location.pathname.startsWith(item.to)));
@@ -529,6 +540,7 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
             storedToken={storedToken}
             initialSessionId={chatRecoverySessionId}
             freshSessionId={freshBotChatId}
+            resumeRequestKey={resumeRequestKey}
             chatMode={chatMode}
             roomId={chatRoomId}
             botProfile={chatBotProfile}
@@ -536,6 +548,7 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
             onStartTaskChat={startTaskChat}
             onNewChat={startNewChat}
             onOpenRooms={openRoomsMode}
+            onResumeSession={resumePickedSession}
             onRoomChange={changeRoom}
           />
         ) : null}

@@ -1,11 +1,23 @@
-export function shouldPreviewChatSession(initialSessionId?: string | null, freshSessionId?: string | null): boolean {
+export function shouldPreviewChatSession(initialSessionId?: string | null, freshSessionId?: string | null, resumeImmediately = false): boolean {
   const requested = initialSessionId?.trim();
-  return Boolean(requested && requested !== freshSessionId?.trim());
+  return !resumeImmediately && Boolean(requested && requested !== freshSessionId?.trim());
 }
 
 export function clearNewChatParams(search: string): string {
   const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
   for (const key of ['chatSession', 'botProfile', 'chatMode', 'roomId']) params.delete(key);
+  return params.toString();
+}
+
+/** Keep the exact row and its owner when navigating from the all-profile picker. */
+export function selectChatSessionParams(
+  search: string,
+  session: { sessionId: string; sessionKey?: string | null; profile?: string | null },
+): string {
+  const params = new URLSearchParams(clearNewChatParams(search));
+  params.set('chatSession', session.sessionId);
+  params.set('botProfile', session.profile?.trim() || 'default');
+  params.set('chatMode', 'canonical');
   return params.toString();
 }
 
