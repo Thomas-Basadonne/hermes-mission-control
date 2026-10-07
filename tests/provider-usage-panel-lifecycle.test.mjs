@@ -41,7 +41,7 @@ let harness;
 function nodes(tree) {
   if (Array.isArray(tree)) return tree.flatMap(nodes);
   if (!tree || typeof tree !== 'object' || !tree.props) return [];
-  return [tree, ...nodes(tree.props.children)];
+  return [tree, ...nodes(tree.props.children), ...nodes(tree.props.footer)];
 }
 function mount(Panel) {
   const slots = [];
@@ -348,7 +348,10 @@ try {
       }
       if (String(url).includes('/catalog')) {
         catalogReads++;
-        if (held) return { status: 200, ok: true, json: () => held.promise };
+        if (held && !held.started) {
+          held.started = true;
+          return { status: 200, ok: true, json: () => held.promise };
+        }
         return { status: 200, ok: true, json: async () => ({ available: true, providers: ['a', 'b', 'c'].map(descriptor), selectedProviders: selected, selectionRevision: revision }) };
       }
       return { status: 200, ok: true, json: async () => ({ success: true, available: true, providers: selected.map(usage) }) };
@@ -371,6 +374,14 @@ try {
     harness.dialog().onReconcileSelection();
     await harness.flush();
     assert.equal(catalogReads, readsBefore + 1, 'a duplicate Review changes click must not start a concurrent recovery read');
+    // A normal catalog poll may finish while the explicit recovery is pending.
+    // It must not release loading state that belongs to the recovery request.
+    for (const [id, timer] of [...timers.entries()].filter(([, timer]) => timer.delay === 60_000)) {
+      timers.delete(id); timer.fn();
+    }
+    await harness.flush();
+    assert.equal(catalogReads, readsBefore + 2, 'an independent catalog poll completes during recovery');
+    assert.equal(harness.dialog().saving, true, 'a catalog poll must not unlock controls owned by the pending recovery');
     // End the dialog cycle, then let the stale response arrive.
     harness.dialog().onClose();
     await harness.flush();
@@ -380,6 +391,173 @@ try {
     assert.deepEqual(harness.dialog().draftSelection, draftBefore, 'a recovery response landing after the dialog cycle must not rewrite the draft');
     assert.equal(harness.dialog().open, false, 'a fenced response must not reopen the dialog');
     assert.equal(harness.dialog().error, 'provider.selectionConflict', 'a fenced response must not overwrite the pending error');
+    // The cancelled request must release the collection controls for the next
+    // dialog cycle, without a poll, Check now or remount rescuing the state.
+    held = null;
+    harness.customize(); await harness.flush();
+    const dialog = mount(() => {
+      const element = harness.dialogElement();
+      return element.type(element.props);
+    });
+    await dialog.flush();
+    const collection = provider => dialog.elements().find(node => node.type === 'input'
+      && node.props['aria-label'] === `provider.collectUsage: ${provider}`).props;
+    assert.equal(collection('a').disabled, false, 'Close → late recovery → reopen must leave collection controls usable');
+    assert.equal(collection('b').disabled, false);
+    assert.equal(collection('c').disabled, false);
+    assert.deepEqual(harness.dialog().draftSelection, ['c', 'b'], 'reopening must start from the canonical selection');
+    assert.equal(harness.dialog().error, null, 'reopening clears the previous dialog error');
+    collection('a').onChange();
+    await harness.flush(); await dialog.flush(true);
+    const save = dialog.elements().find(node => node.type === 'button' && node.props.children === 'provider.saveSelection').props;
+    assert.equal(save.disabled, false, 'an edit after cancellation must be saveable');
+    save.onClick(); await harness.flush();
+    assert.deepEqual(selected, ['c', 'b', 'a'], 'the next dialog cycle can persist a reviewed edit');
+    assert.equal(harness.dialog().open, false);
+    dialog.unmount(); harness.unmount(); harness = null;
+  }
+  // Recovery failures must release their controls without accepting an unusable
+  // canonical draft; a retry in the same dialog remains an explicit user action.
+  for (const outcome of ['success', '503', 'network', 'invalid-json', 'unavailable', 'unversioned', 'timeout']) {
+    let selected = ['a'], revision = 'a'.repeat(64), recovery = false, writes = 0;
+    globalThis.fetch = async (url, options = {}) => {
+      if (options.method === 'PUT') {
+        writes++;
+        const body = JSON.parse(options.body);
+        if (body.expectedRevision !== revision) return { status: 409, ok: false };
+        selected = body.selectedProviders;
+        revision = 'c'.repeat(64);
+        return { status: 200, ok: true, json: async () => ({ selectedProviders: selected, selectionRevision: revision }) };
+      }
+      if (!String(url).includes('/catalog')) return { status: 200, ok: true, json: async () => ({ success: true, available: true, providers: selected.map(usage) }) };
+      const canonical = { available: true, providers: ['a', 'b', 'c'].map(descriptor), selectedProviders: selected, selectionRevision: revision };
+      if (!recovery || outcome === 'success') return { status: 200, ok: true, json: async () => canonical };
+      if (outcome === '503') return { status: 503, ok: false };
+      if (outcome === 'network') throw new TypeError('Network unavailable');
+      if (outcome === 'timeout') return new Promise(() => {});
+      if (outcome === 'invalid-json') return { status: 200, ok: true, json: async () => { throw new SyntaxError('Invalid JSON'); } };
+      return { status: 200, ok: true, json: async () => outcome === 'unavailable'
+        ? { ...canonical, available: false, selectedProviders: [], error: 'Catalog unavailable' }
+        : { ...canonical, selectionRevision: undefined } };
+    };
+    harness = mount(ProviderUsagePanel); await harness.flush();
+    harness.customize(); await harness.flush();
+    const dialog = mount(() => { const element = harness.dialogElement(); return element.type(element.props); });
+    const flush = async () => { await harness.flush(); await dialog.flush(true); };
+    const button = label => dialog.elements().find(node => node.type === 'button' && node.props.children === label).props;
+    const collection = provider => dialog.elements().find(node => node.type === 'input' && node.props['aria-label'] === `provider.collectUsage: ${provider}`).props;
+    await flush();
+    collection('b').onChange(); await flush();
+    selected = ['c']; revision = 'b'.repeat(64);
+    button('provider.saveSelection').onClick(); await flush();
+    assert.equal(harness.dialog().selectionConflict, true);
+    recovery = true;
+    button('provider.reviewChanges').onClick(); await flush();
+    if (outcome === 'timeout') {
+      assert.equal(button('provider.reviewChanges').disabled, true);
+      mock.timers.tick(10_000); await flush();
+    }
+    assert.equal(collection('a').disabled, false, `${outcome}: recovery must release its loading state`);
+    assert.equal(writes, 1, `${outcome}: recovery must never perform an automatic write`);
+    if (outcome !== 'success') {
+      assert.deepEqual(harness.dialog().draftSelection, ['a', 'b'], `${outcome}: failed recovery must retain the draft`);
+      assert.equal(harness.dialog().catalog.selectionRevision, 'b'.repeat(64), `${outcome}: retain the last usable canonical revision`);
+      assert.equal(harness.dialog().selectionConflict, true, `${outcome}: recovery remains explicit and retryable`);
+      assert.equal(button('provider.reviewChanges').disabled, false);
+      recovery = false;
+      button('provider.reviewChanges').onClick(); await flush();
+    }
+    assert.deepEqual(harness.dialog().draftSelection, ['c']);
+    assert.equal(harness.dialog().selectionConflict, false);
+    collection('a').onChange(); await flush();
+    button('provider.saveSelection').onClick(); await flush();
+    assert.deepEqual(selected, ['c', 'a'], `${outcome}: reviewed edit must persist after recovery/retry`);
+    assert.equal(harness.dialog().open, false);
+    dialog.unmount(); harness.unmount(); harness = null;
+  }
+  // A cancelled body's late completion cannot release a newer recovery owner.
+  {
+    let selected = ['a'], revision = 'a'.repeat(64), holdNext = false;
+    const bodies = [];
+    globalThis.fetch = async (url, options = {}) => {
+      if (options.method === 'PUT') return { status: 409, ok: false };
+      if (!String(url).includes('/catalog')) return { status: 200, ok: true, json: async () => ({ success: true, available: true, providers: selected.map(usage) }) };
+      const canonical = { available: true, providers: ['a', 'b', 'c'].map(descriptor), selectedProviders: [...selected], selectionRevision: revision };
+      if (!holdNext) return { status: 200, ok: true, json: async () => canonical };
+      holdNext = false;
+      return { status: 200, ok: true, json: () => new Promise(resolve => bodies.push(() => resolve(canonical))) };
+    };
+    harness = mount(ProviderUsagePanel); await harness.flush();
+    harness.customize(); await harness.flush();
+    const dialog = mount(() => { const element = harness.dialogElement(); return element.type(element.props); });
+    const flush = async () => { await harness.flush(); await dialog.flush(true); };
+    const button = label => dialog.elements().find(node => node.type === 'button' && node.props.children === label).props;
+    const collection = provider => dialog.elements().find(node => node.type === 'input' && node.props['aria-label'] === `provider.collectUsage: ${provider}`).props;
+    await flush();
+    collection('b').onChange(); await flush();
+    selected = ['c']; revision = 'b'.repeat(64);
+    button('provider.saveSelection').onClick(); await flush();
+    holdNext = true;
+    button('provider.reviewChanges').onClick(); await flush();
+    assert.equal(bodies.length, 1);
+    harness.dialog().onClose(); await flush();
+    harness.customize(); await flush();
+    assert.equal(collection('a').disabled, false);
+    collection('b').onChange(); await flush();
+    selected = ['a']; revision = 'c'.repeat(64);
+    button('provider.saveSelection').onClick(); await flush();
+    holdNext = true;
+    button('provider.reviewChanges').onClick(); await flush();
+    assert.equal(bodies.length, 2);
+    bodies[0](); await flush();
+    assert.equal(button('provider.reviewChanges').disabled, true, 'late cancelled body must not release the newer recovery owner');
+    assert.equal(collection('a').disabled, true);
+    assert.deepEqual(harness.dialog().draftSelection, ['c', 'b'], 'late old recovery must not change the newer dialog draft');
+    assert.equal(harness.dialog().error, 'provider.selectionConflict');
+    bodies[1](); await flush();
+    assert.equal(collection('a').disabled, false);
+    assert.deepEqual(harness.dialog().draftSelection, ['a'], 'only the current owner may adopt the canonical selection');
+    assert.equal(harness.dialog().error, 'provider.selectionConflictResolved');
+    dialog.unmount(); harness.unmount(); harness = null;
+  }
+  // Closing an explicit recovery releases only its own busy state, never the
+  // safety lock of a PUT whose durable outcome is still unknown.
+  for (const outage of ['503', 'unavailable', 'unversioned']) {
+    let selected = ['a'], revision = 'a'.repeat(64), catalogOutage = false, pendingPut;
+    const writes = [];
+    globalThis.fetch = async (url, options = {}) => {
+      if (options.method === 'PUT') {
+        const body = JSON.parse(options.body); writes.push(body);
+        assert.equal(body.expectedRevision, revision);
+        selected = body.selectedProviders; revision = 'b'.repeat(64);
+        catalogOutage = true;
+        return { status: 200, ok: true, json: () => new Promise(resolve => { pendingPut = resolve; }) };
+      }
+      if (!String(url).includes('/catalog')) return { status: 200, ok: true, json: async () => ({ success: true, available: true, providers: selected.map(usage) }) };
+      const catalog = { available: true, providers: ['a', 'b'].map(descriptor), selectedProviders: selected, selectionRevision: revision };
+      if (catalogOutage && outage === '503') return { status: 503, ok: false };
+      return { status: 200, ok: true, json: async () => catalogOutage
+        ? { ...catalog, available: outage !== 'unavailable', selectionRevision: undefined }
+        : catalog };
+    };
+    harness = mount(ProviderUsagePanel); await harness.flush();
+    harness.customize(); await harness.flush();
+    harness.dialog().onToggle('b'); await harness.flush();
+    harness.dialog().onSave(); await harness.flush();
+    mock.timers.tick(10_000); await harness.flush();
+    assert.equal(harness.dialog().saving, true, `${outage}: an unusable read cannot unlock an uncertain write`);
+    harness.dialog().onClose(); await harness.flush();
+    harness.customize(); await harness.flush();
+    assert.equal(harness.dialog().saving, true, `${outage}: closing/reopening must not reset the uncertain-write fence`);
+    assert.equal(writes.length, 1);
+    catalogOutage = false;
+    harness.checkButton().onClick(); await harness.flush();
+    assert.equal(harness.dialog().saving, false, `${outage}: Check now provides an explicit canonical-read retry`);
+    assert.deepEqual(harness.dialog().draftSelection, ['a', 'b']);
+    assert.equal(harness.dialog().catalog.selectionRevision, 'b'.repeat(64));
+    assert.equal(writes.length, 1, 'canonical retry must never duplicate an uncertain PUT');
+    pendingPut({ selectedProviders: ['a', 'b'], selectionRevision: 'b'.repeat(64) }); await harness.flush();
+    assert.equal(harness.dialog().saving, false);
     harness.unmount(); harness = null;
   }
   for (const commitBeforeTimeout of [true, false]) {

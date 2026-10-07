@@ -276,6 +276,7 @@ export function ProviderUsagePanel() {
   const numberLocale = locale === 'it' ? 'it-IT' : 'en-US';
   const [nowMs, setNowMs] = useState(Date.now);
   const [reconcilingSelection, setReconcilingSelection] = useState(false);
+  const [recoveringSelection, setRecoveringSelection] = useState(false);
   const [snapshot, setSnapshot] = useState<MissionControlProviderUsageSnapshot | null>(null);
   const snapshotRef = useRef<MissionControlProviderUsageSnapshot | null>(null);
   const [providerCatalog, setProviderCatalog] = useState<MissionControlProviderCatalogSnapshot | null>(null);
@@ -484,11 +485,19 @@ export function ProviderUsagePanel() {
     setCustomizeOpen(true);
   };
 
+  const cancelSelectionRecovery = () => {
+    const controller = reconcileAbortRef.current;
+    if (!controller) return;
+    // Release the cancelled owner's UI state here: its guarded finally must not
+    // be allowed to clear a recovery belonging to a later dialog cycle.
+    reconcileAbortRef.current = null;
+    controller.abort();
+    setRecoveringSelection(false);
+  };
+
   const closeCustomize = () => {
     if (savingSelection) return;
-    // Closing the dialog invalidates any in-flight recovery read.
-    reconcileAbortRef.current?.abort();
-    reconcileAbortRef.current = null;
+    cancelSelectionRecovery();
     setCustomizeOpen(false);
   };
 
@@ -512,8 +521,7 @@ export function ProviderUsagePanel() {
     if (!selectionController.current.beginSave(draftRevision)) return;
     catalogAbortRef.current?.abort();
     // A newer save fences any in-flight recovery read.
-    reconcileAbortRef.current?.abort();
-    reconcileAbortRef.current = null;
+    cancelSelectionRecovery();
     setCatalogLoading(false);
     const controller = new AbortController();
     selectionAbortRef.current = controller;
@@ -556,14 +564,18 @@ export function ProviderUsagePanel() {
     if (captured === null) return;
     const controller = new AbortController();
     reconcileAbortRef.current = controller;
-    setReconcilingSelection(true);
+    setRecoveringSelection(true);
     try {
       // Read the canonical revision directly: never depend on poll timing. A
       // plain read reflects the committed selection; no forced provider refresh.
       const catalog = await loadProviderUsageCatalog(storedToken || undefined, false, controller.signal);
       if (!mountedRef.current || controller.signal.aborted
         || !selectionController.current.acceptRead(captured, catalog.available, catalog.selectionRevision)) return;
-      setProviderCatalog((current) => catalog.available || !current?.available ? catalog : { ...current, error: catalog.error, refreshing: catalog.refreshing });
+      if (!catalog.available || !catalog.selectionRevision) {
+        setSelectionError(t('provider.selectionReconcile'));
+        return;
+      }
+      setProviderCatalog(catalog);
       setDraftSelection(catalog.selectedProviders);
       setDraftRevision(catalog.selectionRevision);
       setSelectionConflict(false);
@@ -573,7 +585,7 @@ export function ProviderUsagePanel() {
     } finally {
       if (reconcileAbortRef.current === controller) {
         reconcileAbortRef.current = null;
-        if (mountedRef.current) setReconcilingSelection(false);
+        if (mountedRef.current) setRecoveringSelection(false);
       }
     }
   };
@@ -681,7 +693,7 @@ export function ProviderUsagePanel() {
         draftSelection={draftSelection}
         filteredCatalogRows={filteredCatalogRows}
         search={providerSearch}
-        saving={savingSelection || reconcilingSelection || !draftRevision}
+        saving={savingSelection || reconcilingSelection || recoveringSelection || !draftRevision}
         error={selectionError}
         selectionConflict={selectionConflict}
         onReconcileSelection={reconcileSelectionConflict}

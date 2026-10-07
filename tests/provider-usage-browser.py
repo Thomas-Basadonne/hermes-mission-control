@@ -156,9 +156,9 @@ def main():
                         driver.call('Input.dispatchMouseEvent', type='mousePressed', button='left', buttons=1, clickCount=1, **point)
                         driver.call('Input.dispatchMouseEvent', type='mouseReleased', button='left', buttons=0, clickCount=1, **point)
 
-                    def button(text):
+                    def button(text, allow_disabled=False):
                         point = evaluate(f'''(() => {{ const el = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === {json.dumps(text)});
-                            if (!el || el.disabled) throw new Error('Missing or disabled button: ' + {json.dumps(text)});
+                            if (!el || (el.disabled && !{json.dumps(allow_disabled)})) throw new Error('Missing or disabled button: ' + {json.dumps(text)});
                             el.scrollIntoView({{block:'center'}}); const r=el.getBoundingClientRect(); return {{x:r.x+r.width/2,y:r.y+r.height/2}}; }})()''')
                         driver.call('Input.dispatchMouseEvent', type='mousePressed', button='left', buttons=1, clickCount=1, **point)
                         driver.call('Input.dispatchMouseEvent', type='mouseReleased', button='left', buttons=0, clickCount=1, **point)
@@ -371,6 +371,46 @@ def main():
                         assert json.loads((runtime / 'selection.json').read_text())['selectedProviders'] == ['future-provider']
                         wait("document.querySelectorAll('article[role=group]').length === 1", 'Reconciled selection did not render')
                         check('P2: stale PUT 409, in-place revision reconciliation and reviewed save')
+                        # Cancel an owned recovery through the actual dialog controls.
+                        # No poll, Check now or remount may rescue a stuck loading flag.
+                        for dismissal in ('close-button', 'escape', 'backdrop'):
+                            button('Customize'); button('Providers')
+                            click('input[aria-label="Collect usage: Nous Portal"]')
+                            control({'externalSelection': ['future-provider', 'openrouter']})
+                            catalog_before = evaluate("window.requests.filter(r=>r.path==='/api/local/provider-usage/catalog').length")
+                            button('Save selection')
+                            wait("document.querySelector('[role=dialog]')?.innerText.includes('Selection changed elsewhere')", 'Cancellation fixture did not conflict')
+                            wait(f"window.requests.filter(r=>r.path==='/api/local/provider-usage/catalog').length > {catalog_before}", 'Post-conflict catalog did not settle')
+                            read_before = evaluate("window.requests.filter(r=>r.path==='/api/local/provider-usage/catalog').length")
+                            hold = 'cancelRecovery' + dismissal
+                            evaluate(f"window.holdNext['/api/local/provider-usage/catalog']={json.dumps(hold)}")
+                            button('Review changes')
+                            wait(f"!!window.holds[{json.dumps(hold)}]", 'Recovery body was not held')
+                            wait("[...document.querySelectorAll('button')].some(b=>b.textContent.trim()==='Review changes'&&b.disabled)", 'Pending recovery must disable Review changes')
+                            assert evaluate("document.querySelector('input[aria-label=\"Collect usage: Nous Portal\"]').disabled")
+                            # A native click on a disabled button must issue no duplicate GET.
+                            button('Review changes', allow_disabled=True)
+                            assert evaluate("window.requests.filter(r=>r.path==='/api/local/provider-usage/catalog').length") == read_before + 1
+                            if dismissal == 'close-button':
+                                click('button[aria-label="Close dialog"]')
+                            elif dismissal == 'escape':
+                                driver.call('Input.dispatchKeyEvent', type='keyDown', key='Escape', code='Escape', windowsVirtualKeyCode=27)
+                                driver.call('Input.dispatchKeyEvent', type='keyUp', key='Escape', code='Escape', windowsVirtualKeyCode=27)
+                            else:
+                                driver.call('Input.dispatchMouseEvent', type='mousePressed', button='left', buttons=1, clickCount=1, x=1, y=1)
+                                driver.call('Input.dispatchMouseEvent', type='mouseReleased', button='left', buttons=0, clickCount=1, x=1, y=1)
+                            wait("!document.querySelector('[role=dialog]')", 'Pending recovery could not be dismissed')
+                            evaluate(f"window.holds[{json.dumps(hold)}]()")
+                            button('Customize'); button('Providers')
+                            wait("!document.querySelector('input[aria-label=\"Collect usage: Future Provider\"]')?.disabled && !document.querySelector('input[aria-label=\"Collect usage: OpenRouter\"]')?.disabled && !document.querySelector('input[aria-label=\"Collect usage: Nous Portal\"]')?.disabled", 'Cancelled recovery left collection controls disabled on reopen', timeout=5)
+                            assert not evaluate("document.querySelector('[role=dialog]').innerText.includes('discarded')"), 'Cancelled response changed the new dialog error'
+                            assert evaluate("window.requests.filter(r=>r.path==='/api/local/provider-usage/catalog').length") == read_before + 1, 'Reopening must not need a rescue read'
+                            click('input[aria-label="Collect usage: OpenRouter"]')
+                            button('Save selection')
+                            wait("!document.querySelector('[role=dialog]')", 'Edit/save after recovery cancellation did not complete')
+                            assert json.loads((runtime / 'selection.json').read_text())['selectedProviders'] == ['future-provider']
+                            wait("document.querySelectorAll('article[role=group]').length === 1", 'Cancelled response regressed the reviewed save')
+                            check('P2: pending recovery ' + dismissal + ', late body, usable reopen and durable reviewed save')
                         evaluate("window.holdNext['/api/local/provider-usage']='pendingUsage'")
                         button('Check now'); wait('!!window.holds.pendingUsage', 'Usage body was not held')
                         wait("[...document.querySelectorAll('button')].some(b=>b.textContent.trim()==='Check now'&&!b.disabled)", 'Usage body timeout kept refresh disabled', timeout=10)
