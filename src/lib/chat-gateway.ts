@@ -236,7 +236,7 @@ export function useGatewayChat(
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modelPickerRefresh, setModelPickerRefresh] = useState(false);
   const [commandPrefill, setCommandPrefill] = useState<string | null>(null);
-  const [previewMode, setPreviewMode] = useState<boolean>(() => shouldPreviewChatSession(initialSessionId, freshSessionId, Boolean(resumeRequestKey)));
+  const [previewMode, setPreviewMode] = useState<boolean>(() => shouldPreviewChatSession(initialSessionId, freshSessionId));
   const [resumedRuntime, setResumedRuntime] = useState<ResumedRuntimePresence | null>(null);
   const [pointerRevision, setPointerRevision] = useState<number | null>(initial.revision);
   const wsRef = useRef<WebSocket | null>(null);
@@ -268,7 +268,7 @@ export function useGatewayChat(
   const intentionalCloseRef = useRef(false);
   const requestedSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const sessionProfileRef = useRef<string | null>(botProfile?.trim() || initial.profile || null);
-  const previewModeRef = useRef<boolean>(shouldPreviewChatSession(initialSessionId, freshSessionId, Boolean(resumeRequestKey)));
+  const previewModeRef = useRef<boolean>(shouldPreviewChatSession(initialSessionId, freshSessionId));
   const resumeSessionRef = useRef<() => Promise<string | null>>(async () => null);
   const connectRef = useRef<() => Promise<void>>(async () => {});
   const readyResolveRef = useRef<(() => void) | null>(null);
@@ -326,7 +326,7 @@ export function useGatewayChat(
     // default store, where it misses and the drawer falls back to an empty
     // preview — the "I open a chat and it empties" symptom.
     sessionProfileRef.current = nextSessionProfile(sessionProfileRef.current, botProfile, Boolean(requested));
-    const preview = shouldPreviewChatSession(requested, freshSessionId, Boolean(resumeRequestKey));
+    const preview = shouldPreviewChatSession(requested, freshSessionId);
     requestedSessionIdRef.current = requested;
     previewModeRef.current = preview;
     setPreviewMode(preview);
@@ -1409,10 +1409,10 @@ export function useGatewayChat(
           if (wsRef.current !== ws || intentionalCloseRef.current) return;
           setConnectionState('connected');
           setStatusText('Connected');
-          // Preview links remain explicit. Picker selection resumes only after
+          // Explicit Chat links and picker selection resume only after
           // THIS socket is ready, never against a stale connected-state render.
           if (previewModeRef.current) return;
-          if (resumeRequestKey && initialSessionId) {
+          if (initialSessionId) {
             void resumeSessionRef.current();
             return;
           }

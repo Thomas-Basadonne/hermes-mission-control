@@ -36,6 +36,14 @@ assert.deepEqual(calls.at(-1).filters, {query:'older session',origin:'telegram',
 assert.equal(ctrl.select(0), 'history-row');
 unsubscribe();
 ctrl.close();
+const cachedRows = ctrl.state.items;
+const cachedFilters = {query:ctrl.state.query,profile:ctrl.state.profile,origin:ctrl.state.origin,status:ctrl.state.status};
+const reopening = ctrl.load();
+assert.equal(ctrl.state.items, cachedRows, 'revalidation paints the existing page while the request is pending');
+assert.deepEqual({query:ctrl.state.query,profile:ctrl.state.profile,origin:ctrl.state.origin,status:ctrl.state.status}, cachedFilters, 'close/reopen preserves the selected filters');
+await reopening;
+assert.equal(ctrl.state.items[0].sessionId, 'history-row');
+ctrl.close();
 
 let resolveOld;
 let resolveNew;

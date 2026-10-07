@@ -8,6 +8,7 @@ import { formatRelativeSchedule, formatTimestamp } from '../../lib/format';
 import './SessionPicker.css';
 
 export interface SessionPickerProps {
+  open: boolean;
   storedToken: string;
   currentSessionId?: string | null;
   currentProfile?: string | null;
@@ -15,7 +16,7 @@ export interface SessionPickerProps {
   onClose: () => void;
 }
 
-export function SessionPicker({ storedToken, currentSessionId, currentProfile, onSelect, onClose }: SessionPickerProps) {
+export function SessionPicker({ open, storedToken, currentSessionId, currentProfile, onSelect, onClose }: SessionPickerProps) {
   const { t, locale } = useI18n();
   const pickerRef = useRef<HTMLDivElement>(null);
 
@@ -24,6 +25,7 @@ export function SessionPicker({ storedToken, currentSessionId, currentProfile, o
   const [profileNames, setProfileNames] = useState<string[]>(['default']);
   const [profileError, setProfileError] = useState(false);
   const [profileReload, setProfileReload] = useState(0);
+  const profilesLoadedRef = useRef(false);
   const [origins, setOrigins] = useState<string[]>([]);
   const controller = useMemo(() => createSessionPickerController({
     storedToken,
@@ -33,15 +35,20 @@ export function SessionPicker({ storedToken, currentSessionId, currentProfile, o
 
   useEffect(() => {
     const cancellation = new AbortController();
+    if (!open || profilesLoadedRef.current) return;
     setProfileError(false);
     void loadBotProfiles(storedToken).then(payload => {
-      if (!cancellation.signal.aborted) setProfileNames([...new Set(['default', ...payload.profiles.map(profile => profile.name)])].sort());
+      if (!cancellation.signal.aborted) {
+        profilesLoadedRef.current = true;
+        setProfileNames([...new Set(['default', ...payload.profiles.map(profile => profile.name)])].sort());
+      }
     }).catch(() => { if (!cancellation.signal.aborted) setProfileError(true); });
     return () => cancellation.abort();
-  }, [profileReload, storedToken]);
+  }, [open, profileReload, storedToken]);
 
   useEffect(() => {
     const lifetime = new AbortController();
+    if (!open) return;
     let timer: number | undefined;
     const refresh = async () => {
       window.clearTimeout(timer);
@@ -53,22 +60,22 @@ export function SessionPicker({ storedToken, currentSessionId, currentProfile, o
     void refresh();
     document.addEventListener('visibilitychange', onVisible);
     return () => { lifetime.abort(); controller.close(); window.clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible); };
-  }, [controller]);
+  }, [controller, open]);
 
   useEffect(() => {
     // Invalidate immediately; the fetch itself waits until typing pauses.
+    if (!open) return;
     if (query === controller.state.query) return;
     controller.setQuery(query);
     const timer = window.setTimeout(() => void controller.load(), 250);
     return () => window.clearTimeout(timer);
-  }, [controller, query]);
+  }, [controller, open, query]);
 
   useEffect(() => {
     setOrigins(previous => [...new Set([...previous, ...Object.keys(state.facets.origin)])].sort());
   }, [state.facets.origin]);
 
   useEffect(() => {
-
     const outside = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node) || pickerRef.current?.contains(target)) return;
@@ -81,10 +88,11 @@ export function SessionPicker({ storedToken, currentSessionId, currentProfile, o
       event.stopPropagation();
       onClose();
     };
+    if (!open) return;
     document.addEventListener('pointerdown', outside, true);
     document.addEventListener('keydown', escape, true);
     return () => { document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', escape, true); };
-  }, [onClose]);
+  }, [onClose, open]);
 
   useEffect(() => { if (listRef.current) listRef.current.scrollTop = 0; }, [state.pagination.offset, state.query, state.profile, state.origin, state.status]);
 
@@ -92,7 +100,7 @@ export function SessionPicker({ storedToken, currentSessionId, currentProfile, o
 
   const filterProfiles = [...new Set([...profileNames, ...state.items.map(session => session.profile || 'default')])].sort();
   return (
-    <div ref={pickerRef} id="chat-session-picker" data-session-picker role="dialog" aria-modal="false" aria-label={t('sessionPicker.title')}>
+    <div ref={pickerRef} id="chat-session-picker" data-session-picker role="dialog" aria-modal="false" aria-label={t('sessionPicker.title')} hidden={!open} aria-hidden={!open} inert={!open ? true : undefined}>
       <div className="sp-header">
         <strong>{t('sessionPicker.title')}</strong>
         <span className="sp-count">{t('sessionPicker.activeCount', { count: state.stats.liveSessions })}</span>
@@ -116,7 +124,7 @@ export function SessionPicker({ storedToken, currentSessionId, currentProfile, o
           {(['live', 'idle', 'ended'] as const).map(status => <option key={status} value={status}>{t(`sessions.${status}Status`)}</option>)}
         </select></label>
       </div>
-      {profileError ? <div className="sp-notice" role="status">{t('sessionPicker.profilesFailed')} <button type="button" onClick={() => setProfileReload(value => value + 1)}>{t('sessions.retry')}</button></div> : null}
+      {profileError ? <div className="sp-notice" role="status">{t('sessionPicker.profilesFailed')} <button type="button" onClick={() => { profilesLoadedRef.current = false; setProfileReload(value => value + 1); }}>{t('sessions.retry')}</button></div> : null}
       {state.error ? <div className="sp-notice sp-error" role="alert"><span>{t('sessions.unableToLoad')}: {state.error}</span><button type="button" onClick={() => void controller.load()}>{t('sessions.retry')}</button></div> : null}
       <ul ref={listRef} className="sp-list" aria-label={t('sessionPicker.title')} aria-busy={loading}>
         {loading && state.items.length === 0 ? <li className="sp-empty" role="status"><Loader2 size={16} className="chat-spin" />{t('sessions.loading')}</li> : null}

@@ -14,10 +14,10 @@ describe('new Bot chat route', () => {
     assert.equal(params.get('tab'), 'details');
   });
 
-  it('only auto-activates the exact newly created session; existing deep links still preview', () => {
+  it('opens new and existing Chat sessions ready to use without a Resume action', () => {
     assert.equal(shouldPreviewChatSession('new-1', 'new-1'), false);
-    assert.equal(shouldPreviewChatSession('other-1', 'new-1'), true);
-    assert.equal(shouldPreviewChatSession('existing-1'), true);
+    assert.equal(shouldPreviewChatSession('other-1', 'new-1'), false);
+    assert.equal(shouldPreviewChatSession('existing-1'), false);
     assert.equal(shouldPreviewChatSession(null, 'new-1'), false);
   });
 });

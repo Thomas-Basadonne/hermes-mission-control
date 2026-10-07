@@ -1,4 +1,4 @@
-export function shouldPreviewChatSession(initialSessionId?: string | null, freshSessionId?: string | null, resumeImmediately = false): boolean {
+export function shouldPreviewChatSession(initialSessionId?: string | null, freshSessionId?: string | null, resumeImmediately = true): boolean {
   const requested = initialSessionId?.trim();
   return !resumeImmediately && Boolean(requested && requested !== freshSessionId?.trim());
 }

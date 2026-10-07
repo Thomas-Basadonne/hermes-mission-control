@@ -200,7 +200,7 @@ export function AutoHideModeTabs({ active, onSelect, containerRef, chatLed = 'no
   return (
     <div className={`chat-mode-tabs-shell ${hidden && !sessionsOpen ? 'is-hidden' : ''}`} aria-hidden={hidden && !sessionsOpen} inert={hidden && !sessionsOpen ? true : undefined}>
       <ChatModeTabs active={active} onSelect={(mode) => { setSessionsOpen(false); onSelect(mode); }} chatLed={chatLed} roomsLed={roomsLed} sessionsOpen={sessionsOpen} sessionsLed={activityError ? 'help' : liveCount ? 'done' : 'none'} sessionsTitle={activityError ? t('sessions.unableToLoad') : t('sessionPicker.activeCount', { count: liveCount ?? 0 })} sessionsTriggerRef={sessionsTriggerRef} onToggleSessions={onResumeSession ? () => setSessionsOpen((current) => !current) : undefined} />
-      {sessionsOpen && enabled && onResumeSession ? <SessionPicker storedToken={storedToken} currentSessionId={currentSessionId} currentProfile={currentProfile} onClose={closeSessions} onSelect={(session) => { setSessionsOpen(false); onResumeSession(session); }} /> : null}
+      {onResumeSession ? <SessionPicker key={storedToken} open={sessionsOpen && enabled} storedToken={storedToken} currentSessionId={currentSessionId} currentProfile={currentProfile} onClose={closeSessions} onSelect={(session) => { setSessionsOpen(false); onResumeSession(session); }} /> : null}
     </div>
   );
 }

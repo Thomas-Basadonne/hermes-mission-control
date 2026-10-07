@@ -12,6 +12,6 @@ assert.equal(selected.get('unrelated'), 'keep');
 const defaultChat = new URLSearchParams(params.selectChatSessionParams(before, { sessionId: 'same-id', profile: null }));
 assert.equal(defaultChat.get('botProfile'), 'default', 'an explicit default owner clears a carried bot profile on resume');
 assert.equal(params.nextSessionProfile('old-bot', defaultChat.get('botProfile'), true), 'default');
-assert.equal(params.shouldPreviewChatSession('same-id', null), true, 'existing links keep their preview behavior');
+assert.equal(params.shouldPreviewChatSession('same-id', null), false, 'opening a Chat session is ready-to-go, not a preview requiring Resume');
 assert.equal(params.shouldPreviewChatSession('same-id', null, true), false, 'picker selection resumes through the ready connection instead of a second preview action');
 console.log('chat-session-selection: ok');

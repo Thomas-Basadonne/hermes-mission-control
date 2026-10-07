@@ -1,4 +1,5 @@
 /* The zero-height mode rail anchors a bounded, independently scrollable picker. */
+#chat-session-picker[hidden] { display: none; }
 #chat-session-picker {
   position: absolute;
   top: 55px;
