@@ -6,6 +6,10 @@ export type ProviderUsageView = 'compact' | 'detailed';
 export type ProviderUsagePreferences = {
   hiddenProviders: string[];
   fieldVisibility?: Record<string, Record<string, FieldVisibility>>;
+  // Legacy fieldVisibility keys are literal IDs; never parse their colons as namespaces.
+  groupFieldVisibility?: Record<string, Partial<Record<ProviderUsageFieldGroup, Record<string, FieldVisibility>>>>;
+  hiddenFields?: Record<string, Partial<Record<ProviderUsageFieldGroup, string[]>>>;
+  compactFields?: Record<string, Array<{ group: ProviderUsageFieldGroup; id: string }>>;
   providerOrder: string[];
   columns: 1 | 2 | 3;
   view: ProviderUsageView;
@@ -76,6 +80,45 @@ function uniqueStrings(value: unknown): string[] {
   return [...new Set(value.filter((item): item is string => typeof item === 'string' && item.length > 0))];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeRecord<T>(value: unknown, normalize: (item: unknown) => T | undefined): Record<string, T> | undefined {
+  if (!isRecord(value)) return undefined;
+  return Object.fromEntries(Object.entries(value).flatMap(([key, item]) => {
+    const normalized = normalize(item);
+    return normalized === undefined ? [] : [[key, normalized]];
+  }));
+}
+
+function normalizeVisibility(value: unknown): FieldVisibility | undefined {
+  return value === 'both' || value === 'detailed' || value === 'hidden' ? value : undefined;
+}
+
+function normalizeGroupedVisibility(value: unknown): Partial<Record<ProviderUsageFieldGroup, Record<string, FieldVisibility>>> | undefined {
+  if (!isRecord(value)) return undefined;
+  return Object.fromEntries(FIELD_GROUPS.flatMap((group) => {
+    const fields = normalizeRecord(value[group], normalizeVisibility);
+    return fields === undefined ? [] : [[group, fields]];
+  }));
+}
+
+function normalizeHiddenFields(value: unknown): Partial<Record<ProviderUsageFieldGroup, string[]>> | undefined {
+  if (!isRecord(value)) return undefined;
+  return Object.fromEntries(FIELD_GROUPS.flatMap((group) =>
+    Array.isArray(value[group]) ? [[group, uniqueStrings(value[group])]] : []));
+}
+
+function normalizeCompactFields(value: unknown): Array<{ group: ProviderUsageFieldGroup; id: string }> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.flatMap((ref) => {
+    if (!isRecord(ref) || typeof ref.id !== 'string' || !ref.id) return [];
+    const group = FIELD_GROUPS.find((group) => group === ref.group);
+    return group ? [{ group, id: ref.id }] : [];
+  });
+}
+
 function browserStorage(): ProviderUsageStorage | null {
   try {
     return typeof window === 'undefined' ? null : window.localStorage;
@@ -85,17 +128,22 @@ function browserStorage(): ProviderUsageStorage | null {
 }
 
 export function normalizeProviderUsagePreferences(value: unknown): ProviderUsagePreferences {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return { ...DEFAULT_PROVIDER_USAGE_PREFERENCES };
   }
 
-  const candidate = value as Record<string, unknown>;
+  const candidate = value;
   const columns = candidate.columns === 1 || candidate.columns === 2 ? candidate.columns : 3;
+  const hiddenFields = normalizeRecord(candidate.hiddenFields, normalizeHiddenFields);
+  const compactFields = normalizeRecord(candidate.compactFields, normalizeCompactFields);
+  const fieldVisibility = normalizeRecord(candidate.fieldVisibility, (fields) => normalizeRecord(fields, normalizeVisibility));
+  const groupFieldVisibility = normalizeRecord(candidate.groupFieldVisibility, normalizeGroupedVisibility);
   return {
     hiddenProviders: uniqueStrings(candidate.hiddenProviders),
-    ...(candidate.fieldVisibility && typeof candidate.fieldVisibility === 'object' && !Array.isArray(candidate.fieldVisibility)
-      ? { fieldVisibility: candidate.fieldVisibility as Record<string, Record<string, FieldVisibility>> }
-      : {}),
+    ...(hiddenFields !== undefined ? { hiddenFields } : {}),
+    ...(compactFields !== undefined ? { compactFields } : {}),
+    ...(fieldVisibility !== undefined ? { fieldVisibility } : {}),
+    ...(groupFieldVisibility !== undefined ? { groupFieldVisibility } : {}),
     providerOrder: uniqueStrings(candidate.providerOrder),
     columns,
     view: candidate.view === 'detailed' ? 'detailed' : 'compact',
@@ -136,26 +184,28 @@ export function orderProviderUsage<T extends ProviderUsageEntry>(
 }
 
 export function getFieldVisibility(
-  preferences: ProviderUsagePreferences,
+  preferences: Pick<ProviderUsagePreferences, 'fieldVisibility' | 'groupFieldVisibility'>,
   provider: string,
+  group: ProviderUsageFieldGroup,
   fieldId: string,
 ): FieldVisibility {
-  return preferences.fieldVisibility?.[provider]?.[fieldId] ?? 'both';
+  return preferences.groupFieldVisibility?.[provider]?.[group]?.[fieldId]
+    ?? preferences.fieldVisibility?.[provider]?.[fieldId] ?? 'both';
 }
 
 export function setFieldVisibility(
   preferences: ProviderUsagePreferences,
   provider: string,
+  group: ProviderUsageFieldGroup,
   fieldId: string,
   visibility: FieldVisibility,
 ): ProviderUsagePreferences {
-  const existing = preferences.fieldVisibility?.[provider] ?? {};
-  const next = { ...existing, [fieldId]: visibility };
+  const existing = preferences.groupFieldVisibility?.[provider] ?? {};
   return {
     ...preferences,
-    fieldVisibility: {
-      ...preferences.fieldVisibility,
-      [provider]: next,
+    groupFieldVisibility: {
+      ...preferences.groupFieldVisibility,
+      [provider]: { ...existing, [group]: { ...existing[group], [fieldId]: visibility } },
     },
   };
 }
@@ -164,58 +214,41 @@ export function migrateFieldVisibility<T extends ProviderUsageEntry>(
   providers: T[],
   preferences: ProviderUsagePreferences,
 ): ProviderUsagePreferences {
-  const fieldVisibility: Record<string, Record<string, FieldVisibility>> = {};
+  const groupFieldVisibility = { ...preferences.groupFieldVisibility };
   for (const provider of providers) {
-    const visibility: Record<string, FieldVisibility> = {};
+    const visibility = { ...groupFieldVisibility[provider.provider] };
+    const legacy = preferences.fieldVisibility?.[provider.provider];
+    const compact = preferences.compactFields?.[provider.provider];
+    const hidden = preferences.hiddenFields?.[provider.provider];
     for (const group of FIELD_GROUPS) {
+      const fields = { ...visibility[group] };
       for (const field of provider[group] ?? []) {
-        visibility[field.id] = 'both';
+        const ids = [field.id, ...(field.legacyIds ?? [])];
+        fields[field.id] ??= ids.map((id) => visibility[group]?.[id] ?? legacy?.[id]).find((value) => value !== undefined)
+          ?? (hidden?.[group]?.some((id) => ids.includes(id)) ? 'hidden'
+            : compact && !compact.some((ref) => ref.group === group && ids.includes(ref.id)) ? 'detailed' : 'both');
       }
+      visibility[group] = fields;
     }
-    // Migrate legacy compactFields
-    const compact = (preferences as unknown as Record<string, Record<string, Array<{ id: string }>>>).compactFields;
-    if (compact?.[provider.provider]) {
-      const compactIds = new Set(compact[provider.provider].map((ref) => ref.id));
-      for (const group of FIELD_GROUPS) {
-        for (const field of provider[group] ?? []) {
-          if (!compactIds.has(field.id)) {
-            visibility[field.id] = 'detailed';
-          }
-        }
-      }
-    }
-    // Migrate legacy hiddenFields (after compact so hidden wins)
-    const hidden = (preferences as unknown as Record<string, Record<string, Record<string, string[]>>>).hiddenFields;
-    if (hidden?.[provider.provider]) {
-      for (const group of FIELD_GROUPS) {
-        for (const id of hidden[provider.provider][group] ?? []) {
-          visibility[id] = 'hidden';
-        }
-      }
-    }
-    fieldVisibility[provider.provider] = visibility;
+    groupFieldVisibility[provider.provider] = visibility;
   }
-  return { ...preferences, fieldVisibility };
+  return { ...preferences, groupFieldVisibility };
 }
 
 export function applyProviderUsagePreferences<T extends ProviderUsageEntry>(
   providers: T[],
   preferences: ProviderUsagePreferences,
 ): T[] {
-  if (!preferences.fieldVisibility) {
-    preferences = migrateFieldVisibility(providers, preferences);
-  }
+  preferences = migrateFieldVisibility(providers, preferences);
   const hiddenProviders = new Set(preferences.hiddenProviders);
   return orderProviderUsage(providers, preferences)
     .filter((provider) => !hiddenProviders.has(provider.provider))
     .map((provider) => {
-      const visibility = preferences.fieldVisibility?.[provider.provider];
-      if (!visibility) return provider;
       return {
         ...provider,
-        windows: provider.windows?.filter(({ id }) => visibility[id] !== 'hidden'),
-        balances: provider.balances?.filter(({ id }) => visibility[id] !== 'hidden'),
-        metrics: provider.metrics?.filter(({ id }) => visibility[id] !== 'hidden'),
+        windows: provider.windows?.filter(({ id }) => getFieldVisibility(preferences, provider.provider, 'windows', id) !== 'hidden'),
+        balances: provider.balances?.filter(({ id }) => getFieldVisibility(preferences, provider.provider, 'balances', id) !== 'hidden'),
+        metrics: provider.metrics?.filter(({ id }) => getFieldVisibility(preferences, provider.provider, 'metrics', id) !== 'hidden'),
       };
     });
 }
@@ -268,6 +301,13 @@ export function getProviderUsageGridColumns(
   columns: ProviderUsagePreferences['columns'],
 ): ProviderUsagePreferences['columns'] {
   return Math.max(1, Math.min(providerCount, columns)) as ProviderUsagePreferences['columns'];
+}
+
+export function getProviderUsageGridTailSpan(
+  providerCount: number,
+  columns: ProviderUsagePreferences['columns'],
+): ProviderUsagePreferences['columns'] {
+  return providerCount % columns === 1 ? columns : 1;
 }
 
 export function hasProviderUsageSelectionChanges(draft: string[], saved: string[]): boolean {

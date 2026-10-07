@@ -70,7 +70,8 @@ function mount(Panel) {
     },
   };
   return {
-    async flush() {
+    async flush(force = false) {
+      if (force) dirty = true;
       for (let round = 0; round < 20; round++) {
         if (dirty) {
           dirty = false; index = 0; effects = [];
@@ -83,6 +84,8 @@ function mount(Panel) {
       }
       assert.equal(dirty, false, 'the lifecycle harness must settle');
     },
+    elements: () => nodes(tree),
+    dialogElement: () => nodes(tree).find(node => node.type?.name === 'ProviderUsageCustomizeDialog'),
     dialog: () => nodes(tree).find(node => node.type?.name === 'ProviderUsageCustomizeDialog').props,
     customize: () => nodes(tree).find(node => node.type === 'button' && node.props['aria-haspopup'] === 'dialog').props.onClick(),
     cards: () => nodes(tree).filter(node => node.type?.name === 'ProviderCard').map(node => node.props.provider),
@@ -96,6 +99,72 @@ const usage = provider => ({ provider, available: true, updatedAt: '2026-10-06T0
 try {
   const { ProviderUsagePanel } = await server.ssrLoadModule('/src/components/overview/ProviderUsagePanel.tsx');
   mock.timers.enable({ apis: ['setTimeout'] });
+  storage.set('mission-control-provider-usage-preferences:v1', JSON.stringify({
+    hiddenFields: { a: { windows: ['old-primary', null], balances: 'malformed' } },
+    compactFields: { a: [null, { group: 'windows', id: 'old-primary' }, { group: 'invalid', id: 7 }] },
+    fieldVisibility: { a: { invalid: null, another: 'sometimes' } },
+  }));
+  globalThis.fetch = async url => ({ status: 200, ok: true, json: async () => String(url).includes('/catalog')
+    ? { available: true, providers: [descriptor('a')], selectedProviders: ['a'], selectionRevision: 'a'.repeat(64) }
+    : { success: true, available: true, providers: [{ ...usage('a'), windows: [{ ...usage('a').windows[0], legacyIds: ['old-primary'] }] }] } });
+  harness = mount(ProviderUsagePanel);
+  await harness.flush();
+  assert.equal(harness.dialog().preferences.groupFieldVisibility?.a?.windows?.primary, 'hidden', 'Panel must migrate loaded malformed legacy preferences after usage arrives');
+  assert.equal(JSON.parse(storage.get('mission-control-provider-usage-preferences:v1')).groupFieldVisibility.a.windows.primary, 'hidden', 'Panel must persist the migrated preference');
+  harness.unmount(); harness = null;
+  // Remount with saved group settings and newly discovered literal IDs / aliases.
+  const arrivingMetrics = [{ id: 'windows:primary', label: 'Literal metric', value: 2 }, { id: 'renamed', label: 'Alias metric', value: 3, legacyIds: ['windows:primary'] }];
+  globalThis.fetch = async url => ({ status: 200, ok: true, json: async () => String(url).includes('/catalog')
+    ? { available: true, providers: [descriptor('a')], selectedProviders: ['a'], selectionRevision: 'a'.repeat(64) }
+    : { success: true, available: true, providers: [{ ...usage('a'), metrics: arrivingMetrics }] } });
+  harness = mount(ProviderUsagePanel); await harness.flush();
+  assert.deepEqual(harness.cards()[0].windows, [], 'saved window remains hidden');
+  assert.deepEqual(harness.cards()[0].metrics.map(field => field.id), arrivingMetrics.map(field => field.id), 'new metrics must not inherit the window hide');
+  const savedGroups = JSON.parse(storage.get('mission-control-provider-usage-preferences:v1')).groupFieldVisibility.a;
+  assert.equal(savedGroups.windows.primary, 'hidden');
+  assert.equal(savedGroups.metrics['windows:primary'], 'detailed', 'legacy compact selection still applies independently');
+  assert.equal(savedGroups.metrics.renamed, 'detailed');
+  harness.unmount(); harness = null; storage.clear();
+  // Render the actual Customize child to test field controls, not source names.
+  {
+    globalThis.fetch = async url => ({ status: 200, ok: true, json: async () => String(url).includes('/catalog')
+      ? { available: true, providers: [descriptor('a')], selectedProviders: ['a'], selectionRevision: 'a'.repeat(64) }
+      : { success: true, available: true, providers: [{ ...usage('a'),
+        windows: [{ id: 'shared', label: 'Quota', usedPercent: 12 }],
+        balances: [{ id: 'shared', label: 'Balance', value: 5 }],
+        metrics: [{ id: 'shared', label: 'Spend', value: 2 }],
+      }] } });
+    harness = mount(ProviderUsagePanel); await harness.flush();
+    harness.customize(); await harness.flush();
+    const dialog = mount(() => {
+      const element = harness.dialogElement();
+      return element.type(element.props);
+    });
+    await dialog.flush();
+    dialog.elements().find(node => node.type === 'button' && node.props.children === 'provider.customize.display').props.onClick();
+    await dialog.flush();
+    const radios = () => dialog.elements().filter(node => node.type === 'input' && node.props.name?.startsWith('visibility-'));
+    assert.equal(new Set(radios().map(node => node.props.name)).size, 3, 'each group needs an independent native radio identity even with equal IDs');
+    radios().find(node => node.props.name === 'visibility-a-windows-shared' && !node.props.checked).props.onChange();
+    await harness.flush(); await dialog.flush(true);
+    assert.equal(harness.dialog().preferences.groupFieldVisibility.a.windows.shared, 'detailed');
+    assert.equal(harness.dialog().preferences.groupFieldVisibility.a.balances.shared, 'both');
+    assert.equal(harness.dialog().preferences.groupFieldVisibility.a.metrics.shared, 'both');
+    assert.equal(radios().filter(node => node.props.checked).length, 3);
+    dialog.unmount(); harness.unmount(); harness = null; storage.clear();
+  }
+  // Tail spans are calculated for the active CSS breakpoint, not the saved maximum.
+  for (const count of [1, 2, 3, 4, 5, 6, 7]) {
+    globalThis.fetch = async url => ({ status: 200, ok: true, json: async () => String(url).includes('/catalog')
+      ? { available: true, providers: Array.from({ length: count }, (_, i) => descriptor(`p${i}`)), selectedProviders: Array.from({ length: count }, (_, i) => `p${i}`), selectionRevision: 'a'.repeat(64) }
+      : { success: true, available: true, providers: Array.from({ length: count }, (_, i) => usage(`p${i}`)) } });
+    harness = mount(ProviderUsagePanel); await harness.flush();
+    const grid = harness.elements().find(node => node.props.className === 'provider-usage-grid gap-3');
+    assert.equal(grid.props.style?.['--provider-tail-span-2'], count % 2 === 1 ? 2 : 1, `${count} cards: two-column tail span`);
+    assert.equal(grid.props.style?.['--provider-tail-span-3'], count % 3 === 1 ? 3 : 1, `${count} cards: three-column tail span`);
+    assert.equal(grid.props['data-max-columns'], Math.min(count, 3));
+    harness.unmount(); harness = null; storage.clear();
+  }
   let manualReads = 0, finishManual;
   const catalogResponse = () => ({ status: 200, ok: true, json: async () => ({ available: true, providers: [descriptor('a')], selectedProviders: ['a'], selectionRevision: 'a'.repeat(64) }) });
   globalThis.fetch = async url => {
@@ -118,7 +187,7 @@ try {
   assert.equal(harness.hasText('provider.checkComplete'), true, 'manual check must acknowledge completion even when data is cached');
   assert.equal(harness.checkButton().disabled, false);
   harness.unmount(); harness = null;
-  for (const outcome of ['ready', 'provider-error', 'transport-error', 'expired']) {
+  for (const outcome of ['ready', 'provider-error', 'malformed-fields', 'unavailable-last-good', 'transport-error', 'expired']) {
     let reads = 0;
     globalThis.fetch = async url => {
       if (String(url).includes('/catalog')) return catalogResponse();
@@ -127,7 +196,9 @@ try {
       const provider = reads === 2 ? { ...usage('a'), refreshState: 'running', refreshStartedAt: new Date(Date.now() - 1_000).toISOString(), refreshDeadlineAt: new Date(Date.now() + 5_000).toISOString() }
         : reads === 3 && outcome === 'provider-error' ? { ...usage('a'), refreshState: 'failed', error: 'Collector failed' }
           : reads === 3 && outcome === 'expired' ? { ...usage('a'), refreshState: 'running', refreshStartedAt: new Date(Date.now() - 10_000).toISOString(), refreshDeadlineAt: new Date(Date.now() - 1_000).toISOString() }
-            : usage('a');
+            : reads === 3 && outcome === 'malformed-fields' ? { ...usage('a'), windows: [{ id: 'primary', label: 'Quota', usedPercent: 'broken' }] }
+              : reads === 3 && outcome === 'unavailable-last-good' ? { ...usage('a'), available: false, windows: [] }
+                : usage('a');
       return { status: 200, ok: true, json: async () => ({ success: true, available: true, providers: [provider] }) };
     };
     harness = mount(ProviderUsagePanel);
@@ -209,6 +280,46 @@ try {
       await harness.flush();
       assert.equal(harness.hasText('provider.loading'), false, 'a terminal initialization error must not restart loading on a later transient failure');
     }
+    harness.unmount(); harness = null;
+  }
+  // A draft belongs to the revision visible when Customize opened, not a later poll.
+  {
+    let selected = ['a'], revision = 'a'.repeat(64);
+    const writes = [];
+    globalThis.fetch = async (url, options = {}) => {
+      if (options.method === 'PUT') {
+        const body = JSON.parse(options.body); writes.push(body);
+        if (body.expectedRevision !== revision) return { status: 409, ok: false };
+        selected = body.selectedProviders; revision = 'c'.repeat(64);
+        return { status: 200, ok: true, json: async () => ({ selectedProviders: selected, selectionRevision: revision }) };
+      }
+      return { status: 200, ok: true, json: async () => String(url).includes('/catalog')
+        ? { available: true, providers: ['a', 'b', 'c'].map(descriptor), selectedProviders: selected, selectionRevision: revision }
+        : { success: true, available: true, providers: selected.map(usage) } };
+    };
+    harness = mount(ProviderUsagePanel); await harness.flush();
+    harness.customize(); await harness.flush();
+    harness.dialog().onToggle('b'); await harness.flush();
+    selected = ['c']; revision = 'b'.repeat(64); // Another client saves.
+    const poll = [...timers.entries()].find(([, timer]) => timer.delay === 60_000);
+    assert.ok(poll); timers.delete(poll[0]); poll[1].fn(); await harness.flush();
+    assert.deepEqual(harness.dialog().catalog.selectedProviders, ['c']);
+    assert.deepEqual(harness.dialog().draftSelection, ['a', 'b'], 'poll must not overwrite the open draft');
+    harness.dialog().onSave(); await harness.flush();
+    assert.equal(writes[0].expectedRevision, 'a'.repeat(64), 'old draft must retain its starting revision');
+    assert.deepEqual(selected, ['c'], 'a stale draft cannot overwrite the external save');
+    assert.ok(harness.dialog().error);
+    assert.equal(harness.dialog().open, true, 'conflict keeps Customize open with the draft and an error');
+    harness.dialog().onSave(); await harness.flush();
+    assert.equal(writes[1].expectedRevision, 'a'.repeat(64), 'retry must not attach a new revision to the old draft');
+    assert.deepEqual(selected, ['c']);
+    harness.dialog().onClose(); await harness.flush();
+    harness.customize(); await harness.flush();
+    assert.deepEqual(harness.dialog().draftSelection, ['c'], 'reopening explicitly starts a new draft');
+    harness.dialog().onToggle('b'); await harness.flush();
+    harness.dialog().onSave(); await harness.flush();
+    assert.equal(writes[2].expectedRevision, 'b'.repeat(64));
+    assert.deepEqual(selected, ['c', 'b']);
     harness.unmount(); harness = null;
   }
   for (const commitBeforeTimeout of [true, false]) {

@@ -52,11 +52,20 @@
   .provider-usage-grid[data-max-columns="3"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .provider-usage-grid[data-max-columns="2"] > article:last-child,
+  .provider-usage-grid[data-max-columns="3"] > article:last-child {
+    grid-column: span var(--provider-tail-span-2, 1);
+  }
 }
 
 @container provider-usage (min-width: 72rem) {
   .provider-usage-grid[data-max-columns="3"] {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .provider-usage-grid[data-max-columns="3"] > article:last-child {
+    grid-column: span var(--provider-tail-span-3, 1);
   }
 }
 
@@ -1368,11 +1377,6 @@ body.modal-open .route-page-scroll {
 .chat-stop {
   color: var(--color-warning);
   border-color: color-mix(in srgb, var(--color-warning) 35%, var(--color-border));
-}
-
-/* Expand last card when it's the only one in its row */
-.provider-usage-grid > article:last-child:nth-child(odd):nth-last-child(1) {
-  grid-column: 1 / -1;
 }
 
 .chat-transcript {

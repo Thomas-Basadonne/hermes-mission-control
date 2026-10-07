@@ -15,8 +15,8 @@ export function selectCompactFields<T extends { featured?: boolean }>(fields: re
 }
 
 import type { MissionControlProviderUsage } from './hermes-api';
-import { getProviderUsageFieldRole } from './provider-usage-semantics';
-import type { FieldVisibility } from './provider-usage-preferences';
+import { getProviderUsageFieldRole, type ProviderUsageFieldRole } from './provider-usage-semantics';
+import { getFieldVisibility, type ProviderUsagePreferences } from './provider-usage-preferences';
 
 const ROLE_PRIORITY: Record<string, number> = {
   spendable_balance: 100, limit_remaining: 95, spend_limit: 90, quota: 85,
@@ -27,7 +27,9 @@ const ROLE_PRIORITY: Record<string, number> = {
 interface PriorityField {
   id: string;
   label?: string;
-  role?: string;
+  role?: ProviderUsageFieldRole;
+  sectionLabel?: string;
+  kind?: string;
   featured?: boolean;
   value?: number | string | boolean | null;
   unit?: string;
@@ -36,7 +38,7 @@ interface PriorityField {
 
 function fieldPriority(group: string, field: PriorityField): number {
   if (field.featured) return 200;
-  const role = field.role ?? getProviderUsageFieldRole(group as 'windows' | 'balances' | 'metrics', { id: field.id, label: field.label ?? '' });
+  const role = field.role ?? getProviderUsageFieldRole(group as 'windows' | 'balances' | 'metrics', { ...field, label: field.label ?? '' });
   if (!role) return 5;
   const base = ROLE_PRIORITY[role] ?? 5;
   if ((role === 'credits' || role === 'spend') && typeof field.value === 'number' && field.value === 0) return base - 20;
@@ -45,17 +47,19 @@ function fieldPriority(group: string, field: PriorityField): number {
 
 export function selectProviderUsageSummary(
   provider: MissionControlProviderUsage,
-  visibility?: Record<string, FieldVisibility>,
+  preferences: Pick<ProviderUsagePreferences, 'fieldVisibility' | 'groupFieldVisibility'> = {},
 ): { visible: Array<{ group: 'windows' | 'balances' | 'metrics'; field: PriorityField }>; overflow: Array<{ group: 'windows' | 'balances' | 'metrics'; field: PriorityField }> } {
   const groups = ['windows', 'balances', 'metrics'] as const;
   const allFields = groups.flatMap((group) => {
     const fields = provider[group] ?? [];
-    return fields.map((field) => ({ group, field: field as unknown as PriorityField }));
+    return fields
+      .filter((field) => getFieldVisibility(preferences, provider.provider, group, field.id) !== 'hidden')
+      .map((field) => ({ group, field: field as unknown as PriorityField }));
   });
   const scored = allFields.map((item) => ({
     ...item,
     priority: fieldPriority(item.group, item.field),
-    isCompact: visibility?.[item.field.id] !== 'detailed',
+    isCompact: getFieldVisibility(preferences, provider.provider, item.group, item.field.id) !== 'detailed',
   }));
   const compactFields = scored.filter((item) => item.isCompact);
   const detailedOnly = scored.filter((item) => !item.isCompact);

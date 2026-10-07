@@ -101,6 +101,56 @@ try {
     assert.match(collapsed, /Total spendable/);
     assert.doesNotMatch(collapsed, /Credits remaining/);
   });
+  await test('compact visibility uses group-qualified IDs with unqualified backwards compatibility', () => {
+    const html = render({
+      windows: [{ id: 'shared', label: 'Window quota', usedPercent: 12 }],
+      balances: [{ id: 'shared', label: 'Cash balance', value: 5 }],
+      metrics: [{ id: 'shared', label: 'Hidden metric', value: 2 }],
+    }, { preferences: {
+      fieldVisibility: { 'future-cloud': { shared: 'detailed' } },
+      groupFieldVisibility: { 'future-cloud': { windows: { shared: 'both' }, metrics: { shared: 'hidden' } } },
+    } });
+    assert.match(summary(html), /Window quota/);
+    assert.doesNotMatch(summary(html), /Cash balance/);
+    assert.match(html, /Cash balance/);
+    assert.doesNotMatch(html, /Hidden metric/);
+  });
+  await test('summary resolves literal colon IDs separately from persisted group visibility', async () => {
+    const { normalizeProviderUsagePreferences, migrateFieldVisibility, setFieldVisibility, applyProviderUsagePreferences } = await server.ssrLoadModule('/src/lib/provider-usage-preferences.ts');
+    const provider = { ...base,
+      windows: [{ id: 'shared', label: 'Window quota', usedPercent: 12 }],
+      metrics: [{ id: 'windows:shared', label: 'Literal metric', value: 2 }, { id: 'renamed', legacyIds: ['windows:shared'], label: 'Alias metric', value: 3 }],
+    };
+    const legacy = normalizeProviderUsagePreferences({ fieldVisibility: { 'future-cloud': { 'windows:shared': 'hidden', shared: 'detailed' } } });
+    const oldHtml = render(provider, { preferences: legacy });
+    assert.match(oldHtml, /Window quota/, 'colon legacy keys must not hide a different window');
+    assert.doesNotMatch(summary(oldHtml), /Window quota|Literal metric/);
+
+    const initial = { ...provider, metrics: [] };
+    let preferences = migrateFieldVisibility([initial], normalizeProviderUsagePreferences({ hiddenFields: { 'future-cloud': { windows: ['shared'] } } }));
+    preferences = migrateFieldVisibility([provider], normalizeProviderUsagePreferences(JSON.parse(JSON.stringify(preferences))));
+    preferences = setFieldVisibility(preferences, 'future-cloud', 'metrics', 'windows:shared', 'detailed');
+    const html = render(applyProviderUsagePreferences([provider], preferences)[0], { preferences });
+    assert.match(summary(html), /Alias metric/, 'new metric aliases must not inherit window visibility');
+    assert.doesNotMatch(summary(html), /Window quota|Literal metric/);
+    assert.match(html, /Literal metric/, 'group-specific detailed setting stays in overflow');
+  });
+  await test('summary fallback ranks full semantic metadata without mistaking charts for balances', () => {
+    const fields = [
+      { id: 'chart', label: 'API key remaining', sectionLabel: 'API key', kind: 'chart', chart: { kind: 'line', points: [{ label: 'Day', value: 1 }] } },
+      ...Array.from({ length: 6 }, (_, i) => ({ id: `diagnostic-${i}`, label: `Diagnostic ${i}`, value: 'Ready' })),
+      { id: 'limit', label: 'API key limit', sectionLabel: 'API key', value: '$100' },
+      { id: 'remaining', label: 'API key remaining', sectionLabel: 'API key', value: '$90' },
+      { id: 'today', label: 'Today', sectionLabel: 'API key', value: '$2' },
+      { id: 'month', label: 'This month', sectionLabel: 'API key', value: '$10' },
+      { id: 'credits', label: 'Remaining', sectionLabel: 'Credits', value: '$50' },
+    ];
+    const html = render({ metrics: fields });
+    const collapsed = summary(html);
+    for (const id of ['limit', 'remaining', 'today', 'month', 'credits']) assert.match(collapsed, new RegExp(`data-field-id="${id}"`));
+    assert.doesNotMatch(collapsed, /data-field-id="chart"|Diagnostic/);
+    assert.match(html, /data-field-id="chart"/, 'chart remains available in overflow');
+  });
   await test('loading state shows when catalog is loading', async () => {
     const { getProviderUsagePanelState } = await server.ssrLoadModule('/src/lib/provider-usage-display.ts');
     assert.equal(getProviderUsagePanelState(null, false, true), 'loading');

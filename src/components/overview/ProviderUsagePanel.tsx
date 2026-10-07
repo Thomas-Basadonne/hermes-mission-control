@@ -2,7 +2,7 @@ import { selectProviderUsageSummary, formatProviderUsagePercent, getProviderUsag
 import { createProviderUsageSelectionController, isProviderUsageSelectionUncertain } from '../../lib/provider-usage-selection';
 import { getProviderUsageStatus, isProviderUsageRunning } from '../../lib/provider-usage-freshness';
 import { useI18n } from '../../lib/i18n';
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react';
 import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Cloud, RefreshCw, Search, SlidersHorizontal } from 'lucide-react';
 import { ProviderUsageMetricRow } from './ProviderUsageDetails';
 import { Card } from '../ui/Card';
@@ -36,6 +36,7 @@ import {
   DEFAULT_PROVIDER_USAGE_PREFERENCES,
   getProviderUsageCatalogRows,
   getProviderUsageGridColumns,
+  getProviderUsageGridTailSpan,
   getProviderUsageSelectionForDisplay,
   getVisibleProviderUsageCards,
   getCodexBarEnableCommand,
@@ -43,6 +44,7 @@ import {
   needsCodexBarSetupAlert,
   hasProviderUsageSelectionChanges,
   loadProviderUsagePreferences,
+  migrateFieldVisibility,
   moveProviderUsagePreference,
   saveProviderUsagePreferences,
   setProviderUsageProviderVisible,
@@ -178,7 +180,7 @@ export function ProviderCard({ provider, displayName, view = 'compact', locale, 
   const balances = (Array.isArray(provider.balances) ? provider.balances : []).filter((balance) => typeof balance.value === 'number');
   const metrics = Array.isArray(provider.metrics) ? provider.metrics : [];
   const windows = Array.isArray(provider.windows) ? provider.windows : [];
-  const summary = selectProviderUsageSummary(provider, preferences?.fieldVisibility?.[provider.provider]);
+  const summary = selectProviderUsageSummary(provider, preferences);
   const compactWindows = { visible: summary.visible.filter((item) => item.group === 'windows').map((item) => item.field as MissionControlProviderUsageWindow), overflow: summary.overflow.filter((item) => item.group === 'windows').map((item) => item.field as MissionControlProviderUsageWindow) };
   const compactBalances = { visible: summary.visible.filter((item) => item.group === 'balances').map((item) => item.field as MissionControlProviderUsageBalance), overflow: summary.overflow.filter((item) => item.group === 'balances').map((item) => item.field as MissionControlProviderUsageBalance) };
   const compactMetrics = { visible: summary.visible.filter((item) => item.group === 'metrics').map((item) => item.field as MissionControlProviderUsageMetric), overflow: summary.overflow.filter((item) => item.group === 'metrics').map((item) => item.field as MissionControlProviderUsageMetric) };
@@ -277,6 +279,7 @@ export function ProviderUsagePanel() {
   const [nowMs, setNowMs] = useState(Date.now);
   const [reconcilingSelection, setReconcilingSelection] = useState(false);
   const [snapshot, setSnapshot] = useState<MissionControlProviderUsageSnapshot | null>(null);
+  const snapshotRef = useRef<MissionControlProviderUsageSnapshot | null>(null);
   const [providerCatalog, setProviderCatalog] = useState<MissionControlProviderCatalogSnapshot | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
@@ -289,6 +292,7 @@ export function ProviderUsagePanel() {
   const [catalogRefreshKey, setCatalogRefreshKey] = useState(0);
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const [draftSelection, setDraftSelection] = useState<string[]>([]);
+  const [draftRevision, setDraftRevision] = useState<string | undefined>();
   const [providerSearch, setProviderSearch] = useState('');
   const [savingSelection, setSavingSelection] = useState(false);
   const [selectionError, setSelectionError] = useState<string | null>(null);
@@ -320,6 +324,11 @@ export function ProviderUsagePanel() {
     saveProviderUsagePreferences(preferences);
   }, [preferences]);
 
+  useEffect(() => {
+    if (snapshot?.providers.length) {
+      setPreferences((current) => migrateFieldVisibility(snapshot.providers, current));
+    }
+  }, [snapshot]);
 
   useEffect(() => {
     let cancelled = false;
@@ -339,6 +348,7 @@ export function ProviderUsagePanel() {
         setProviderCatalog((current) => catalog.available || !current?.available ? catalog : { ...current, error: catalog.error, refreshing: catalog.refreshing });
         if (reconciledSave) {
           setDraftSelection(catalog.selectedProviders);
+          setDraftRevision(catalog.selectionRevision);
           setSelectionError(null);
           setRefreshKey((key) => key + 1);
         }
@@ -379,17 +389,19 @@ export function ProviderUsagePanel() {
       (next) => {
         initialized = true;
         setUsageInitializing(false);
-        const running = next.providers.some((provider) => isProviderUsageRunning(provider, Date.now()));
+        const merged = mergeProviderUsageSnapshot(snapshotRef.current, next);
+        snapshotRef.current = merged;
+        setSnapshot(merged);
+        const running = merged.providers.some((provider) => isProviderUsageRunning(provider, Date.now()));
         if (manualCheckPending.current) {
           if (running) setManualCheck('collecting');
           else {
             manualCheckPending.current = false;
-            const failed = !next.available || Boolean(next.error)
-              || next.providers.some((provider) => provider.refreshState === 'failed' || provider.refreshState === 'running' || provider.dataState === 'error');
+            const failed = !next.available || !merged.available || Boolean(merged.error)
+              || merged.providers.some((provider) => provider.refreshState === 'failed' || provider.refreshState === 'running' || provider.dataState === 'error');
             setManualCheck(failed ? 'failed' : 'complete');
           }
         }
-        setSnapshot((current) => mergeProviderUsageSnapshot(current, next));
         setRefreshFailed(!next.available || Boolean(next.error));
         retry.success();
         nextPollDelay = running ? 1_500 : 60_000;
@@ -464,6 +476,7 @@ export function ProviderUsagePanel() {
 
   const openCustomize = () => {
     setDraftSelection(providerCatalog?.selectedProviders ?? []);
+    setDraftRevision(providerCatalog?.selectionRevision);
     setProviderSearch('');
     setSelectionError(null);
     setCustomizeOpen(true);
@@ -490,7 +503,7 @@ export function ProviderUsagePanel() {
   };
 
   const saveSelection = async () => {
-    if (!selectionController.current.beginSave(providerCatalog?.selectionRevision)) return;
+    if (!selectionController.current.beginSave(draftRevision)) return;
     catalogAbortRef.current?.abort();
     setCatalogLoading(false);
     const controller = new AbortController();
@@ -499,7 +512,7 @@ export function ProviderUsagePanel() {
     setSelectionError(null);
     let uncertain = false;
     try {
-      const result = await saveProviderUsageSelection(draftSelection, storedToken || undefined, controller.signal, providerCatalog?.selectionRevision);
+      const result = await saveProviderUsageSelection(draftSelection, storedToken || undefined, controller.signal, draftRevision);
       if (!mountedRef.current) return;
       setProviderCatalog((current) => current ? { ...current, selectedProviders: result.selectedProviders, selectionRevision: result.selectionRevision } : current);
       setCustomizeOpen(false);
@@ -602,7 +615,10 @@ export function ProviderUsagePanel() {
       ) : (
         <>
           <div className="provider-usage-grid-container p-3">
-            <div className="provider-usage-grid gap-3" data-max-columns={gridMaxColumns}>
+            <div className="provider-usage-grid gap-3" data-max-columns={gridMaxColumns} style={{
+              '--provider-tail-span-2': getProviderUsageGridTailSpan(visibleProviders.length, 2),
+              '--provider-tail-span-3': getProviderUsageGridTailSpan(visibleProviders.length, 3),
+            } as CSSProperties}>
               {visibleProviders.length > 0 ? visibleProviders.map((provider) => (
                 <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} view={preferences.view} locale={numberLocale} nowMs={nowMs} preferences={preferences} />
               )) : <p className="text-sm text-text-muted" role="status">{t('provider.noneSelected')}</p>}
@@ -622,7 +638,7 @@ export function ProviderUsagePanel() {
         draftSelection={draftSelection}
         filteredCatalogRows={filteredCatalogRows}
         search={providerSearch}
-        saving={savingSelection || reconcilingSelection || !providerCatalog?.selectionRevision}
+        saving={savingSelection || reconcilingSelection || !draftRevision}
         error={selectionError}
         onSearch={setProviderSearch}
         onToggle={toggleProvider}
@@ -907,7 +923,7 @@ function ProviderUsageCustomizeDialog({
                     <h3 className="mb-2 text-xs font-semibold text-text-muted">{t(label)}</h3>
                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       {fields.map((field) => {
-                        const visibility = getFieldVisibility(preferences, activeProvider.provider, field.id);
+                        const visibility = getFieldVisibility(preferences, activeProvider.provider, id, field.id);
                         return (
                           <div key={field.id} className="flex flex-col gap-1 rounded-lg border border-border-subtle px-3 py-2">
                             <span className="min-w-0 break-words text-sm text-text">
@@ -920,10 +936,10 @@ function ProviderUsageCustomizeDialog({
                                 <label key={v} className="inline-flex items-center gap-1 text-xs text-text-muted">
                                   <input
                                     type="radio"
-                                    name={`visibility-${activeProvider.provider}-${field.id}`}
+                                    name={`visibility-${activeProvider.provider}-${id}-${field.id}`}
                                     className="h-3 w-3 accent-accent"
                                     checked={visibility === v}
-                                    onChange={() => setPreferences((current) => setFieldVisibility(current, activeProvider.provider, field.id, v))}
+                                    onChange={() => setPreferences((current) => setFieldVisibility(current, activeProvider.provider, id, field.id, v))}
                                   />
                                   {t(`provider.visibility.${v}`)}
                                 </label>
