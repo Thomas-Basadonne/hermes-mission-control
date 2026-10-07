@@ -82,7 +82,8 @@
       "@tiptap/extension-highlight": "^3.30.5",
       "browserslist": "^4.28.7",
       "baseline-browser-mapping": "^2.11.0",
-      "shell-quote": "^1.9.0"
+      "shell-quote": "1.11.0",
+      "source-map-js": "1.2.2"
     }
   }
 }
