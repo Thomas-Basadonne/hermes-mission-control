@@ -8,6 +8,10 @@ Standalone operational dashboard for [Hermes](https://hermes-agent.nousresearch.
 
 Mission Control is a local-first operator dashboard for Hermes. It combines a React/Vite frontend with a small Python telemetry sidecar, and it is developed and released separately from Hermes.
 
+### Releases
+
+Mission Control uses [Semantic Versioning](https://semver.org/) in `package.json`. To publish a release, set its version to `MAJOR.MINOR.PATCH` (or a valid SemVer prerelease), merge that change, and push the matching `vMAJOR.MINOR.PATCH` tag. GitHub Actions runs CI first and creates the GitHub Release with generated notes only if the tag is valid SemVer and exactly matches `package.json`.
+
 **Tags:** `hermes` · `mission-control` · `tldraw` · `whiteboard` · `agentic-ui` · `operations-dashboard` · `telemetry` · `react` · `typescript` · `vite` · `tailwindcss` · `python` · `local-first` · `self-hosted`
 
 > **Satellite, not a fork.** Mission Control never modifies Hermes core files

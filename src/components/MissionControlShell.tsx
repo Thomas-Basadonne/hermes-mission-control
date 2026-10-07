@@ -28,10 +28,13 @@ import { clearNewChatParams } from '../lib/chat-session-params';
 import { recordReloadDiagnostic } from '../lib/reload-diagnostics';
 import { getRouteScroller, handleRouteScrollShortcut, scrollRouteToTop } from '../lib/route-scroll-shortcuts';
 import { Button } from './ui/Button';
+import packageJson from '../../package.json';
 import { PluginRegistry } from '../core/plugins/registry';
 import { NavStatusIndicator } from './NavStatusIndicator';
 import type { MCPluginNavItem } from '../core/plugins/types';
 import { resolveIcon } from '../lib/icons';
+
+const APP_VERSION = packageJson.version;
 
 type ShellProps = { registry: PluginRegistry | null; navItems?: MCPluginNavItem[] };
 
@@ -389,6 +392,13 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
               <span className="lock-label">{t('auth.lock')}</span>
             </Button>
           </div>
+          <span
+            className="sidebar-version"
+            aria-label={t('nav.version', { version: APP_VERSION })}
+            title={t('nav.version', { version: APP_VERSION })}
+          >
+            v{APP_VERSION}
+          </span>
         </aside>
 
         {sideOpen ? (
