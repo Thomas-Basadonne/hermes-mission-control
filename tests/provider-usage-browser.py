@@ -205,8 +205,8 @@ def main():
                                 rows.append([])
                             rows[-1].append(card)
                         if cards:
-                            capacity = (3 if measured['width'] >= 64 * measured['rootFont']
-                                        else 2 if measured['width'] >= 40 * measured['rootFont'] else 1)
+                            capacity = (3 if measured['width'] >= 40 * measured['rootFont']
+                                        else 2 if measured['width'] >= 26 * measured['rootFont'] else 1)
                             expected_rows = [min(capacity, len(cards) - start) for start in range(0, len(cards), capacity)]
                             assert [len(row) for row in rows] == expected_rows, measured
                         for row in rows:
@@ -250,13 +250,13 @@ def main():
                                     threshold = evaluate('''(() => {
                                         const container = document.querySelector('.provider-usage-cards');
                                         const root = document.getElementById('root');
-                                        return 40 * parseFloat(getComputedStyle(document.documentElement).fontSize)
+                                        return 26 * parseFloat(getComputedStyle(document.documentElement).fontSize)
                                             + root.getBoundingClientRect().width - container.getBoundingClientRect().width;
                                     })()''')
                                     for width, expected in ((threshold - 2, [1, 1, 1]), (threshold + 2, [2, 1])):
                                         evaluate(f"document.getElementById('root').style.width = '{width}px'")
                                         assert layout(labels) == expected
-                                    large_threshold = threshold + evaluate('24 * parseFloat(getComputedStyle(document.documentElement).fontSize)')
+                                    large_threshold = threshold + evaluate('14 * parseFloat(getComputedStyle(document.documentElement).fontSize)')
                                     for width, expected in ((large_threshold - 2, [2, 1]), (large_threshold + 2, [3])):
                                         evaluate(f"document.getElementById('root').style.width = '{width}px'")
                                         assert layout(labels) == expected
@@ -287,8 +287,8 @@ def main():
                         assert evaluate("!document.querySelectorAll('article')[1].innerText.includes('Session')")
                         check('generic future provider, tiny/overage, balances and uncapped card')
                         layout_matrix()
-                        assert layout(['Future Provider', 'OpenRouter', 'Nous Portal']) == [2, 1]
-                        screenshot('compact-1024'); check('1024px automatic wrap and no horizontal overflow')
+                        assert layout(['Future Provider', 'OpenRouter', 'Nous Portal']) == [3]
+                        screenshot('compact-1024'); check('1024px panel renders three columns without horizontal overflow')
                         click('.provider-fields-overflow summary')
                         assert evaluate("document.querySelector('[data-field-id=metric-7]').getClientRects().length > 0")
                         check('regular overflow accessible by real disclosure click')
