@@ -149,6 +149,14 @@ try {
     views.find(node => !node.props.checked).props.onChange();
     await harness.flush(); await dialog.flush(true);
     assert.equal(harness.dialog().preferences.view, 'detailed');
+    const diagnostics = () => dialog.elements().filter(node => node.type === 'input' && node.props.name === 'diagnostics-a');
+    assert.equal(diagnostics().length, 3, 'Display must expose three diagnostics visibility choices');
+    assert.equal(diagnostics().find(node => node.props.checked).props.value, 'both');
+    diagnostics().find(node => node.props.value === 'hidden').props.onChange();
+    await harness.flush(); await dialog.flush(true);
+    assert.equal(harness.dialog().preferences.diagnosticsVisibility.a, 'hidden');
+    assert.equal(JSON.parse(storage.get('mission-control-provider-usage-preferences:v1')).diagnosticsVisibility.a, 'hidden');
+    assert.equal(diagnostics().find(node => node.props.checked).props.value, 'hidden');
     const radios = () => dialog.elements().filter(node => node.type === 'input' && node.props.name?.startsWith('visibility-'));
     assert.equal(new Set(radios().map(node => node.props.name)).size, 3, 'each group needs an independent native radio identity even with equal IDs');
     radios().find(node => node.props.name === 'visibility-a-windows-shared' && !node.props.checked).props.onChange();

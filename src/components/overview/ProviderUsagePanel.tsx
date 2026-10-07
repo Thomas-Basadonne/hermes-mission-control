@@ -1,4 +1,4 @@
-import { selectProviderUsageSummary, formatProviderUsagePercent, getProviderUsagePanelState } from '../../lib/provider-usage-display';
+import { selectProviderUsageSummary, formatProviderUsagePercent, getProviderUsagePanelState, getProviderUsageDisplayWarnings } from '../../lib/provider-usage-display';
 import { createProviderUsageSelectionController, isProviderUsageSelectionUncertain, isProviderUsageSelectionConflict } from '../../lib/provider-usage-selection';
 import { getProviderUsageStatus, isProviderUsageRunning } from '../../lib/provider-usage-freshness';
 import { useI18n } from '../../lib/i18n';
@@ -164,13 +164,14 @@ function UsageGauge({
   );
 }
 
-export function ProviderCard({ provider, displayName, view = 'compact', locale, nowMs = Date.now(), preferences }: {
+export function ProviderCard({ provider, displayName, view = 'compact', locale, nowMs = Date.now(), preferences, displayWarnings = getProviderUsageDisplayWarnings(provider) }: {
   provider: MissionControlProviderUsage;
   displayName?: string;
   view?: ProviderUsageView;
   locale: string;
   nowMs?: number;
   preferences?: ProviderUsagePreferences;
+  displayWarnings?: string[];
 }) {
   const { t } = useI18n();
   const label = displayName ?? provider.provider;
@@ -190,13 +191,17 @@ export function ProviderCard({ provider, displayName, view = 'compact', locale, 
   const attempted = formatDate(provider.lastAttemptAt, locale);
   const nextRetry = Date.parse(provider.nextRetryAt ?? '') > nowMs ? formatDate(provider.nextRetryAt, locale) : null;
   const renews = formatRenews(provider.renewsAt, locale, t);
+  const diagnosticsVisibility = preferences?.diagnosticsVisibility?.[provider.provider] ?? 'both';
+  const showDiagnostics = diagnosticsVisibility === 'both' || (diagnosticsVisibility === 'detailed' && view === 'detailed');
+  const hasDiagnostics = Boolean(provider.source || updated || attempted || nextRetry || provider.dataConfidence || displayWarnings.length);
+  const hasCompactProvenance = Boolean(updated || (unavailable && nextRetry));
   const diagnostics = <div className="flex flex-col gap-1.5 text-xs text-text-subtle">
     {attempted ? <time dateTime={provider.lastAttemptAt ?? undefined}>{t('provider.lastAttempt', { time: attempted })}</time> : null}
     {nextRetry ? <time dateTime={provider.nextRetryAt ?? undefined}>{t('provider.nextRetry', { time: nextRetry })}</time> : null}
     {provider.dataConfidence ? <span>{t('provider.confidence')}: {provider.dataConfidence}</span> : null}
     {provider.source ? <span>{t('provider.source')}: {provider.source}</span> : null}
     {updated ? <time dateTime={provider.updatedAt ?? undefined}>{t('provider.lastSuccess', { time: updated })}</time> : null}
-    {provider.warnings?.length ? <p className="break-words text-warning">{t('provider.warning')}: {provider.warnings.join(', ')}</p> : null}
+    {displayWarnings.length && view === 'compact' ? <p className="break-words text-warning">{t('provider.warning')}: {displayWarnings.join(', ')}</p> : null}
   </div>;
 
   const renderFields = (fieldWindows: typeof windows, fieldBalances: typeof balances, fieldMetrics: typeof metrics, detailed: boolean) => (
@@ -238,7 +243,8 @@ export function ProviderCard({ provider, displayName, view = 'compact', locale, 
         </span>
       </header>
       {provider.error ? <p className="break-words rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-xs text-warning" role="status">{provider.error}</p> : null}
-      {provider.warnings?.length && view === 'compact' ? <p className="text-[11px] text-warning" role="status">{t('provider.partialData')}</p> : null}
+      {displayWarnings.length && view === 'compact' ? <p className="text-[11px] text-warning" role="status">{t('provider.partialData')}</p> : null}
+      {displayWarnings.length && view === 'detailed' ? <p className="break-words text-xs text-warning" role="status">{t('provider.warning')}: {displayWarnings.join(', ')}</p> : null}
       {unavailable && !provider.error ? (
         <p className="rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-sm text-text-muted" role="status" aria-live="polite">
           {state === 'no_data' ? t('provider.noData') : state === 'updating' ? t('provider.updating') : t('provider.unavailableShort')}
@@ -256,13 +262,13 @@ export function ProviderCard({ provider, displayName, view = 'compact', locale, 
           {!windows.length && !balances.length && !metrics.length ? <p className="text-sm text-text-muted">{t('provider.noFields')}</p> : null}
         </div>
       ) : null}
-      {provider.source || updated || attempted || nextRetry || provider.dataConfidence || provider.warnings?.length ? (
+      {(showDiagnostics && hasDiagnostics) || (view === 'compact' && hasCompactProvenance) ? (
         <footer className="flex flex-wrap justify-between gap-x-3 gap-y-1 border-t border-border-subtle pt-2 text-[11px] text-text-subtle">
           {view === 'detailed' ? diagnostics : <>
             {unavailable && nextRetry ? <time dateTime={provider.nextRetryAt ?? undefined}>{t('provider.nextRetry', { time: nextRetry })}</time>
               : updated ? <time dateTime={provider.updatedAt ?? undefined}>{t(stale ? 'provider.lastGoodData' : 'provider.lastUpdated', { time: updated })}</time>
               : null}
-            <details className="w-full min-w-0"><summary className="cursor-pointer text-accent">{t('provider.diagnostics')}</summary><div className="mt-2">{diagnostics}</div></details>
+            {showDiagnostics ? <details className="w-full min-w-0"><summary className="cursor-pointer text-accent">{t('provider.diagnostics')}</summary><div className="mt-2">{diagnostics}</div></details> : null}
           </>}
         </footer>
       ) : null}
@@ -675,7 +681,7 @@ export function ProviderUsagePanel() {
           <div className="p-3">
             <div className="provider-usage-cards">
               {visibleProviders.length > 0 ? visibleProviders.map((provider) => (
-                <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} view={preferences.view} locale={numberLocale} nowMs={nowMs} preferences={preferences} />
+                <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} view={preferences.view} locale={numberLocale} nowMs={nowMs} preferences={preferences} displayWarnings={getProviderUsageDisplayWarnings(snapshot?.providers.find((entry) => entry.provider === provider.provider) ?? provider)} />
               )) : <p className="w-full text-sm text-text-muted" role="status">{t('provider.noneSelected')}</p>}
             </div>
           </div>
@@ -969,6 +975,30 @@ function ProviderUsageCustomizeDialog({
                   {displayRows.map((row) => <option key={row.provider} value={row.provider}>{row.displayName}</option>)}
                 </select>
               </label>
+              {activeDisplayRow ? (
+                <fieldset className="mb-4 rounded-xl border border-border-subtle bg-surface-raised/30 p-3">
+                  <legend className="px-1 text-xs font-semibold text-text-muted">{t('provider.diagnostics')}</legend>
+                  <div className="flex flex-wrap gap-3">
+                    {(['both', 'detailed', 'hidden'] as const).map((visibility) => (
+                      <label key={visibility} className="inline-flex items-center gap-1.5 text-xs text-text-muted">
+                        <input
+                          type="radio"
+                          name={`diagnostics-${activeDisplayRow.provider}`}
+                          value={visibility}
+                          aria-label={`${t('provider.diagnostics')}: ${activeProviderLabel}: ${t(`provider.visibility.${visibility}`)}`}
+                          className="h-3 w-3 accent-accent"
+                          checked={(preferences.diagnosticsVisibility?.[activeDisplayRow.provider] ?? 'both') === visibility}
+                          onChange={() => setPreferences((current) => ({
+                            ...current,
+                            diagnosticsVisibility: { ...current.diagnosticsVisibility, [activeDisplayRow.provider]: visibility },
+                          }))}
+                        />
+                        {t(`provider.visibility.${visibility}`)}
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              ) : null}
               {!activeDisplayRow ? <p className="text-sm text-text-muted">{t('provider.selectProviderForFields')}</p> : null}
               {activeDisplayRow && !activeProvider ? <p className="text-sm text-text-muted">{t('provider.noConfigurableFields')}</p> : null}
               {activeProvider && !activeFields ? <p className="text-sm text-text-muted">{t('provider.noConfigurableFields')}</p> : null}

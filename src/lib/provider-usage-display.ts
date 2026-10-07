@@ -24,6 +24,18 @@ const ROLE_PRIORITY: Record<string, number> = {
   reset_credits: 60, credits: 50, spend: 45, balance_component: 10,
 };
 
+export function getProviderUsageDisplayWarnings(provider: MissionControlProviderUsage): string[] {
+  const warnings = provider.warnings ?? [];
+  const metrics = provider.metrics ?? [];
+  // Zero spend needs no currency formatting; do not suppress unknown currency
+  // for absent amounts or for a different nonzero monetary field.
+  const zeroCostOnly = metrics.some((metric) => metric.id === 'cost_used' && metric.value === 0)
+    && metrics.filter((metric) => metric.id.startsWith('cost_') && !metric.currency).every((metric) => metric.value === 0)
+    && (provider.balances ?? []).filter((balance) => !balance.currency && !balance.unit).every((balance) => balance.value === 0)
+    && (provider.windows ?? []).filter((window) => window.id === 'cost_budget' && !window.unit).every((window) => window.total === 0 && window.remaining === 0);
+  return zeroCostOnly ? warnings.filter((warning) => warning !== 'unknown_currency') : warnings;
+}
+
 interface PriorityField {
   id: string;
   label?: string;

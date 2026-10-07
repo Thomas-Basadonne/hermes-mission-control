@@ -286,6 +286,52 @@ def main():
                         assert evaluate("document.querySelector('article').innerText.includes('Workspace credits')")
                         assert evaluate("!document.querySelectorAll('article')[1].innerText.includes('Session')")
                         check('generic future provider, tiny/overage, balances and uncapped card')
+                        puts_before = evaluate("window.requests.filter(r => r.method === 'PUT').length")
+                        button('Customize'); wait("!!document.querySelector('[role=dialog]')", 'Customize did not open')
+                        button('Display')
+                        wait("!!document.querySelector('input[name=diagnostics-future-provider]')", 'Diagnostics visibility control missing')
+                        click('input[name=diagnostics-future-provider][value=hidden]')
+                        click('button[aria-label="Close dialog"]')
+                        diagnostics_shown = "[...document.querySelector('article').querySelectorAll('summary')].some(el => el.textContent === 'Diagnostics')"
+                        wait(f"!({diagnostics_shown})", 'Hidden diagnostics still rendered')
+                        assert evaluate("[...document.querySelectorAll('article')[1].querySelectorAll('summary')].some(el => el.textContent === 'Diagnostics')"), 'Other providers must keep their diagnostics'
+                        # Reload the real page to verify the preference survives normalization/migration.
+                        driver.call('Page.navigate', url=base)
+                        wait("document.querySelectorAll('.provider-usage-cards > article').length === 3", 'Reload did not restore cards')
+                        assert not evaluate(diagnostics_shown)
+                        assert evaluate("JSON.parse(localStorage.getItem('mission-control-provider-usage-preferences:v1')).diagnosticsVisibility['future-provider'] === 'hidden'")
+                        button('Customize'); wait("!!document.querySelector('[role=dialog]')", 'Customize failed after reload')
+                        button('Display'); wait("!!document.querySelector('input[name=diagnostics-future-provider]')", 'Display failed after reload')
+                        click('input[name=diagnostics-future-provider][value=detailed]')
+                        click('button[aria-label="Close dialog"]'); wait(f"!({diagnostics_shown})", 'Detailed-only diagnostics leaked into compact')
+                        button('Customize'); wait("!!document.querySelector('[role=dialog]')", 'Customize failed to reopen')
+                        button('Display'); wait("!!document.querySelector('input[name=provider-usage-view]')", 'View radios missing')
+                        click('input[name=provider-usage-view]:not(:checked)')
+                        click('button[aria-label="Close dialog"]')
+                        wait("document.querySelector('article').innerText.includes('Last attempt')", 'Detailed-only diagnostics missing in detailed view')
+                        button('Customize'); wait("!!document.querySelector('[role=dialog]')", 'Reset dialog failed')
+                        button('Reset preferences'); click('button[aria-label="Close dialog"]')
+                        wait(diagnostics_shown, 'Reset must restore visible diagnostics')
+                        assert evaluate("window.requests.filter(r => r.method === 'PUT').length") == puts_before, 'Display preferences must not write collection settings'
+                        check('diagnostics visibility: rendered controls, provider isolation, reload persistence, detailed-only, reset and no collection writes')
+                        currency_sample = json.loads(json.dumps(data['snapshot']))
+                        currency_provider = currency_sample['providers'][0]
+                        currency_provider.update(balances=[], metrics=[{'id': 'cost_used', 'label': 'Spend', 'value': 0}], warnings=['unknown_currency'])
+                        control({'snapshot': currency_sample})
+                        button('Check now')
+                        wait("document.querySelector('article [data-field-id=cost_used]')?.textContent.includes('0')", 'Zero spend fixture did not arrive')
+                        assert not evaluate("document.querySelector('article').innerText.includes('Some details are unavailable')"), 'Zero Spend must suppress the currency-only warning'
+                        currency_provider['metrics'][0]['value'] = 1
+                        control({'snapshot': currency_sample}); button('Check now')
+                        wait("document.querySelector('article').innerText.includes('Some details are unavailable')", 'Nonzero Spend must restore the warning')
+                        currency_provider['metrics'][0]['value'] = 0
+                        currency_provider['warnings'].append('balance_unavailable')
+                        control({'snapshot': currency_sample}); button('Check now')
+                        wait("document.querySelector('article [data-field-id=cost_used]')?.textContent.includes('0')", 'Other-warning fixture did not arrive')
+                        assert evaluate("document.querySelector('article').innerText.includes('Some details are unavailable')"), 'Other warnings must remain visible at zero Spend'
+                        control({'snapshot': data['snapshot']}); button('Check now')
+                        wait("!!document.querySelector('article [data-field-id=metric-1]')", 'Original fields failed to restore')
+                        check('currency warning label: zero Spend suppressed, nonzero Spend and other warnings preserved')
                         layout_matrix()
                         assert layout(['Future Provider', 'OpenRouter', 'Nous Portal']) == [3]
                         screenshot('compact-1024'); check('1024px panel renders three columns without horizontal overflow')

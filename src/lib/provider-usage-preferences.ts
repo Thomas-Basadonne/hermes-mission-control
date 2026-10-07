@@ -5,6 +5,7 @@ export type FieldVisibility = 'both' | 'detailed' | 'hidden';
 export type ProviderUsageView = 'compact' | 'detailed';
 export type ProviderUsagePreferences = {
   hiddenProviders: string[];
+  diagnosticsVisibility?: Record<string, FieldVisibility>;
   fieldVisibility?: Record<string, Record<string, FieldVisibility>>;
   // Legacy fieldVisibility keys are literal IDs; never parse their colons as namespaces.
   groupFieldVisibility?: Record<string, Partial<Record<ProviderUsageFieldGroup, Record<string, FieldVisibility>>>>;
@@ -131,12 +132,14 @@ export function normalizeProviderUsagePreferences(value: unknown): ProviderUsage
   }
 
   const candidate = value;
+  const diagnosticsVisibility = normalizeRecord(candidate.diagnosticsVisibility, normalizeVisibility);
   const hiddenFields = normalizeRecord(candidate.hiddenFields, normalizeHiddenFields);
   const compactFields = normalizeRecord(candidate.compactFields, normalizeCompactFields);
   const fieldVisibility = normalizeRecord(candidate.fieldVisibility, (fields) => normalizeRecord(fields, normalizeVisibility));
   const groupFieldVisibility = normalizeRecord(candidate.groupFieldVisibility, normalizeGroupedVisibility);
   return {
     hiddenProviders: uniqueStrings(candidate.hiddenProviders),
+    ...(diagnosticsVisibility !== undefined ? { diagnosticsVisibility } : {}),
     ...(hiddenFields !== undefined ? { hiddenFields } : {}),
     ...(compactFields !== undefined ? { compactFields } : {}),
     ...(fieldVisibility !== undefined ? { fieldVisibility } : {}),
