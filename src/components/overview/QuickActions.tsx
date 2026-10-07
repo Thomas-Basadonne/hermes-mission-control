@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react';
 import { useI18n } from '../../lib/i18n';
 import { RefreshCw, Rocket, Settings } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -18,8 +19,29 @@ export function QuickActions({
 }: QuickActionsProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const [restartConfirmationOpen, setRestartConfirmationOpen] = useState(false);
+  const [restartPending, setRestartPending] = useState(false);
+  const [restartResult, setRestartResult] = useState<'success' | 'error' | null>(null);
+  const restartInFlight = useRef(false);
   const refreshAction = gatewayActions.find((a) => a.id === 'refresh');
   const restartAction = gatewayActions.find((a) => a.id === 'restart-gateway');
+
+  const confirmRestart = async () => {
+    if (!restartAction || restartInFlight.current) return;
+    restartInFlight.current = true;
+    setRestartConfirmationOpen(false);
+    setRestartPending(true);
+    setRestartResult(null);
+    try {
+      await runGatewayAction(restartAction);
+      setRestartResult('success');
+    } catch {
+      setRestartResult('error');
+    } finally {
+      restartInFlight.current = false;
+      setRestartPending(false);
+    }
+  };
 
   return (
     <Card padding="none">
@@ -48,8 +70,9 @@ export function QuickActions({
             variant="secondary"
             size="sm"
             icon={<Rocket className="h-3.5 w-3.5" />}
-            loading={actionLoading === 'restart-gateway'}
-            onClick={() => void runGatewayAction(restartAction)}
+            loading={restartPending || actionLoading === 'restart-gateway'}
+            disabled={restartPending || actionLoading === 'restart-gateway'}
+            onClick={() => { setRestartResult(null); setRestartConfirmationOpen(true); }}
           >
             Restart gateway
           </Button>
@@ -66,6 +89,25 @@ export function QuickActions({
           Settings
         </Button>
       </div>
+
+      {restartResult && (
+        <p className={`px-3 pb-3 text-xs ${restartResult === 'success' ? 'text-positive' : 'text-negative'}`} role={restartResult === 'error' ? 'alert' : 'status'}>
+          {restartResult === 'success' ? t('overview.restartSuccess') : t('overview.restartError')}
+        </p>
+      )}
+
+      {restartConfirmationOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="alertdialog" aria-modal="true" aria-labelledby="restart-gateway-title" aria-describedby="restart-gateway-description">
+          <div className="w-full max-w-md rounded-lg border border-border bg-surface p-5 shadow-xl">
+            <h3 id="restart-gateway-title" className="text-base font-semibold text-text">{t('overview.restartConfirmTitle')}</h3>
+            <p id="restart-gateway-description" className="mt-2 text-sm text-text-muted">{t('overview.restartConfirmDescription')}</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setRestartConfirmationOpen(false)}>{t('common.cancel')}</Button>
+              <Button variant="danger" size="sm" onClick={() => void confirmRestart()}>{t('overview.restartConfirmAction')}</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }
