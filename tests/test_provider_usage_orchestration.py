@@ -391,6 +391,152 @@ class OrchestrationTests(unittest.TestCase):
         self.assertTrue(snapshots.refresh_provider_usage_snapshot(self.path, ("nous",), lambda due: called.append(due) or [good(value=42, observed=now + timedelta(seconds=151))], now=now + timedelta(seconds=151)))
         self.assertEqual(called, [("nous",)])
 
+    def test_get_reports_scheduled_refresh_before_and_after_lease_publication(self):
+        now = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+        old = now - timedelta(seconds=600)
+        for cache in ("empty", "stale", "new_selection"):
+            for phase in ("worker_start", "collector"):
+                with self.subTest(cache=cache, phase=phase):
+                    self.path.unlink(missing_ok=True)
+                    selected = ["nous"] if cache != "new_selection" else ["deepseek", "nous"]
+                    if cache != "empty":
+                        self.path.write_text(json.dumps({"providers": [
+                            good("nous" if cache == "stale" else "deepseek", observed=old if cache == "stale" else now,
+                                 source="portal-account" if cache == "stale" else "oauth+web")
+                        ]}))
+                    entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+                    workers, responses, calls, errors = [], [], [], []
+                    clock = [now]
+                    real_refresh = snapshots.refresh_provider_usage_snapshot
+                    real_schedule = snapshots.request_background_provider_usage_refresh
+
+                    def refresh(*args, **kwargs):
+                        if phase == "worker_start":
+                            entered.set()
+                            if not release.wait(5):
+                                raise RuntimeError("test release missing")
+                        return real_refresh(*args, **kwargs)
+
+                    def collector(due, catalog):
+                        calls.append((due, threading.get_ident()))
+                        if phase == "collector":
+                            entered.set()
+                            if not release.wait(5):
+                                raise RuntimeError("test release missing")
+                        return [good(provider, value=42, observed=clock[0]) for provider in due]
+
+                    def schedule(*args, **kwargs):
+                        worker = real_schedule(*args, **kwargs)
+                        if worker:
+                            workers.append(worker)
+                            if not entered.wait(3):
+                                raise RuntimeError("worker did not reach barrier")
+                        return worker
+
+                    def get():
+                        try:
+                            responses.append(telemetry.collect_provider_usage())
+                        except BaseException as exc:
+                            errors.append(exc)
+                        finally:
+                            returned.set()
+
+                    catalog = [{"provider": provider, "source": "codexbar", "enabled": True}
+                               for provider in selected]
+                    with (patch.object(telemetry, "provider_usage_catalog_snapshot", return_value={"available": True, "providers": catalog}),
+                          patch.object(telemetry, "selected_usage_providers", side_effect=lambda catalog: tuple(selected)),
+                          patch.object(telemetry, "provider_usage_snapshot_path", return_value=self.path),
+                          patch.object(telemetry, "collect_selected_usage", side_effect=collector),
+                          patch.object(telemetry, "request_background_provider_usage_refresh", side_effect=schedule),
+                          patch.object(snapshots, "refresh_provider_usage_snapshot", side_effect=refresh),
+                          patch.object(snapshots, "_now", side_effect=lambda value=None: value or clock[0]),
+                          patch.object(telemetry.subprocess, "run", side_effect=AssertionError("GET must not run provider commands"))):
+                        request = threading.Thread(target=get)
+                        request.start()
+                        try:
+                            self.assertTrue(returned.wait(2), "GET waited for provider collection/publication")
+                            self.assertEqual(errors, [])
+                            self.assertEqual(len(workers), 1)
+                            if phase == "worker_start":
+                                self.assertEqual(calls, [])
+                            # The scheduling response and subsequent polls must agree,
+                            # even before the worker has published its disk lease.
+                            responses.append(telemetry.collect_provider_usage())
+                            self.assertEqual(len(workers), 1, "poll started a duplicate writer")
+                            for response in responses:
+                                self.assertTrue(response["refreshing"])
+                                self.assertEqual([entry["provider"] for entry in response["providers"]], selected)
+                                for entry in response["providers"]:
+                                    if cache == "new_selection" and entry["provider"] == "deepseek":
+                                        self.assertEqual(entry["refreshState"], "cooldown", "only the newly selected due provider is running")
+                                    else:
+                                        self.assertEqual(entry["refreshState"], "running")
+                                        self.assertEqual(entry["refreshStartedAt"], now.isoformat())
+                                        self.assertEqual(entry["refreshDeadlineAt"], (now + timedelta(seconds=90)).isoformat())
+                                    if cache != "empty" and entry["provider"] == ("nous" if cache == "stale" else "deepseek"):
+                                        self.assertTrue(entry["available"])
+                                        self.assertEqual(entry["stale"], cache == "stale")
+                                        self.assertEqual(entry["updatedAt"], (old if cache == "stale" else now).isoformat())
+                                        self.assertEqual(entry["windows"][0]["usedPercent"], 37)
+                                    else:
+                                        self.assertFalse(entry["available"])
+                                        self.assertNotIn("error", entry, "pending collection is not a failed Check now")
+                            if phase == "worker_start":
+                                clock[0] = now + timedelta(seconds=91)
+                                expired = telemetry.collect_provider_usage()
+                                self.assertFalse(expired["refreshing"], "worker-start gap cannot extend the deadline forever")
+                                pending = next(entry for entry in expired["providers"] if entry["provider"] == "nous")
+                                self.assertEqual(pending["refreshState"], "failed")
+                                self.assertEqual(pending["nextRetryAt"], (now + timedelta(seconds=150)).isoformat())
+                                self.assertEqual(len(workers), 1, "expired scheduling view bypassed active writer")
+                        finally:
+                            release.set()
+                            request.join(3)
+                            for worker in workers:
+                                worker.join(3)
+                                self.assertFalse(worker.is_alive())
+                        self.assertEqual(len(calls), 1)
+                        self.assertEqual(calls[0][0], ("nous",))
+                        self.assertNotEqual(calls[0][1], request.ident, "collector ran in GET thread")
+                        complete = telemetry.collect_provider_usage()
+                        self.assertFalse(complete["refreshing"])
+                        self.assertEqual(len(workers), 1, "completion bypassed cooldown")
+                        for entry in complete["providers"]:
+                            self.assertEqual(entry["windows"][0]["usedPercent"], 37 if entry["provider"] == "deepseek" else 42)
+
+    def test_get_reports_no_running_refresh_when_collection_cannot_start(self):
+        now = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+        for reason in ("cooldown", "start", "constructor", "uncollectable"):
+            with self.subTest(reason=reason):
+                self.path.unlink(missing_ok=True)
+                if reason == "cooldown":
+                    self.path.write_text(json.dumps({"providers": [good(observed=now)]}))
+                selected = ("deepseek",) if reason == "uncollectable" else ("nous",)
+                with (patch.object(telemetry, "provider_usage_catalog_snapshot", return_value={
+                          "available": reason != "uncollectable", "providers": [{"provider": selected[0], "source": "codexbar", "enabled": True}]}),
+                      patch.object(telemetry, "selected_usage_providers", return_value=selected),
+                      patch.object(telemetry, "stored_usage_providers", return_value=selected),
+                      patch.object(telemetry, "provider_usage_snapshot_path", return_value=self.path),
+                      patch.object(snapshots, "_now", side_effect=lambda value=None: value or now),
+                      patch.object(telemetry, "collect_selected_usage", side_effect=AssertionError("nothing is collectable")) as collector,
+                      patch.object(telemetry.subprocess, "run", side_effect=AssertionError("GET must not run provider commands")),
+                      patch.object(snapshots.threading.Thread, "start", side_effect=RuntimeError("synthetic")) if reason == "start" else
+                      patch.object(snapshots.threading, "Thread", side_effect=RuntimeError("synthetic")) if reason == "constructor" else
+                      patch.object(nous, "fetch_nous_portal_usage", side_effect=AssertionError("must not read auth"))):
+                    response = telemetry.collect_provider_usage()
+                    self.assertFalse(response["refreshing"])
+                    entry = response["providers"][0]
+                    self.assertEqual(entry["refreshState"], "failed" if reason in ("start", "constructor") else
+                                     "cooldown" if reason == "cooldown" else "idle")
+                    if reason in ("start", "constructor"):
+                        self.assertEqual(entry["error"], "Provider refresh could not start.")
+                        self.assertEqual(entry["nextRetryAt"], (now + timedelta(seconds=60)).isoformat())
+                        retry = telemetry.collect_provider_usage()
+                        self.assertFalse(retry["refreshing"])
+                        self.assertEqual(retry["providers"][0]["nextRetryAt"], entry["nextRetryAt"])
+                    collector.assert_not_called()
+                    self.assertFalse(snapshots._REFRESH_ACTIVE)
+
     def test_get_returns_before_blocked_native_fetch_and_never_spawns_updater(self):
         entered, release, returned = threading.Event(), threading.Event(), threading.Event()
         requests = []

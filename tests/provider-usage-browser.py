@@ -31,6 +31,7 @@ def stamp(offset=0):
 
 
 def fixture():
+    revision = 'a' * 64
     common = {'available': True, 'dataState': 'ready', 'updatedAt': stamp(),
               'lastAttemptAt': stamp(), 'freshUntil': stamp(300), 'staleAfterSeconds': 300,
               'refreshState': 'idle', 'source': 'api', 'stale': False}
@@ -49,7 +50,7 @@ def fixture():
     return {'catalog': {'available': True, 'providers': [
                 {'provider': pid, 'displayName': label, 'enabled': True, 'defaultEnabled': True,
                  'source': 'mission-control' if pid == 'nous' else 'codexbar', 'selectable': True} for pid, label in ids],
-                'selectedProviders': [pid for pid, _ in ids]},
+                'selectedProviders': [pid for pid, _ in ids], 'selectionRevision': revision},
             'snapshot': {'schemaVersion': 2, 'success': True, 'available': True,
                          'updatedAt': stamp(), 'providers': [future, openrouter, nous]}}
 
@@ -345,6 +346,24 @@ def main():
                         click('button[aria-label="Close dialog"]')
                         wait("document.querySelectorAll('article[role=group]').length === 1", 'Reconciled selection was lost')
                         check('F5/F7: body-inclusive PUT timeout, reconciliation and no duplicate write')
+                        # A stale PUT must 409; the dialog must reconcile in place without a second write.
+                        button('Customize')
+                        button('Providers')
+                        click('input[aria-label="Collect usage: Nous Portal"]')
+                        evaluate("window.holdNext['/api/local/provider-usage/catalog']='staleCatalog'")
+                        button('Save selection')
+                        wait("document.querySelector('[role=dialog]')?.innerText.includes('Selection changed elsewhere')", 'Stale save did not surface a conflict', timeout=10)
+                        assert json.loads((runtime / 'selection.json').read_text())['selectedProviders'] == ['future-provider']
+                        evaluate('window.holds.staleCatalog()')
+                        wait("!document.querySelector('input[aria-label=\"Collect usage: Future Provider\"]')?.disabled", 'Conflict did not reconcile', timeout=10)
+                        click('button:has-text("Review changes")')
+                        wait("document.querySelector('[role=dialog]')?.innerText.includes('Collect usage: Future Provider')", 'Reconciled draft did not show the canonical selection')
+                        click('input[aria-label="Collect usage: OpenRouter"]')
+                        button('Save selection')
+                        wait("!document.querySelector('[role=dialog]')", 'Reviewed save did not close the dialog')
+                        assert json.loads((runtime / 'selection.json').read_text())['selectedProviders'] == ['future-provider', 'openrouter']
+                        wait("document.querySelectorAll('article[role=group]').length === 2", 'Reviewed selection did not render')
+                        check('P2: stale PUT 409, in-place reconciliation and reviewed save')
                         evaluate("window.holdNext['/api/local/provider-usage']='pendingUsage'")
                         button('Check now'); wait('!!window.holds.pendingUsage', 'Usage body was not held')
                         wait("[...document.querySelectorAll('button')].some(b=>b.textContent.trim()==='Check now'&&!b.disabled)", 'Usage body timeout kept refresh disabled', timeout=10)

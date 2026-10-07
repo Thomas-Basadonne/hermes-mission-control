@@ -529,6 +529,14 @@ export function ProviderUsagePanel() {
     }
   };
 
+  const reconcileSelectionConflict = () => {
+    if (!selectionController.current.canSave()) return;
+    setDraftSelection(providerCatalog?.selectedProviders ?? []);
+    setDraftRevision(providerCatalog?.selectionRevision);
+    setSelectionError(t('provider.selectionConflictResolved'));
+    setReconcilingSelection(false);
+  };
+
   const providerNames = new Map((providerCatalog?.providers ?? []).map((provider) => [provider.provider, provider.displayName]));
   const catalogRows = getProviderUsageCatalogRows(providerCatalog?.providers ?? [], draftSelection, preferences);
   const filteredCatalogRows = catalogRows.filter((provider) => {
@@ -634,6 +642,7 @@ export function ProviderUsagePanel() {
         search={providerSearch}
         saving={savingSelection || reconcilingSelection || !draftRevision}
         error={selectionError}
+        onReconcileSelection={reconcileSelectionConflict}
         onSearch={setProviderSearch}
         onToggle={toggleProvider}
         onRequestSetup={(name, command) => {
@@ -700,6 +709,7 @@ function ProviderUsageCustomizeDialog({
   onToggle,
   onRequestSetup,
   onSave,
+  onReconcileSelection,
 }: {
   open: boolean;
   onClose: () => void;
@@ -718,6 +728,7 @@ function ProviderUsageCustomizeDialog({
   onToggle: (provider: string) => void;
   onRequestSetup: (name: string, command: string | null) => void;
   onSave: () => void;
+  onReconcileSelection: () => void;
 }) {
   const { t } = useI18n();
   const providerCatalog = catalog ?? { available: false, providers: [], selectedProviders: [] };
@@ -758,6 +769,13 @@ function ProviderUsageCustomizeDialog({
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="text-xs text-text-subtle">{t('provider.selectedCount', { count: draftSelection.length })}</span>
+            {error === 'provider.selectionConflictResolved' ? (
+              <button
+                type="button"
+                onClick={onReconcileSelection}
+                className="text-xs font-medium text-accent underline decoration-border-subtle underline-offset-2 hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+              >{t('provider.reviewChanges')}</button>
+            ) : null}
             {selectionChanged ? (
               <button
                 type="button"

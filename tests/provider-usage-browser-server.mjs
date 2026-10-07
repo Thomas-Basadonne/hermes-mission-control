@@ -12,6 +12,7 @@ const require = createRequire(import.meta.url);
 const [fixtureFile, runtime, sourceArgument] = process.argv.slice(2);
 const root = resolve(sourceArgument || process.cwd());
 const state = JSON.parse(readFileSync(fixtureFile, 'utf8'));
+let currentRevision = state.catalog.selectionRevision;
 const requests = [];
 const entryId = '\0provider-browser-entry.tsx';
 const storeId = '\0provider-browser-store';
@@ -85,11 +86,14 @@ const server = createHttpServer(async (req, res) => {
     if (path === '/api/local/provider-usage') return json(200, state.snapshot);
     if (path === '/api/local/provider-usage/selection' && req.method === 'PUT') {
       let body = ''; for await (const chunk of req) body += chunk;
-      const { selectedProviders } = JSON.parse(body);
+      const { selectedProviders, expectedRevision } = JSON.parse(body);
       if (!Array.isArray(selectedProviders) || selectedProviders.some(id => !state.catalog.providers.some(p => p.provider === id))) return json(400, { error: 'Invalid selection' });
+      if (expectedRevision !== currentRevision) return json(409, { error: 'selection_conflict', selectionRevision: currentRevision });
+      currentRevision = 'b'.repeat(64);
       state.catalog.selectedProviders = selectedProviders;
-      writeFileSync(resolve(runtime, 'selection.json'), JSON.stringify({ selectedProviders }), { mode: 0o600 });
-      return json(200, { selectedProviders });
+      state.catalog.selectionRevision = currentRevision;
+      writeFileSync(resolve(runtime, 'selection.json'), JSON.stringify({ selectedProviders, selectionRevision: currentRevision }), { mode: 0o600 });
+      return json(200, { selectedProviders, selectionRevision: currentRevision });
     }
     return json(404, { error: 'Unknown fixture route' });
   }

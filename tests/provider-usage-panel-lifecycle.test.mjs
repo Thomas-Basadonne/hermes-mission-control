@@ -320,17 +320,19 @@ try {
     assert.equal(writes[0].expectedRevision, 'a'.repeat(64), 'old draft must retain its starting revision');
     assert.deepEqual(selected, ['c'], 'a stale draft cannot overwrite the external save');
     assert.ok(harness.dialog().error);
-    assert.equal(harness.dialog().open, true, 'conflict keeps Customize open with the draft and an error');
-    harness.dialog().onSave(); await harness.flush();
-    assert.equal(writes[1].expectedRevision, 'a'.repeat(64), 'retry must not attach a new revision to the old draft');
-    assert.deepEqual(selected, ['c']);
-    harness.dialog().onClose(); await harness.flush();
-    harness.customize(); await harness.flush();
-    assert.deepEqual(harness.dialog().draftSelection, ['c'], 'reopening explicitly starts a new draft');
+    assert.equal(harness.dialog().open, true, 'conflict keeps Customize open');
+    assert.deepEqual(harness.dialog().draftSelection, ['a', 'b'], 'conflict keeps the stale draft visible');
+    assert.equal(harness.dialog().error, 'provider.selectionSaveFailed', 'conflict shows a save error');
+    assert.equal(harness.dialog().saving, false);
+    assert.equal(writes.length, 1, 'reconciliation must never retry the stale write automatically');
+    harness.dialog().onReconcileSelection(); await harness.flush();
+    assert.deepEqual(harness.dialog().draftSelection, ['c'], 'conflict must reconcile to a fresh canonical draft in the same dialog');
+    assert.equal(harness.dialog().error, 'provider.selectionConflictResolved', 'discarding a stale draft must be explicit');
     harness.dialog().onToggle('b'); await harness.flush();
     harness.dialog().onSave(); await harness.flush();
-    assert.equal(writes[2].expectedRevision, 'b'.repeat(64));
+    assert.equal(writes[1].expectedRevision, 'b'.repeat(64));
     assert.deepEqual(selected, ['c', 'b']);
+    assert.equal(harness.dialog().open, false, 'reviewed choices save without closing and reopening after a conflict');
     harness.unmount(); harness = null;
   }
   for (const commitBeforeTimeout of [true, false]) {

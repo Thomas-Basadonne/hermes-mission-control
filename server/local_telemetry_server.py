@@ -617,13 +617,13 @@ def collect_provider_usage() -> Dict[str, Any]:
     catalog_available = catalog_snapshot.get("available") is True
     selected = selected_usage_providers(catalog) if catalog_available else stored_usage_providers()
     cache_path = provider_usage_snapshot_path()
-    snapshot = read_provider_usage_snapshot(cache_path, selected)
     collectable = selected if catalog_available else tuple(p for p in selected if p == "nous")
     request_background_provider_usage_refresh(
         cache_path, collectable, lambda due: collect_selected_usage(due, catalog),
         selection=lambda: selected_usage_providers(catalog) if catalog_available else stored_usage_providers(),
         clear_discovery_failure=catalog_available,
     )
+    snapshot = read_provider_usage_snapshot(cache_path, selected)
     snapshot["providers"] = [apply_provider_display_config(entry) for entry in snapshot["providers"]]
     snapshot["stale"] = any(entry.get("stale") for entry in snapshot["providers"])
     snapshot["refreshing"] = any(entry.get("refreshState") == "running" for entry in snapshot["providers"])

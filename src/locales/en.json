@@ -344,6 +344,8 @@
   "provider.checkComplete": "Check complete. Latest available data shown; provider collection limits still apply.",
   "provider.checkFailed": "Check could not complete fully. Showing available data; you can try again.",
   "provider.selectionReconcile": "Save outcome is uncertain. Checking the saved selection before another save.",
+  "provider.selectionConflictResolved": "Selection changed elsewhere. Your edits were discarded; review the current selection before saving.",
+  "provider.reviewChanges": "Review changes",
   "provider.showAllFields": "Show all fields ({count})",
   "provider.chartData": "Numeric data",
   "provider.workspaceBalance": "Workspace balance",

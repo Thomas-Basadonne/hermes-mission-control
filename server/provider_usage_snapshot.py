@@ -21,6 +21,7 @@ SOURCE_LIMITS = {
 
 _REFRESH_GUARD = threading.Lock()
 _REFRESH_ACTIVE = False
+_BACKGROUND_REFRESHES: dict[Path, tuple[datetime, tuple[str, ...]]] = {}
 _WRITE_FAILURES: dict[Path, tuple[datetime, tuple[str, ...]]] = {}
 
 
@@ -196,10 +197,12 @@ def read_provider_usage_snapshot(
     path: Path, providers: tuple[str, ...], *, now: datetime | None = None
 ) -> dict[str, Any]:
     """Return an immediate UI snapshot, filling missing entries with pending states."""
-    current = _now(now)
-    cached = _read_snapshot(path)
     with _REFRESH_GUARD:
+        # Pair the disk view with scheduling state before a worker can retire it.
+        cached = _read_snapshot(path)
         write_failure = _WRITE_FAILURES.get(path.resolve())
+        background = _BACKGROUND_REFRESHES.get(path.resolve())
+        current = _now(now)
     entries = {
         entry["provider"]: entry
         for entry in cached["providers"]
@@ -219,6 +222,18 @@ def read_provider_usage_snapshot(
         if write_failure and provider in write_failure[1]:
             entry = _merge_attempt(entry, unavailable_provider(provider, "cli", "Provider usage snapshot could not be written."),
                                    provider, write_failure[0].isoformat())
+        if background and provider in background[1]:
+            started, due = background
+            attempted = _parse_timestamp(entry.get("lastAttemptAt"))
+            # Bridge only the worker-start gap; a published attempt (including
+            # completion/failure/expiry) is authoritative over process-local state.
+            if attempted is None or attempted < started:
+                entry = dict(entry)
+                if entry.get("updatedAt") is None:
+                    entry.pop("error", None)
+                entry.update(lastAttemptAt=started.isoformat(), refreshState="running",
+                             refreshStartedAt=started.isoformat(),
+                             refreshDeadlineAt=(started + timedelta(seconds=min(1800, math.ceil(len(due) / 5) * 30 + 60))).isoformat())
         visible.append(_metadata(provider, entry, current, cached))
     result = {
         "schemaVersion": 2,
@@ -451,12 +466,11 @@ def request_background_provider_usage_refresh(
 ) -> threading.Thread | None:
     """Start at most one daemon refresh; API callers never wait for collection."""
     global _REFRESH_ACTIVE
-    if not providers_due_for_refresh(read_provider_usage_snapshot(path, providers), providers):
+    current = _now()
+    due = providers_due_for_refresh(read_provider_usage_snapshot(path, providers, now=current), providers, now=current)
+    if not due:
         return None
-    with _REFRESH_GUARD:
-        if _REFRESH_ACTIVE:
-            return None
-        _REFRESH_ACTIVE = True
+    key = path.resolve()
 
     def refresh() -> None:
         global _REFRESH_ACTIVE
@@ -468,16 +482,20 @@ def request_background_provider_usage_refresh(
         finally:
             with _REFRESH_GUARD:
                 _REFRESH_ACTIVE = False
+                _BACKGROUND_REFRESHES.pop(key, None)
 
-    try:
-        thread = threading.Thread(target=refresh, name="mc-provider-usage-refresh", daemon=True)
-        thread.start()
-    except RuntimeError:
-        with _REFRESH_GUARD:
-            _REFRESH_ACTIVE = False
+    with _REFRESH_GUARD:
+        if _REFRESH_ACTIVE:
+            return None
+        _REFRESH_ACTIVE = True
+        _BACKGROUND_REFRESHES[key] = (current, due)
         try:
-            record_provider_usage_refresh_failure(path, providers, "Provider refresh could not start.")
-        except OSError:
-            _remember_write_failure(path, providers)
-        return None
+            thread = threading.Thread(target=refresh, name="mc-provider-usage-refresh", daemon=True)
+            thread.start()
+        except RuntimeError:
+            _REFRESH_ACTIVE = False
+            _BACKGROUND_REFRESHES.pop(key, None)
+            thread = None
+    if thread is None:
+        record_provider_usage_refresh_failure(path, providers, "Provider refresh could not start.")
     return thread
