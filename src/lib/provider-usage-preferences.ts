@@ -11,7 +11,6 @@ export type ProviderUsagePreferences = {
   hiddenFields?: Record<string, Partial<Record<ProviderUsageFieldGroup, string[]>>>;
   compactFields?: Record<string, Array<{ group: ProviderUsageFieldGroup; id: string }>>;
   providerOrder: string[];
-  columns: 1 | 2 | 3;
   view: ProviderUsageView;
 };
 
@@ -69,7 +68,6 @@ export function isProviderUsageCollectionCheckboxDisabled({
 export const DEFAULT_PROVIDER_USAGE_PREFERENCES: ProviderUsagePreferences = {
   hiddenProviders: [],
   providerOrder: [],
-  columns: 3,
   view: 'compact',
 };
 
@@ -133,7 +131,6 @@ export function normalizeProviderUsagePreferences(value: unknown): ProviderUsage
   }
 
   const candidate = value;
-  const columns = candidate.columns === 1 || candidate.columns === 2 ? candidate.columns : 3;
   const hiddenFields = normalizeRecord(candidate.hiddenFields, normalizeHiddenFields);
   const compactFields = normalizeRecord(candidate.compactFields, normalizeCompactFields);
   const fieldVisibility = normalizeRecord(candidate.fieldVisibility, (fields) => normalizeRecord(fields, normalizeVisibility));
@@ -145,7 +142,6 @@ export function normalizeProviderUsagePreferences(value: unknown): ProviderUsage
     ...(fieldVisibility !== undefined ? { fieldVisibility } : {}),
     ...(groupFieldVisibility !== undefined ? { groupFieldVisibility } : {}),
     providerOrder: uniqueStrings(candidate.providerOrder),
-    columns,
     view: candidate.view === 'detailed' ? 'detailed' : 'compact',
   };
 }
@@ -294,20 +290,6 @@ export function getProviderUsageCatalogRows<T extends ProviderUsageCatalogEntry>
         canReorder: collectUsage && selected.size > 1,
       };
     });
-}
-
-export function getProviderUsageGridColumns(
-  providerCount: number,
-  columns: ProviderUsagePreferences['columns'],
-): ProviderUsagePreferences['columns'] {
-  return Math.max(1, Math.min(providerCount, columns)) as ProviderUsagePreferences['columns'];
-}
-
-export function getProviderUsageGridTailSpan(
-  providerCount: number,
-  columns: ProviderUsagePreferences['columns'],
-): ProviderUsagePreferences['columns'] {
-  return providerCount % columns === 1 ? columns : 1;
 }
 
 export function hasProviderUsageSelectionChanges(draft: string[], saved: string[]): boolean {

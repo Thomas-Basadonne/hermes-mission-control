@@ -173,6 +173,96 @@ def main():
                         target = evidence / (name + '.png')
                         driver.screenshot(str(target)); report['screenshots'].append(str(target))
 
+                    def layout(expected_order):
+                        measured = evaluate('''(() => {
+                            const container = document.querySelector('.provider-usage-cards');
+                            if (!container) throw new Error('Automatic card container missing');
+                            const rect = container.getBoundingClientRect();
+                            const style = getComputedStyle(container);
+                            return {left: rect.left, right: rect.right, width: rect.width,
+                                gap: parseFloat(style.columnGap), display: style.display, wrap: style.flexWrap,
+                                cards: [...container.querySelectorAll(':scope > article')].map(card => {
+                                    const r = card.getBoundingClientRect();
+                                    return {left: r.left, right: r.right, top: r.top, width: r.width,
+                                        basis: parseFloat(getComputedStyle(card).flexBasis),
+                                        overflow: card.scrollWidth > card.clientWidth + 1,
+                                        label: card.querySelector('h3').textContent};
+                                })};
+                        })()''')
+                        assert measured['display'] == 'flex' and measured['wrap'] == 'wrap', measured
+                        cards = measured['cards']
+                        assert [card['label'] for card in cards] == expected_order, measured
+                        rows = []
+                        for card in cards:
+                            assert not card['overflow'], card
+                            assert card['width'] > 0, card
+                            assert card['left'] >= measured['left'] - 1 and card['right'] <= measured['right'] + 1, card
+                            if not rows or abs(rows[-1][0]['top'] - card['top']) > 1:
+                                if rows:
+                                    assert card['top'] > rows[-1][0]['top'], measured
+                                rows.append([])
+                            rows[-1].append(card)
+                        if cards:
+                            capacity = max(1, int((measured['width'] + measured['gap'] + 0.01) / (cards[0]['basis'] + measured['gap'])))
+                            expected_rows = [min(capacity, len(cards) - start) for start in range(0, len(cards), capacity)]
+                            assert [len(row) for row in rows] == expected_rows, measured
+                        for row in rows:
+                            assert abs(row[0]['left'] - measured['left']) <= 1, measured
+                            assert abs(row[-1]['right'] - measured['right']) <= 1, 'Each row must fill the available width'
+                            for previous, current in zip(row, row[1:]):
+                                assert abs(current['left'] - previous['right'] - measured['gap']) <= 1, measured
+                                assert abs(current['width'] - previous['width']) <= 1, measured
+                        assert evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Horizontal page overflow'
+                        return [len(row) for row in rows]
+
+                    def layout_matrix():
+                        # Fixed viewport, changing the panel width: no viewport breakpoint can satisfy this test.
+                        driver.call('Emulation.setDeviceMetricsOverride', width=1800, height=1100, deviceScaleFactor=1, mobile=False)
+                        for view in ('compact', 'detailed'):
+                            for count in (0, 1, 2, 3, 4, 5, 7, 9):
+                                evaluate('window.unmountPanel()')
+                                wait("!document.querySelector('article')", 'Layout fixture did not unmount')
+                                sample = json.loads(json.dumps(data))
+                                sample['snapshot']['providers'] = [
+                                    {**json.loads(json.dumps(data['snapshot']['providers'][0])), 'provider': f'layout-{i}'} for i in range(count)]
+                                sample['catalog']['providers'] = [
+                                    {'provider': f'layout-{i}', 'displayName': f'Layout provider {i}', 'enabled': True,
+                                     'defaultEnabled': True, 'source': 'codexbar', 'selectable': True} for i in range(count)]
+                                sample['catalog']['selectedProviders'] = [f'layout-{i}' for i in range(count)]
+                                control(sample)
+                                order = list(reversed(sample['catalog']['selectedProviders']))
+                                preferences = {'view': view, 'providerOrder': order, 'columns': 1}
+                                evaluate(f"localStorage.setItem('mission-control-provider-usage-preferences:v1', {json.dumps(json.dumps(preferences))}); window.mountPanel()")
+                                wait(f"document.querySelectorAll('.provider-usage-cards > article').length === {count} && !!document.querySelector('.provider-usage-cards')", 'Layout fixture failed to mount')
+                                labels = [f'Layout provider {i}' for i in reversed(range(count))]
+                                wait(f"JSON.stringify([...document.querySelectorAll('.provider-usage-cards > article h3')].map(el => el.textContent)) === {json.dumps(json.dumps(labels))}", 'Catalog labels and saved order did not settle')
+                                for width in (320, 760, 1160, 1600):
+                                    evaluate(f"document.getElementById('root').style.width = '{width}px'")
+                                    rows = layout(labels)
+                                    report.setdefault('layouts', []).append({'view': view, 'count': count, 'panel_width': width, 'rows': rows})
+                                    if width == 1600 and count == 9:
+                                        assert rows[0] > 3, 'Automatic layout must not retain a three-column ceiling'
+                                if count == 3:
+                                    # Check either side of the first wrap threshold, using the measured root overhead.
+                                    threshold = evaluate('''(() => {
+                                        const container = document.querySelector('.provider-usage-cards');
+                                        const root = document.getElementById('root');
+                                        const card = container.querySelector('article');
+                                        return 2 * parseFloat(getComputedStyle(card).flexBasis) + parseFloat(getComputedStyle(container).columnGap)
+                                            + root.getBoundingClientRect().width - container.getBoundingClientRect().width;
+                                    })()''')
+                                    for width, expected in ((threshold - 2, [1, 1, 1]), (threshold + 2, [2, 1])):
+                                        evaluate(f"document.getElementById('root').style.width = '{width}px'")
+                                        assert layout(labels) == expected
+                                assert evaluate("!Object.hasOwn(JSON.parse(localStorage.getItem('mission-control-provider-usage-preferences:v1')), 'columns')")
+                        evaluate('window.unmountPanel(); localStorage.removeItem("mission-control-provider-usage-preferences:v1"); document.getElementById("root").style.removeProperty("width")')
+                        control(data)
+                        driver.call('Emulation.setDeviceMetricsOverride', width=1024, height=1100, deviceScaleFactor=1, mobile=False)
+                        evaluate('window.mountPanel()')
+                        wait("document.querySelectorAll('.provider-usage-cards > article').length === 3", 'Original fixture failed to remount')
+                        wait("!document.querySelector('button[aria-haspopup=dialog]')?.disabled", 'Restored catalog did not settle')
+                        check('automatic wrapping: container resize, incomplete rows, stable order, legacy preferences and no three-column ceiling')
+
                     driver.call('Emulation.setDeviceMetricsOverride', width=1024, height=1100, deviceScaleFactor=1, mobile=False)
                     driver.call('Page.navigate', url=base)
                     wait("document.querySelectorAll('article[role=group]').length === 3", 'Mounted cards failed to load')
@@ -186,9 +276,9 @@ def main():
                         assert evaluate("document.querySelector('article').innerText.includes('Workspace credits')")
                         assert evaluate("!document.querySelectorAll('article')[1].innerText.includes('Session')")
                         check('generic future provider, tiny/overage, balances and uncapped card')
-                        assert evaluate("getComputedStyle(document.querySelector('.provider-usage-grid')).gridTemplateColumns.split(' ').length === 2")
-                        assert evaluate("document.documentElement.scrollWidth <= innerWidth")
-                        screenshot('compact-1024'); check('1024px container grid and no horizontal overflow')
+                        layout_matrix()
+                        assert layout(['Future Provider', 'OpenRouter', 'Nous Portal']) == [2, 1]
+                        screenshot('compact-1024'); check('1024px automatic wrap and no horizontal overflow')
                         click('.provider-fields-overflow summary')
                         assert evaluate("document.querySelector('[data-field-id=metric-7]').getClientRects().length > 0")
                         check('regular overflow accessible by real disclosure click')
@@ -212,6 +302,7 @@ def main():
                         button('Customize')
                         button('Display')
 
+                        assert evaluate("!document.querySelector('input[name=provider-usage-columns]')"), 'Obsolete column setting remains visible'
                         radios = evaluate("[...document.querySelectorAll('input[name=provider-usage-view]')].map(el=>el.parentElement.innerText)")
                         assert len(radios) == 2
                         click('input[name=provider-usage-view]:not(:checked)')
@@ -261,8 +352,7 @@ def main():
                         evaluate('window.holds.pendingUsage()')
                         check('F5: stalled usage JSON recovers controls and retains data')
                         driver.call('Emulation.setDeviceMetricsOverride', width=480, height=1000, deviceScaleFactor=1, mobile=False)
-                        assert evaluate("getComputedStyle(document.querySelector('.provider-usage-grid')).gridTemplateColumns.split(' ').length === 1")
-                        assert evaluate('document.documentElement.scrollWidth <= innerWidth')
+                        assert layout(['Future Provider']) == [1]
                         screenshot('detailed-480'); check('480px wrapping and one-column layout')
                         evaluate('window.unmountPanel()')
                         count = evaluate('window.requests.length')

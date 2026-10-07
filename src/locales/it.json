@@ -296,8 +296,6 @@
   "provider.visibility.both": "Entrambe",
   "provider.visibility.detailed": "Dettagliata",
   "provider.visibility.hidden": "Nascosto",
-  "provider.layout": "Schede per riga",
-  "provider.columnsOption": "{count}",
   "provider.changesApplyImmediately": "Le preferenze di visualizzazione si salvano subito; la raccolta richiede Salva selezione.",
   "provider.collectWithMissionControl": "Raccogli con Mission Control",
   "provider.showOnOverview": "Mostra nella panoramica",

@@ -143,6 +143,12 @@ try {
     await dialog.flush();
     dialog.elements().find(node => node.type === 'button' && node.props.children === 'provider.customize.display').props.onClick();
     await dialog.flush();
+    assert.equal(dialog.elements().some(node => node.type === 'input' && node.props.name === 'provider-usage-columns'), false, 'Display must not expose an obsolete column setting');
+    const views = dialog.elements().filter(node => node.type === 'input' && node.props.name === 'provider-usage-view');
+    assert.equal(views.length, 2, 'compact and detailed view controls remain available');
+    views.find(node => !node.props.checked).props.onChange();
+    await harness.flush(); await dialog.flush(true);
+    assert.equal(harness.dialog().preferences.view, 'detailed');
     const radios = () => dialog.elements().filter(node => node.type === 'input' && node.props.name?.startsWith('visibility-'));
     assert.equal(new Set(radios().map(node => node.props.name)).size, 3, 'each group needs an independent native radio identity even with equal IDs');
     radios().find(node => node.props.name === 'visibility-a-windows-shared' && !node.props.checked).props.onChange();
@@ -153,16 +159,21 @@ try {
     assert.equal(radios().filter(node => node.props.checked).length, 3);
     dialog.unmount(); harness.unmount(); harness = null; storage.clear();
   }
-  // Tail spans are calculated for the active CSS breakpoint, not the saved maximum.
-  for (const count of [1, 2, 3, 4, 5, 6, 7]) {
+  // Lifecycle coverage only: actual wrapping is measured in the browser acceptance.
+  for (const count of [0, 1, 2, 3, 4, 5, 6, 7]) {
+    const order = Array.from({ length: count }, (_, i) => `p${count - i - 1}`);
+    storage.set('mission-control-provider-usage-preferences:v1', JSON.stringify({ providerOrder: order, columns: 1 }));
     globalThis.fetch = async url => ({ status: 200, ok: true, json: async () => String(url).includes('/catalog')
       ? { available: true, providers: Array.from({ length: count }, (_, i) => descriptor(`p${i}`)), selectedProviders: Array.from({ length: count }, (_, i) => `p${i}`), selectionRevision: 'a'.repeat(64) }
       : { success: true, available: true, providers: Array.from({ length: count }, (_, i) => usage(`p${i}`)) } });
     harness = mount(ProviderUsagePanel); await harness.flush();
-    const grid = harness.elements().find(node => node.props.className === 'provider-usage-grid gap-3');
-    assert.equal(grid.props.style?.['--provider-tail-span-2'], count % 2 === 1 ? 2 : 1, `${count} cards: two-column tail span`);
-    assert.equal(grid.props.style?.['--provider-tail-span-3'], count % 3 === 1 ? 3 : 1, `${count} cards: three-column tail span`);
-    assert.equal(grid.props['data-max-columns'], Math.min(count, 3));
+    const cards = harness.elements().find(node => node.props.className === 'provider-usage-cards gap-3');
+    assert.ok(cards, 'ready panels use the automatic card container');
+    assert.equal(cards.props.style, undefined, 'no JavaScript-calculated layout');
+    assert.equal(Object.hasOwn(cards.props, 'data-max-columns'), false);
+    assert.deepEqual(harness.cards().map(({ provider }) => provider), order, 'visible cards retain preference order');
+    assert.equal(harness.hasText('provider.noneSelected'), count === 0);
+    assert.equal(Object.hasOwn(JSON.parse(storage.get('mission-control-provider-usage-preferences:v1')), 'columns'), false, 'mount strips the obsolete preference');
     harness.unmount(); harness = null; storage.clear();
   }
   let manualReads = 0, finishManual;

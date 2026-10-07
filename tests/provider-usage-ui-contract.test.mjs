@@ -1,8 +1,18 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
+
+// Structural CSS contract only; geometry and overflow need browser acceptance.
+const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+const layoutRule = styles.match(/\.provider-usage-cards\s*\{([^}]+)\}/)?.[1] ?? '';
+const cardRule = styles.match(/\.provider-usage-cards\s*>\s*article\s*\{([^}]+)\}/)?.[1] ?? '';
+assert.match(layoutRule, /display:\s*flex\s*;/);
+assert.match(layoutRule, /flex-wrap:\s*wrap\s*;/);
+assert.match(cardRule, /flex:\s*1\s+1\s+22rem\s*;/);
+assert.match(cardRule, /min-width:\s*0\s*;/);
 
 const server = await createServer({
   configFile: false,

@@ -2,7 +2,7 @@ import { selectProviderUsageSummary, formatProviderUsagePercent, getProviderUsag
 import { createProviderUsageSelectionController, isProviderUsageSelectionUncertain } from '../../lib/provider-usage-selection';
 import { getProviderUsageStatus, isProviderUsageRunning } from '../../lib/provider-usage-freshness';
 import { useI18n } from '../../lib/i18n';
-import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Cloud, RefreshCw, Search, SlidersHorizontal } from 'lucide-react';
 import { ProviderUsageMetricRow } from './ProviderUsageDetails';
 import { Card } from '../ui/Card';
@@ -35,8 +35,6 @@ import {
 import {
   DEFAULT_PROVIDER_USAGE_PREFERENCES,
   getProviderUsageCatalogRows,
-  getProviderUsageGridColumns,
-  getProviderUsageGridTailSpan,
   getProviderUsageSelectionForDisplay,
   getVisibleProviderUsageCards,
   getCodexBarEnableCommand,
@@ -552,7 +550,6 @@ export function ProviderUsagePanel() {
     ),
     preferences,
   );
-  const gridMaxColumns = getProviderUsageGridColumns(visibleProviders.length, preferences.columns);
 
   return (
     <Card padding="none" role="region" aria-labelledby="provider-usage-title" aria-busy={usageRefreshInProgress}>
@@ -614,14 +611,11 @@ export function ProviderUsagePanel() {
         </div>
       ) : (
         <>
-          <div className="provider-usage-grid-container p-3">
-            <div className="provider-usage-grid gap-3" data-max-columns={gridMaxColumns} style={{
-              '--provider-tail-span-2': getProviderUsageGridTailSpan(visibleProviders.length, 2),
-              '--provider-tail-span-3': getProviderUsageGridTailSpan(visibleProviders.length, 3),
-            } as CSSProperties}>
+          <div className="p-3">
+            <div className="provider-usage-cards gap-3">
               {visibleProviders.length > 0 ? visibleProviders.map((provider) => (
                 <ProviderCard key={provider.provider} provider={provider} displayName={providerNames.get(provider.provider)} view={preferences.view} locale={numberLocale} nowMs={nowMs} preferences={preferences} />
-              )) : <p className="text-sm text-text-muted" role="status">{t('provider.noneSelected')}</p>}
+              )) : <p className="w-full text-sm text-text-muted" role="status">{t('provider.noneSelected')}</p>}
             </div>
           </div>
         </>
@@ -882,18 +876,6 @@ function ProviderUsageCustomizeDialog({
                 {(['compact', 'detailed'] as const).map((view) => <label key={view} className={`flex min-h-[4.5rem] cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors ${preferences.view === view ? 'border-accent/40 bg-accent/5' : 'border-border-subtle hover:bg-surface-hover'}`}>
                   <input className="mt-0.5 shrink-0" type="radio" name="provider-usage-view" checked={preferences.view === view} onChange={() => setPreferences((current) => ({ ...current, view }))} />
                   <span className="min-w-0"><span className="block text-sm font-medium text-text">{t(`provider.view.${view}`)}</span><span className="mt-0.5 block text-xs text-text-subtle">{t(`provider.view.${view}Help`)}</span></span>
-                </label>)}
-              </div>
-            </fieldset>
-            <fieldset className="min-w-0">
-              <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">{t('provider.layout')}</legend>
-              <div className="grid grid-cols-3 gap-2">
-                {([1, 2, 3] as const).map((columns) => <label key={columns} className={`relative flex min-h-[4.75rem] cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border px-2 py-2 transition-colors ${preferences.columns === columns ? 'border-accent/40 bg-accent/5 text-text' : 'border-border-subtle text-text-muted hover:bg-surface-hover'}`}>
-                  <input className="absolute left-3 top-3 accent-accent" type="radio" name="provider-usage-columns" checked={preferences.columns === columns} onChange={() => setPreferences((current) => ({ ...current, columns }))} />
-                  <span aria-hidden="true" className="flex h-5 w-12 gap-1">
-                    {Array.from({ length: columns }, (_, index) => <span key={index} className={`flex-1 rounded-sm border ${preferences.columns === columns ? 'border-accent/50 bg-accent/20' : 'border-border-subtle bg-surface-raised'}`} />)}
-                  </span>
-                  <span className="text-xs font-medium">{t('provider.columnsOption', { count: columns })}</span>
                 </label>)}
               </div>
             </fieldset>

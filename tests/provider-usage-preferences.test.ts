@@ -33,7 +33,6 @@ test('keeps collection, presentation, and overview eligibility separate for cata
     hiddenProviders: ['nous'],
     fieldVisibility: {},
     providerOrder: ['nous', 'codex'],
-    columns: 3 as const,
     view: 'compact' as const,
   };
   const catalog = [
@@ -65,7 +64,7 @@ test('catalog rows keep selected providers first, then enabled providers, and re
   ];
   const preferences = {
     hiddenProviders: [], fieldVisibility: {}, providerOrder: ['selected-ready', 'selected-disabled'],
-    columns: 3 as const, view: 'compact' as const,
+    view: 'compact' as const,
   };
 
   const rows = getProviderUsageCatalogRows(catalog, ['selected-disabled', 'selected-ready'], preferences);
@@ -101,31 +100,38 @@ test('keeps disabled CodexBar providers clickable for setup guidance, but not co
   }), true);
 });
 
-test('a single visible provider always gets a full-width one-column layout', async () => {
-  const preferences = await import('../src/lib/provider-usage-preferences.ts');
-  assert.equal(typeof preferences.getProviderUsageGridColumns, 'function');
-  assert.equal(preferences.getProviderUsageGridColumns?.(1, 3), 1);
-  assert.equal(preferences.getProviderUsageGridColumns?.(1, 2), 1);
-});
-
-test('uses no more grid columns than visible cards or the saved maximum', async () => {
-  const { getProviderUsageGridColumns } = await import('../src/lib/provider-usage-preferences.ts');
-  assert.equal(getProviderUsageGridColumns?.(2, 3), 2);
-  assert.equal(getProviderUsageGridColumns?.(3, 2), 2);
-  assert.equal(getProviderUsageGridColumns?.(3, 3), 3);
-});
-
-test('only a true singleton fills the last responsive grid row', async () => {
-  const preferences = await import('../src/lib/provider-usage-preferences.ts');
-  assert.equal(typeof preferences.getProviderUsageGridTailSpan, 'function');
-  for (const columns of [1, 2, 3] as const) {
-    for (let count = 1; count <= 9; count++) {
-      assert.equal(preferences.getProviderUsageGridTailSpan(count, columns), count % columns === 1 ? columns : 1, `${count} cards at ${columns} columns`);
-    }
+test('discards obsolete column preferences without resetting presentation or legacy field visibility', () => {
+  const providers = [
+    { provider: 'future', windows: [{ id: 'quota', legacyIds: ['old-quota'] }], balances: [{ id: 'cash' }], metrics: [{ id: 'spend' }] },
+    { provider: 'hidden', windows: [], balances: [], metrics: [] },
+  ];
+  for (const columns of [1, 2, 3, 0, 99, null, 'invalid', {}]) {
+    const legacy = {
+      columns,
+      hiddenProviders: ['hidden'], providerOrder: ['future', 'hidden'], view: 'detailed',
+      hiddenFields: { future: { windows: ['old-quota'] } },
+      compactFields: { future: [{ group: 'balances', id: 'cash' }] },
+      fieldVisibility: { future: { spend: 'detailed' } },
+      groupFieldVisibility: { future: { balances: { cash: 'both' } } },
+    };
+    const values = new Map([[PROVIDER_USAGE_PREFERENCES_KEY, JSON.stringify(legacy)]]);
+    const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+    const loaded = loadProviderUsagePreferences(storage);
+    assert.equal(Object.hasOwn(loaded, 'columns'), false, `obsolete value ${JSON.stringify(columns)}`);
+    const { columns: _obsolete, ...expected } = legacy;
+    assert.deepEqual(loaded, expected, 'all other valid preferences survive loading');
+    saveProviderUsagePreferences(loaded, storage); // Panel can save before usage arrives.
+    const migrated = migrateFieldVisibility(providers, loadProviderUsagePreferences(storage));
+    assert.equal(getFieldVisibility(migrated, 'future', 'windows', 'quota'), 'hidden');
+    assert.equal(getFieldVisibility(migrated, 'future', 'balances', 'cash'), 'both');
+    assert.equal(getFieldVisibility(migrated, 'future', 'metrics', 'spend'), 'detailed');
+    assert.deepEqual(getVisibleProviderUsageCards(providers, ['future', 'hidden'], migrated).map(({ provider }) => provider), ['future']);
+    saveProviderUsagePreferences(migrated, storage);
+    const persisted = JSON.parse(values.get(PROVIDER_USAGE_PREFERENCES_KEY)!);
+    assert.equal(Object.hasOwn(persisted, 'columns'), false);
+    assert.deepEqual(loadProviderUsagePreferences(storage), migrated);
+    assert.equal(Object.hasOwn(normalizeProviderUsagePreferences(null), 'columns'), false, 'defaults also have no column preference');
   }
-  assert.equal(preferences.getProviderUsageGridTailSpan(3, 3), 1, 'a full three-card row must not be split');
-  assert.equal(preferences.getProviderUsageGridTailSpan(4, 3), 3, 'an even-indexed singleton must span three columns');
-  assert.equal(preferences.getProviderUsageGridTailSpan(5, 3), 1, 'a two-card partial row must not span');
 });
 
 test('preserves a card preference while its collection draft is deselected', () => {
@@ -133,7 +139,6 @@ test('preserves a card preference while its collection draft is deselected', () 
     hiddenProviders: [],
     fieldVisibility: {},
     providerOrder: [],
-    columns: 3 as const,
     view: 'compact' as const,
   };
   const catalog = [{ provider: 'codex', displayName: 'Codex', enabled: true, selectable: true }];
@@ -170,7 +175,6 @@ test('persists normalized preferences without failing when browser storage is un
     hiddenProviders: ['codex', 'codex'],
     fieldVisibility: {},
     providerOrder: ['nous'],
-    columns: 2 as const,
     view: 'compact' as const,
   };
 
@@ -179,7 +183,6 @@ test('persists normalized preferences without failing when browser storage is un
     hiddenProviders: ['codex'],
     fieldVisibility: {},
     providerOrder: ['nous'],
-    columns: 2,
     view: 'compact',
   });
   assert.doesNotThrow(() => saveProviderUsagePreferences(preferences, {
@@ -318,7 +321,6 @@ test('migrateFieldVisibility converts hiddenFields and compactFields', () => {
     hiddenFields: { future: { windows: ['secondary'], balances: [], metrics: [] } },
     compactFields: { future: [{ group: 'windows', id: 'primary' }, { group: 'metrics', id: 'cost_used' }] },
     providerOrder: [],
-    columns: 3 as const,
     view: 'compact' as const,
   };
   const migrated = migrateFieldVisibility(providers, legacy);

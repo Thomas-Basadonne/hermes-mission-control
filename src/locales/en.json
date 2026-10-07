@@ -296,8 +296,6 @@
   "provider.visibility.both": "Both",
   "provider.visibility.detailed": "Detailed",
   "provider.visibility.hidden": "Hidden",
-  "provider.layout": "Cards per row",
-  "provider.columnsOption": "{count}",
   "provider.changesApplyImmediately": "Display preferences save immediately; collection changes need Save selection.",
   "provider.collectWithMissionControl": "Collect with Mission Control",
   "provider.showOnOverview": "Show on overview",
