@@ -7,7 +7,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/env.sh"
 load_mission_control_env
 
-# Provider usage is refreshed by the shared Python writer. It emits the same
-# provider-agnostic contract consumed by the telemetry sidecar; Nous is fetched
-# by telemetry itself from the already-authenticated Portal session.
+# This shared writer refreshes selected CodexBar and native Nous providers
+# through the same snapshot manager. Nous session refresh is delegated to Hermes.
 exec python3 "$SCRIPT_DIR/update-provider-usage.py"

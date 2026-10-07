@@ -238,24 +238,26 @@ the client), `/api/local/push/subscriptions` (store/list/delete), and
 
 ## Provider usage (CodexBar + Nous Portal)
 
-The **Provider usage** overview card shows live cloud limits and balances for Codex, Ollama Cloud, OpenRouter, and Nous Portal. CodexBar supplies the first three providers; the telemetry sidecar reads Nous Portal account data through the already-authenticated Hermes access token.
+The **Provider usage** overview card shows limits, balances, sanitized details, and charts for the providers selected in Mission Control. CodexBar supplies its dynamically discovered providers; a native adapter reads Nous Portal account data through the already-authenticated Hermes access token. Both sources share the writer, bounded worker pool, and persistent snapshot.
 
 ### Data flow
 
 ```
-CodexBar (codexbar usage --provider <p>)
-        │  --json --no-color
+CodexBar catalog (codexbar config providers --json)
+        │  sanitized metadata; cached for 5 minutes
         ▼
-provider-usage writer OR telemetry fallback
-        │  normalized → providers[]
-        ├──────────────────────────────┐
-        │                              │
-        ▼                              ▼
-CodexBar cache                 Nous Portal adapter
-~/.hermes/cache/               auth.json access_token
-mission-control-               GET /api/oauth/account
-provider-usage.json                   │
+Mission Control provider selection
+        │  one `usage --provider <id>` call per selected CodexBar provider
+        ▼
+CodexBar collector             Native Nous Portal adapter
+        │                      auth.json → GET /api/oauth/account
         └──────────────┬───────────────┘
+                       ▼
+Shared writer / asynchronous sidecar refresh (bounded pool)
+                       │ normalized → providers[]; per-source cooldowns
+                       ▼
+Shared snapshot: ~/.hermes/cache/mission-control-provider-usage.json
+                       │ atomic publication; last-good retention
                        ▼
 GET /api/local/provider-usage  (telemetry :8765)
                        │
@@ -263,17 +265,19 @@ GET /api/local/provider-usage  (telemetry :8765)
 src/components/overview/ProviderUsagePanel.tsx
 ```
 
-The frontend polls `loadProviderUsage()` every **60s** (`ProviderUsagePanel` `useEffect` + `setInterval`).
+The frontend polls `loadProviderUsage()` every **60s** while idle and every **1.5s** while the sidecar reports an active collection. The **Check now** action checks the current snapshot; provider queries run only when their source rate limits say they are due. A cache miss or stale snapshot schedules a background refresh; `GET /api/local/provider-usage` never runs CodexBar synchronously.
+
+Catalog discovery is also asynchronous: `GET /api/local/provider-usage/catalog` returns the last-known catalog (or the native Nous entry) and a `refreshing` flag immediately. The panel polls while discovery is active; after failure, **Try again** requests a new discovery with `?refresh=1`, bypassing the server's 30-second retry backoff.
 
 ### Local provider visibility
 
-Provider visibility is a local operator preference, not a provider implementation detail. Set an optional comma-separated allowlist in the external Mission Control environment file (`~/.hermes/mission-control.env`, or the file selected by `MISSION_CONTROL_ENV_FILE`):
+`MISSION_CONTROL_USAGE_PROVIDERS` is an optional **administrator ceiling**, not the user's provider selection. Set a comma-separated ID allowlist in the external Mission Control environment file (`~/.hermes/mission-control.env`, or the file selected by `MISSION_CONTROL_ENV_FILE`):
 
 ```bash
 MISSION_CONTROL_USAGE_PROVIDERS=codex,ollama,nous
 ```
 
-The example above hides OpenRouter. Unset or blank means all built-in providers (`codex`, `ollama`, `openrouter`, `nous`) are visible. The telemetry sidecar applies the allowlist both to CodexBar collection and to the `/api/local/provider-usage` response, so hidden providers are not rendered or fetched.
+The example above prevents OpenRouter from being selected or collected. Unset or blank imposes no administrator ceiling. On first run, Mission Control selects only the legacy providers (`codex`, `ollama`, `openrouter`, and native `nous`) that are currently collectable; newly discovered providers are not auto-selected or queried. Subsequent selections are stored in `mission-control-usage.json` and can be changed from **Providers** in the overview panel. CodexBar catalog entries that are disabled remain visible in the chooser but cannot be selected until enabled in CodexBar. Mission Control-native providers, such as Nous Portal, are listed separately. Browser-only display preferences (compact/detailed view, hidden cards/fields, and ordering) remain separate from this server-side collection selection. Cards automatically wrap to fit the panel's available width; there is no manual column setting. Cards on an incomplete final row expand to fill that row. Existing browser preferences remain readable, but the obsolete `columns` field is ignored and omitted from subsequent saves.
 
 Field presentation can be customized independently in `~/.hermes/mission-control-usage.json` (or the path set by `MISSION_CONTROL_USAGE_CONFIG_FILE`):
 
@@ -296,18 +300,18 @@ Field presentation can be customized independently in `~/.hermes/mission-control
 
 ### Data sources and cache behavior
 
-1. **CodexBar providers:** the telemetry server reads `~/.hermes/cache/mission-control-provider-usage.json` (`collect_provider_usage`). If the file is present and valid, it uses the cached CodexBar entries; otherwise it invokes CodexBar for `codex`, `ollama`, and `openrouter`.
-2. **Nous Portal:** the sidecar reads the current `providers.nous.access_token` from the active/profile-aware `auth.json` and performs a read-only `GET /api/oauth/account`. If the access token is expired, it delegates refresh to the existing `hermes portal info` command and then re-reads `auth.json`; the sidecar never implements the OAuth refresh exchange or rotates refresh tokens itself.
-3. **Provider-agnostic boundary:** every entry returned by `/api/local/provider-usage` exposes `windows`, `balances`, and `metrics`. The frontend does not depend on CodexBar's raw provider-specific fields.
+1. **CodexBar providers:** discovery runs `codexbar config providers --json` and caches sanitized catalog metadata for five minutes. The collector invokes CodexBar only for selected, enabled IDs, with at most five provider commands in flight; newly discovered or disabled providers are never activated automatically. The usage cache is `<Hermes cache>/mission-control-provider-usage.json`; refreshes run asynchronously and preserve last-known-good provider data on failure. Each provider's `updatedAt` and `lastAttemptAt` determine its freshness and retry eligibility; the snapshot-level `updatedAt` does not imply every provider is fresh.
+2. **Nous Portal:** the native collector reads the current `providers.nous.access_token` from the active/profile-aware `auth.json` and performs a read-only `GET /api/oauth/account`. If the access token is expired, it delegates refresh to the existing `hermes portal info` command and then re-reads `auth.json`; Mission Control never implements the OAuth refresh exchange or rotates refresh tokens itself. Nous participates in the same bounded pool and persistent snapshot as CodexBar providers, including when catalog discovery is unavailable.
+3. **Provider-agnostic boundary:** every entry returned by `/api/local/provider-usage` exposes `windows`, `balances`, and `metrics`. Known quota windows and balances are normalized explicitly. Generic detail rows preserve bounded, sanitized numeric, boolean, and string values, secondary values, structured progress, and validated bar/line charts. Identity fields, secret-like text, and raw provider JSON are not forwarded. Formatted money strings remain presentation text, not inferred numeric amounts. Common semantic roles use exact shared field IDs or section/label vocabulary, never provider-specific dispatch.
 
-The standalone cache writer is still useful for refreshing the CodexBar entries outside request time:
+The standalone cache writer refreshes selected CodexBar and native Nous entries outside request time:
 
 ```bash
 scripts/update-provider-usage.sh        # profile-aware writer
 scripts/local/update-provider-usage.sh  # compatibility wrapper
 ```
 
-These read `MISSION_CONTROL_CACHE_DIR` (defaulting to the resolved Hermes cache directory). A scheduler can run the writer every 60s so CodexBar data stays fresh without paying a CodexBar call per request. Nous data is fetched by the telemetry sidecar from the already-authenticated Portal session.
+Both the API reader and these writers resolve the same snapshot path from `MISSION_CONTROL_CACHE_DIR` (defaulting to the resolved Hermes cache directory). A scheduler can run the writer every 60s; per-source cooldowns still apply. Sidecar and standalone collection share a cross-process writer lock, and failures retain last-good data with explicit refresh diagnostics.
 
 ### Ollama requires the web source
 
@@ -344,9 +348,9 @@ Each provider is reduced to the same small, UI-safe contract:
 
 - `windows` contains quota/period usage such as CodexBar's session/weekly windows or Nous's monthly subscription allowance.
 - `balances` contains monetary or credit balances.
-- `metrics` contains provider counters such as Codex reset credits.
+- `metrics` contains provider counters, sanitized numeric/boolean/text detail rows, and bounded charts.
 - On error, `available` is `false`, the arrays remain present, and `error` carries a short (≤240 character) message.
-- Nous's `stale` flag is `true` only when the Portal request failed but a previous valid in-process snapshot is being served.
+- `stale` is evaluated per provider from source timestamps and refresh results; Nous also retains last-good data in the shared persistent snapshot.
 
 ### Gauges
 
@@ -356,7 +360,7 @@ Each provider is reduced to the same small, UI-safe contract:
 
 - **Nous Portal unavailable:** telemetry reads only the current `providers.nous.access_token` from the active Hermes `auth.json`. If it is expired, telemetry delegates the refresh to `hermes portal info`; it never implements or rotates the refresh token itself. Re-authenticate through Hermes (`hermes portal` / `hermes auth add nous`) if that delegated refresh fails.
 - **Nous endpoint changes:** the Portal account endpoint is currently used by Hermes but is not a public CodexBar usage contract. The adapter is isolated in `server/nous_portal_usage.py`; update that adapter and its fixture if Nous changes the response shape.
-- **Cache stale after a fix:** CodexBar entries are cache-first. Regenerate them with `scripts/update-provider-usage.sh`; Nous is fetched by the sidecar with its own 60-second in-process snapshot.
+- **Cache stale after a fix:** providers are cache-first. `scripts/update-provider-usage.sh` checks selected CodexBar and Nous entries through the shared snapshot manager; collection runs only when source cooldowns permit it.
 - **Ollama shows empty / `—`:** likely a Keychain denial. CodexBar's web source uses Chrome cookies; a macOS Keychain prompt denial triggers a **6h cooldown**. Refresh the cookie:
   ```bash
   codexbar cookie refresh --provider ollama --allow-keychain-prompt --json

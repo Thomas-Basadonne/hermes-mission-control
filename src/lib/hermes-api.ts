@@ -1406,6 +1406,17 @@ async function maybeFetchLocalJson<T>(
   }
 }
 
+async function putLocalJson<T>(path: string, payload: unknown, accessToken?: string): Promise<T> {
+  const response = await fetch(localApiUrl(path), {
+    method: 'PUT',
+    headers: { ...buildHeaders(accessToken), 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+  });
+  if (response.status === 401) throw new MissionControlAuthError();
+  return await parseResponse<T>(response, path.replace(/^\//, ''));
+}
+
 async function maybeFetchOfficialJson<T>(path: string, accessToken?: string): Promise<T | null> {
   try {
     return await fetchOfficialJson<T>(path, accessToken);
@@ -1504,71 +1515,332 @@ export async function loadSessionsUsage(accessToken?: string): Promise<MissionCo
   return fallbackUsage;
 }
 
-export type MissionControlProviderUsageWindow = {
-  id: string;
-  label: string;
-  usedPercent?: number;
-  resetsAt?: string;
-  windowMinutes?: number;
-  remaining?: number;
-  total?: number;
-  unit?: string;
-  featured?: boolean;
-};
+import { withProviderUsageDeadline, ProviderUsageHttpError } from './provider-usage-request';
+import { isProviderUsageFieldRole, type ProviderUsageFieldRole } from './provider-usage-semantics';
+export type { ProviderUsageFieldRole } from './provider-usage-semantics';
 
-export type MissionControlProviderUsageBalance = {
-  id: string;
-  label: string;
-  value?: number;
-  currency?: string;
-  unit?: string;
-  featured?: boolean;
-};
+export type ProviderUsageDataState = 'ready' | 'no_data' | 'error';
+export type ProviderUsageRefreshState = 'idle' | 'running' | 'cooldown' | 'failed';
+export interface ProviderUsageChart {
+  kind: 'bars' | 'line'; title?: string; unit?: string;
+  points: Array<{ label: string; value: number }>;
+}
+export interface ProviderUsageMetricExtra {
+  secondaryValue?: string; sectionLabel?: string; progress?: { used: number; total: number };
+  usageValue?: number; kind?: 'value' | 'timestamp' | 'chart'; currency?: string; chart?: ProviderUsageChart;
+}
+export interface ProviderUsageFieldExtra {
+  role?: ProviderUsageFieldRole; legacyIds?: string[]; updatedAt?: string | null; scope?: 'account' | 'workspace';
+}
+export interface ProviderUsageRefreshMetadata {
+  dataState?: ProviderUsageDataState; dataConfidence?: string; refreshState?: ProviderUsageRefreshState;
+  staleAfterSeconds?: number; freshUntil?: string | null; nextRetryAt?: string | null;
+  refreshStartedAt?: string | null; refreshDeadlineAt?: string | null; warnings?: string[];
+}
+export interface ProviderUsageWindowExtra {
+  resetDescription?: string; nextRegenPercent?: number; usageKnown?: boolean;
+}
+export interface MissionControlProviderUsageWindow extends ProviderUsageFieldExtra, ProviderUsageWindowExtra {
+  id: string; label: string; usedPercent?: number; resetsAt?: string; windowMinutes?: number;
+  remaining?: number; total?: number; unit?: string; featured?: boolean;
+}
+export interface MissionControlProviderUsageBalance extends ProviderUsageFieldExtra {
+  id: string; label: string; value?: number; currency?: string; unit?: string; featured?: boolean;
+}
+export interface MissionControlProviderUsageMetric extends ProviderUsageFieldExtra, ProviderUsageMetricExtra {
+  id: string; label: string; value?: number | string | boolean | null; unit?: string; featured?: boolean;
+}
+export interface MissionControlProviderUsage extends ProviderUsageRefreshMetadata {
+  /** Frontend validation failures, distinct from upstream warnings for omitted optional fields. */
+  malformedFields?: Partial<Record<'windows' | 'balances' | 'metrics', string[]>>;
+  provider: string; available: boolean; source?: string; updatedAt?: string | null;
+  lastAttemptAt?: string | null; stale?: boolean; error?: string; plan?: string | null; renewsAt?: string | null;
+  windows: MissionControlProviderUsageWindow[]; balances: MissionControlProviderUsageBalance[]; metrics: MissionControlProviderUsageMetric[];
+}
+export interface MissionControlProviderUsageSnapshot {
+  schemaVersion?: number; success: boolean; available: boolean; updatedAt?: string; stale?: boolean;
+  refreshing?: boolean; error?: string; warnings?: string[]; providers: MissionControlProviderUsage[];
+}
 
-export type MissionControlProviderUsageMetric = {
-  id: string;
-  label: string;
-  value?: number | string | boolean | null;
-  unit?: string;
-  featured?: boolean;
-};
-
-export type MissionControlProviderUsage = {
+export type MissionControlProviderCatalogEntry = {
   provider: string;
+  displayName: string;
+  enabled: boolean;
+  defaultEnabled: boolean;
+  source: 'codexbar' | 'mission-control';
+  selectable: boolean;
+};
+
+export type MissionControlProviderCatalogSnapshot = {
   available: boolean;
-  source?: string;
-  updatedAt?: string | null;
   stale?: boolean;
+  refreshing?: boolean;
   error?: string;
-  plan?: string | null;
-  status?: string;
-  renewsAt?: string | null;
-  windows: MissionControlProviderUsageWindow[];
-  balances: MissionControlProviderUsageBalance[];
-  metrics: MissionControlProviderUsageMetric[];
-  pace?: Record<string, unknown> | null;
+  providers: MissionControlProviderCatalogEntry[];
+  selectedProviders: string[];
+  selectionRevision?: string;
 };
 
-export type MissionControlProviderUsageSnapshot = {
-  schemaVersion?: number;
-  success: boolean;
-  available: boolean;
-  updatedAt?: string;
-  providers: MissionControlProviderUsage[];
-};
+export function normalizeProviderUsageCatalog(input: unknown): MissionControlProviderCatalogSnapshot | null {
+  if (!isRecord(input)
+    || typeof input.available !== 'boolean'
+    || !Array.isArray(input.providers)
+    || !Array.isArray(input.selectedProviders)
+    || !input.selectedProviders.every((provider) => typeof provider === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider))
+    || ('stale' in input && typeof input.stale !== 'boolean')
+    || ('refreshing' in input && typeof input.refreshing !== 'boolean')
+    || ('selectionRevision' in input && (typeof input.selectionRevision !== 'string' || !/^[0-9a-f]{64}$/.test(input.selectionRevision)))
+    || ('error' in input && typeof input.error !== 'string')) return null;
 
-const fallbackProviderUsage: MissionControlProviderUsageSnapshot = {
-  success: false,
-  available: false,
-  providers: [],
-};
+  const seenProviders = new Set<string>();
+  const providers: MissionControlProviderCatalogEntry[] = [];
+  for (const item of input.providers) {
+    if (!isRecord(item)
+      || typeof item.provider !== 'string'
+      || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(item.provider)
+      || typeof item.displayName !== 'string'
+      || !item.displayName.trim()
+      || typeof item.enabled !== 'boolean'
+      || typeof item.defaultEnabled !== 'boolean'
+      || (item.source !== 'codexbar' && item.source !== 'mission-control')
+      || typeof item.selectable !== 'boolean'
+      || seenProviders.has(item.provider)) return null;
+    const provider = item.provider;
+    seenProviders.add(provider);
+    providers.push({
+      provider,
+      displayName: item.displayName.trim(),
+      enabled: item.enabled,
+      defaultEnabled: item.defaultEnabled,
+      source: item.source,
+      selectable: item.selectable,
+    });
+  }
 
-export async function loadProviderUsage(accessToken?: string): Promise<MissionControlProviderUsageSnapshot> {
-  try {
-    const { payload: local } = await maybeFetchLocalJson<MissionControlProviderUsageSnapshot>('/provider-usage', accessToken);
-    if (local && local.available) return local;
-  } catch { /* provider usage is an optional overview panel */ }
-  return fallbackProviderUsage;
+  const selectedProviders = [...new Set(input.selectedProviders as string[])];
+  if (selectedProviders.some((provider) => !seenProviders.has(provider))) return null;
+
+  return {
+    available: input.available,
+    ...(readBoolean(input.stale) ? { stale: true } : {}),
+    ...(readBoolean(input.refreshing) ? { refreshing: true } : {}),
+    ...(readString(input.error) ? { error: readString(input.error) } : {}),
+    providers,
+    selectedProviders,
+    ...(typeof input.selectionRevision === 'string' ? { selectionRevision: input.selectionRevision } : {}),
+  };
+}
+
+export function normalizeProviderUsageSelection(input: unknown): { selectedProviders: string[]; selectionRevision?: string } | null {
+  if (!isRecord(input) || !Array.isArray(input.selectedProviders)
+    || !input.selectedProviders.every((provider) => typeof provider === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider))
+    || ('selectionRevision' in input && (typeof input.selectionRevision !== 'string' || !/^[0-9a-f]{64}$/.test(input.selectionRevision)))) {
+    return null;
+  }
+  return { selectedProviders: [...new Set(input.selectedProviders as string[])],
+    ...(typeof input.selectionRevision === 'string' ? { selectionRevision: input.selectionRevision } : {}) };
+}
+
+async function fetchProviderUsageJson(path: string, accessToken?: string, signal?: AbortSignal, payload?: unknown): Promise<unknown> {
+  return withProviderUsageDeadline(async (boundedSignal) => {
+    const response = await fetch(localApiUrl(path), {
+      method: payload === undefined ? 'GET' : 'PUT',
+      headers: payload === undefined ? buildHeaders(accessToken) : { ...buildHeaders(accessToken), 'Content-Type': 'application/json' },
+      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+      cache: 'no-store', signal: boundedSignal,
+    });
+    if (response.status === 401) throw new MissionControlAuthError();
+    if (!response.ok) throw new ProviderUsageHttpError(response.status);
+    return await response.json();
+  }, signal);
+}
+
+export async function loadProviderUsageCatalog(
+  accessToken?: string,
+  forceRefresh = false,
+  signal?: AbortSignal,
+): Promise<MissionControlProviderCatalogSnapshot> {
+  const path = forceRefresh ? '/provider-usage/catalog?refresh=1' : '/provider-usage/catalog';
+  const local = await fetchProviderUsageJson(path, accessToken, signal);
+  const catalog = normalizeProviderUsageCatalog(local);
+  if (!catalog) throw new Error('Mission Control provider usage catalog payload is malformed');
+  return catalog;
+}
+
+export async function saveProviderUsageSelection(
+  selectedProviders: string[],
+  accessToken?: string,
+  signal?: AbortSignal,
+  expectedRevision?: string,
+): Promise<{ selectedProviders: string[]; selectionRevision?: string }> {
+  if (!expectedRevision || !/^[0-9a-f]{64}$/.test(expectedRevision)) throw new ProviderUsageHttpError(428);
+  const payload = await fetchProviderUsageJson('/provider-usage/selection', accessToken, signal, { selectedProviders, expectedRevision });
+  const selection = normalizeProviderUsageSelection(payload);
+  if (!selection?.selectionRevision) {
+    throw new Error('Mission Control provider usage selection payload is malformed');
+  }
+  return selection;
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string';
+}
+
+function isOptionalFiniteNumber(value: unknown): boolean {
+  return value === undefined || (typeof value === 'number' && Number.isFinite(value));
+}
+
+function usageText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 120);
+  if (!text || /[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?:bearer\s+|sk-[\w-]{6,}|(?:api[_ -]?key|token|password|secret)\s*[:=])/i.test(text)) return undefined;
+  return text;
+}
+function usageTimestamp(value: unknown): string | null {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null;
+}
+function usageWarnings(value: unknown): string[] {
+  return Array.isArray(value) ? [...new Set(value.filter((code): code is string => typeof code === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(code)))].slice(0, 24) : [];
+}
+function normalizeUsageChart(value: unknown): ProviderUsageChart | undefined {
+  if (!isRecord(value) || (value.kind !== 'bars' && value.kind !== 'line') || !Array.isArray(value.points)) return undefined;
+  const points = value.points.slice(0, 120).flatMap((point) => {
+    if (!isRecord(point) || typeof point.value !== 'number' || !Number.isFinite(point.value)) return [];
+    const label = usageText(point.label);
+    return label ? [{ label, value: point.value }] : [];
+  });
+  return { kind: value.kind, points, ...(usageText(value.title) ? { title: usageText(value.title) } : {}), ...(usageText(value.unit) ? { unit: usageText(value.unit) } : {}) };
+}
+
+function normalizeUsageFields(input: unknown, group: string, warnings: Set<string>): Record<string, unknown> | null {
+  if (!isRecord(input) || typeof input.id !== 'string' || !input.id.trim()
+    || typeof input.label !== 'string' || !input.label.trim()) return null;
+  const label = usageText(input.label);
+  if (!label || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/.test(input.id)) return null;
+  const output: Record<string, unknown> = { id: input.id, label };
+  if ('role' in input) {
+    if (isProviderUsageFieldRole(input.role)) output.role = input.role;
+    else warnings.add('invalid_field');
+  }
+  if (Array.isArray(input.legacyIds)) output.legacyIds = input.legacyIds.filter((id) => typeof id === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/.test(id));
+  if (input.updatedAt !== undefined) output.updatedAt = usageTimestamp(input.updatedAt);
+  if (input.scope === 'account' || input.scope === 'workspace') output.scope = input.scope;
+  const numeric = group === 'windows' ? ['usedPercent', 'windowMinutes', 'remaining', 'total', 'nextRegenPercent']
+    : group === 'balances' ? ['value'] : [];
+  for (const key of numeric) {
+    if (!isOptionalFiniteNumber(input[key])) return null;
+    if (input[key] !== undefined) output[key] = input[key];
+  }
+  for (const key of ['unit', ...(group === 'windows' ? ['resetsAt'] : group === 'balances' ? ['currency'] : [])]) {
+    if (!isOptionalString(input[key])) return null;
+    if (typeof input[key] === 'string') {
+      const text = key === 'resetsAt' ? usageTimestamp(input[key]) : usageText(input[key]);
+      if (text && (key !== 'currency' || /^[A-Z]{3}$/.test(text))) output[key] = text;
+    }
+  }
+  if (group === 'metrics') {
+    const value = input.value;
+    if (!(value == null || typeof value === 'string' || typeof value === 'boolean'
+      || (typeof value === 'number' && Number.isFinite(value)))) return null;
+    if (typeof value === 'string' && !usageText(value)) return null;
+    if (value !== undefined) output.value = typeof value === 'string' ? usageText(value) : value;
+    for (const key of ['secondaryValue', 'sectionLabel']) if (usageText(input[key])) output[key] = usageText(input[key]);
+    if (typeof input.usageValue === 'number' && Number.isFinite(input.usageValue)) output.usageValue = input.usageValue;
+    if (typeof input.currency === 'string' && /^[A-Z]{3}$/.test(input.currency)) output.currency = input.currency;
+    if (['value', 'timestamp', 'chart'].includes(input.kind as string)) output.kind = input.kind;
+    const chart = normalizeUsageChart(input.chart);
+    if (chart) output.chart = chart;
+    if (input.kind === 'chart' && !chart) return null;
+    if (input.kind === 'timestamp') output.value = usageTimestamp(value);
+    if (isRecord(input.progress) && typeof input.progress.used === 'number' && Number.isFinite(input.progress.used)
+      && typeof input.progress.total === 'number' && Number.isFinite(input.progress.total) && input.progress.total > 0) {
+      output.progress = { used: input.progress.used, total: input.progress.total };
+    }
+  }
+  if (group === 'windows') {
+    if (typeof input.usageKnown === 'boolean') output.usageKnown = input.usageKnown;
+    if (input.usageKnown === false) delete output.usedPercent;
+    if (usageText(input.resetDescription)) output.resetDescription = usageText(input.resetDescription);
+  }
+  if (input.featured !== undefined) {
+    if (typeof input.featured !== 'boolean') return null;
+    output.featured = input.featured;
+  }
+  return output;
+}
+
+export function normalizeProviderUsageSnapshot(input: unknown): MissionControlProviderUsageSnapshot | null {
+  if (!isRecord(input) || typeof input.success !== 'boolean' || typeof input.available !== 'boolean'
+    || !Array.isArray(input.providers)
+    || (input.schemaVersion !== undefined && input.schemaVersion !== 1 && input.schemaVersion !== 2)) return null;
+  const providers: MissionControlProviderUsage[] = [];
+  const seen = new Set<string>();
+  const warnings = new Set<string>(usageWarnings(input.warnings));
+  for (const item of input.providers) {
+    if (!isRecord(item) || typeof item.provider !== 'string'
+      || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(item.provider) || seen.has(item.provider)) {
+      warnings.add('invalid_provider'); continue;
+    }
+    seen.add(item.provider);
+    const localWarnings = new Set<string>(usageWarnings(item.warnings));
+    const malformedFields: NonNullable<MissionControlProviderUsage['malformedFields']> = {};
+    const fields: Record<string, Record<string, unknown>[]> = {};
+    for (const group of ['windows', 'balances', 'metrics'] as const) {
+      const ids = new Set<string>();
+      fields[group] = [];
+      if (!Array.isArray(item[group])) { localWarnings.add('invalid_field'); malformedFields[group] = ['*']; continue; }
+      for (const field of item[group]) {
+        const normalized = normalizeUsageFields(field, group, localWarnings);
+        if (!normalized || ids.has(normalized.id as string)) {
+          localWarnings.add('invalid_field');
+          const id = isRecord(field) && typeof field.id === 'string' && usageText(field.id) && /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/.test(field.id) ? field.id : '*';
+          (malformedFields[group] ??= []).push(id);
+          continue;
+        }
+        ids.add(normalized.id as string);
+        fields[group].push(normalized);
+      }
+    }
+    const provider: Record<string, unknown> = { provider: item.provider, available: item.available === true, ...fields };
+    if (Object.keys(malformedFields).length) provider.malformedFields = malformedFields;
+    for (const key of ['source', 'error', 'plan', 'dataConfidence']) {
+      if (usageText(item[key])) provider[key] = usageText(item[key]);
+      else if (item[key] != null) localWarnings.add('invalid_provider');
+    }
+    for (const key of ['updatedAt', 'lastAttemptAt', 'renewsAt', 'freshUntil', 'nextRetryAt', 'refreshStartedAt', 'refreshDeadlineAt']) {
+      if (item[key] !== undefined) {
+        provider[key] = usageTimestamp(item[key]);
+        if (item[key] != null && provider[key] === null) localWarnings.add('invalid_timestamp');
+      }
+    }
+    if (['ready', 'no_data', 'error'].includes(item.dataState as string)) provider.dataState = item.dataState;
+    if (['idle', 'running', 'cooldown', 'failed'].includes(item.refreshState as string)) provider.refreshState = item.refreshState;
+    if (typeof item.staleAfterSeconds === 'number' && Number.isFinite(item.staleAfterSeconds) && item.staleAfterSeconds > 0) provider.staleAfterSeconds = item.staleAfterSeconds;
+    if (typeof item.stale === 'boolean') provider.stale = item.stale;
+    if (localWarnings.size) {
+      provider.warnings = [...localWarnings];
+      if ((localWarnings.has('invalid_field') || localWarnings.has('invalid_provider')) && Object.values(fields).every((group) => group.length === 0)) {
+        provider.available = false; provider.dataState = 'error'; provider.error = 'Provider usage data is malformed'; provider.stale = true;
+      }
+    }
+    providers.push(provider as unknown as MissionControlProviderUsage);
+  }
+  return {
+    success: input.success, available: input.available, providers,
+    ...(usageText(input.error) ? { error: usageText(input.error) } : {}),
+    ...(typeof input.schemaVersion === 'number' ? { schemaVersion: input.schemaVersion } : {}),
+    ...(typeof input.updatedAt === 'string' ? { updatedAt: input.updatedAt } : {}),
+    ...(typeof input.stale === 'boolean' ? { stale: input.stale } : {}),
+    ...(typeof input.refreshing === 'boolean' ? { refreshing: input.refreshing } : {}),
+    ...(warnings.size ? { warnings: [...warnings] } : {}),
+  };
+}
+
+export async function loadProviderUsage(accessToken?: string, signal?: AbortSignal): Promise<MissionControlProviderUsageSnapshot> {
+  const payload = await fetchProviderUsageJson('/provider-usage', accessToken, signal);
+  const snapshot = normalizeProviderUsageSnapshot(payload);
+  if (!snapshot) return { success: false, available: false, providers: [], error: 'Mission Control provider usage payload is malformed or unsupported' };
+  return snapshot;
 }
 
 async function fetchMissionControlAgentTrace(

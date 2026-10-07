@@ -47,7 +47,6 @@ if str(SERVER_DIR) not in sys.path:
 from hermes_paths import (
     display_home_path,
     get_hermes_home as resolve_hermes_home,
-    hermes_cache_dir,
     hermes_core_dir,
     hermes_logs_dir,
     hermes_skills_dir,
@@ -61,9 +60,19 @@ def _client_diagnostics_log() -> Path:
     return hermes_logs_dir() / "mission-control-client.log"
 
 from plugins.loader import resolve_handler, dispatch_plugin_request
-from nous_portal_usage import collect_nous_portal_usage
-from provider_usage_config import apply_provider_display_config, visible_usage_providers
-from provider_usage_contract import normalize_cached_entry, normalize_codexbar_entry, unavailable_provider
+from provider_usage_collector import collect_selected_usage
+from provider_usage_catalog import ProviderCatalogError, discover_codexbar_catalog, parse_provider_catalog
+from provider_usage_config import (
+    ProviderUsageSelectionConflict,
+    apply_provider_display_config,
+    save_selected_usage_provider_snapshot,
+    selected_usage_provider_snapshot,
+    selected_usage_providers,
+    stored_usage_providers,
+    usage_provider_selectable,
+)
+from provider_usage_paths import provider_usage_snapshot_path
+from provider_usage_snapshot import read_provider_usage_snapshot, request_background_provider_usage_refresh
 
 from mission_control_agents import (
     load_agent_trace_snapshot,
@@ -461,93 +470,164 @@ def collect_thermal_snapshot() -> Dict[str, Any]:
     return _thermal_unavailable(f"unsupported platform: {current_platform or 'unknown'}")
 
 
-_USAGE_PROVIDERS = ("codex", "ollama", "openrouter")
+_PROVIDER_USAGE_CATALOG_LOCK = threading.Lock()
+_PROVIDER_USAGE_CATALOG_CACHE: Optional[Dict[str, Any]] = None
+_PROVIDER_USAGE_CATALOG_CACHE_AT = 0.0
+_PROVIDER_USAGE_CATALOG_TTL = 300.0
+_PROVIDER_USAGE_CATALOG_RETRY_DELAY = 30.0
+_PROVIDER_USAGE_CATALOG_RETRY_AT = 0.0
+_PROVIDER_USAGE_CATALOG_REFRESH_RUNNING = False
+_PROVIDER_USAGE_CATALOG_LAST_ERROR: Optional[str] = None
 
 
-def _sanitize_usage_window(value: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(value, dict):
-        return None
-    result: Dict[str, Any] = {}
-    for key in ("usedPercent", "resetsAt", "windowMinutes"):
-        if key in value and value[key] is not None:
-            result[key] = value[key]
-    return result or None
+def _provider_usage_catalog_response(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    providers = [
+        {
+            **item,
+            "selectable": usage_provider_selectable(
+                item["provider"],
+                enabled=item.get("enabled") is True,
+                source=item.get("source", ""),
+            ),
+        }
+        for item in snapshot.get("providers", [])
+    ]
+    return {
+        **snapshot,
+        "refreshing": _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING,
+        "providers": providers,
+        **selected_usage_provider_snapshot(providers),
+    }
 
 
-def _sanitize_provider_usage(provider: str, payload: Any) -> Dict[str, Any]:
-    """Compatibility wrapper for the provider-agnostic contract."""
-    return normalize_codexbar_entry(provider, payload)
+def reset_provider_usage_catalog_cache() -> None:
+    """Reset the process-local catalog cache (also used by isolated tests)."""
+    global _PROVIDER_USAGE_CATALOG_CACHE, _PROVIDER_USAGE_CATALOG_CACHE_AT
+    global _PROVIDER_USAGE_CATALOG_RETRY_AT, _PROVIDER_USAGE_CATALOG_LAST_ERROR
+    with _PROVIDER_USAGE_CATALOG_LOCK:
+        _PROVIDER_USAGE_CATALOG_CACHE = None
+        _PROVIDER_USAGE_CATALOG_CACHE_AT = 0.0
+        _PROVIDER_USAGE_CATALOG_RETRY_AT = 0.0
+        _PROVIDER_USAGE_CATALOG_LAST_ERROR = None
+
+
+def _schedule_provider_usage_catalog_refresh(*, force: bool = False) -> bool:
+    """Discover CodexBar metadata outside request handlers, at most once at a time."""
+    global _PROVIDER_USAGE_CATALOG_CACHE, _PROVIDER_USAGE_CATALOG_CACHE_AT
+    global _PROVIDER_USAGE_CATALOG_RETRY_AT, _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING
+    global _PROVIDER_USAGE_CATALOG_LAST_ERROR
+    with _PROVIDER_USAGE_CATALOG_LOCK:
+        now = time.monotonic()
+        if _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING:
+            return False
+        if not force and now < _PROVIDER_USAGE_CATALOG_RETRY_AT:
+            return False
+        _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING = True
+
+    def refresh() -> None:
+        global _PROVIDER_USAGE_CATALOG_CACHE, _PROVIDER_USAGE_CATALOG_CACHE_AT
+        global _PROVIDER_USAGE_CATALOG_RETRY_AT, _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING
+        global _PROVIDER_USAGE_CATALOG_LAST_ERROR
+        try:
+            codexbar_providers = parse_provider_catalog(json.dumps(discover_codexbar_catalog()))
+            providers = [*codexbar_providers, {
+                "provider": "nous",
+                "displayName": "Nous Portal",
+                "enabled": True,
+                "defaultEnabled": True,
+                "source": "mission-control",
+            }]
+            providers.sort(key=lambda item: (item["displayName"].casefold(), item["provider"]))
+            with _PROVIDER_USAGE_CATALOG_LOCK:
+                _PROVIDER_USAGE_CATALOG_CACHE = {
+                    "available": True,
+                    "stale": False,
+                    "providers": providers,
+                }
+                _PROVIDER_USAGE_CATALOG_CACHE_AT = time.monotonic()
+                _PROVIDER_USAGE_CATALOG_RETRY_AT = 0.0
+                _PROVIDER_USAGE_CATALOG_LAST_ERROR = None
+        except ProviderCatalogError:
+            with _PROVIDER_USAGE_CATALOG_LOCK:
+                _PROVIDER_USAGE_CATALOG_RETRY_AT = time.monotonic() + _PROVIDER_USAGE_CATALOG_RETRY_DELAY
+                _PROVIDER_USAGE_CATALOG_LAST_ERROR = "CodexBar provider catalog is unavailable."
+        finally:
+            with _PROVIDER_USAGE_CATALOG_LOCK:
+                _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING = False
+
+    try:
+        thread = threading.Thread(target=refresh, name="provider-usage-catalog-refresh", daemon=True)
+        thread.start()
+    except RuntimeError:
+        with _PROVIDER_USAGE_CATALOG_LOCK:
+            _PROVIDER_USAGE_CATALOG_REFRESH_RUNNING = False
+            _PROVIDER_USAGE_CATALOG_RETRY_AT = time.monotonic() + _PROVIDER_USAGE_CATALOG_RETRY_DELAY
+        return False
+    return True
+
+
+def provider_usage_catalog_snapshot(*, force_refresh: bool = False) -> Dict[str, Any]:
+    """Return the last catalog immediately and schedule discovery when it is due."""
+    with _PROVIDER_USAGE_CATALOG_LOCK:
+        now = time.monotonic()
+        cache = _PROVIDER_USAGE_CATALOG_CACHE
+        fresh = cache is not None and now - _PROVIDER_USAGE_CATALOG_CACHE_AT < _PROVIDER_USAGE_CATALOG_TTL
+        if fresh and not force_refresh:
+            snapshot = dict(cache)
+            if _PROVIDER_USAGE_CATALOG_LAST_ERROR:
+                snapshot["error"] = _PROVIDER_USAGE_CATALOG_LAST_ERROR
+            else:
+                snapshot.pop("error", None)
+            return _provider_usage_catalog_response(snapshot)
+
+    _schedule_provider_usage_catalog_refresh(force=force_refresh)
+
+    with _PROVIDER_USAGE_CATALOG_LOCK:
+        now = time.monotonic()
+        cache = _PROVIDER_USAGE_CATALOG_CACHE
+        if cache is None:
+            snapshot: Dict[str, Any] = {
+                "available": False,
+                "stale": False,
+                "providers": [{
+                    "provider": "nous",
+                    "displayName": "Nous Portal",
+                    "enabled": True,
+                    "defaultEnabled": True,
+                    "source": "mission-control",
+                }],
+            }
+            if _PROVIDER_USAGE_CATALOG_LAST_ERROR:
+                snapshot["error"] = _PROVIDER_USAGE_CATALOG_LAST_ERROR
+        else:
+            snapshot = {
+                **cache,
+                "stale": now - _PROVIDER_USAGE_CATALOG_CACHE_AT >= _PROVIDER_USAGE_CATALOG_TTL,
+            }
+            if _PROVIDER_USAGE_CATALOG_LAST_ERROR:
+                snapshot["error"] = _PROVIDER_USAGE_CATALOG_LAST_ERROR
+            else:
+                snapshot.pop("error", None)
+        return _provider_usage_catalog_response(snapshot)
 
 
 def collect_provider_usage() -> Dict[str, Any]:
-    visible = set(visible_usage_providers())
-    cache_path = hermes_cache_dir() / "mission-control-provider-usage.json"
-    cached: Optional[Dict[str, Any]] = None
-    try:
-        candidate = json.loads(cache_path.read_text(encoding="utf-8"))
-        if isinstance(candidate, dict) and isinstance(candidate.get("providers"), list):
-            cached = candidate
-    except (OSError, json.JSONDecodeError):
-        pass
-
-    if cached is not None:
-        providers = []
-        for provider in cached["providers"]:
-            normalized = normalize_cached_entry(provider)
-            if normalized is None or normalized.get("provider") not in visible or normalized.get("provider") == "nous":
-                continue
-            providers.append(apply_provider_display_config(normalized))
-    else:
-        executable = shutil.which("codexbar") or "/opt/homebrew/bin/codexbar"
-        providers = []
-        for provider in _USAGE_PROVIDERS:
-            if provider not in visible:
-                continue
-            try:
-                # Ollama's API path exposes no usage data; must read the web dashboard (Chrome cookies).
-                src_flag = ["--source", "web"] if provider == "ollama" else []
-                completed = subprocess.run(
-                    [executable, "usage", "--provider", provider, *src_flag, "--json", "--no-color"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                )
-                stdout, stderr, returncode = completed.stdout, completed.stderr, completed.returncode
-                try:
-                    payload = json.loads(stdout)
-                except json.JSONDecodeError:
-                    raw_output = stdout.strip()
-                    try:
-                        decoded = json.loads(raw_output)
-                        payload = json.loads(decoded) if isinstance(decoded, str) else decoded
-                    except (json.JSONDecodeError, TypeError):
-                        start = raw_output.find("[")
-                        end = raw_output.rfind("]")
-                        try:
-                            payload = json.loads(raw_output[start:end + 1]) if start >= 0 and end > start else None
-                        except json.JSONDecodeError:
-                            payload = None
-                result = apply_provider_display_config(_sanitize_provider_usage(provider, payload))
-                if returncode != 0 and result.get("available"):
-                    result["available"] = False
-                    result["error"] = "CodexBar returned a provider error."
-                providers.append(result)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                error = "CodexBar unavailable." if isinstance(exc, OSError) else "CodexBar timed out."
-                providers.append(apply_provider_display_config(unavailable_provider(provider, "cli", error)))
-
-    if "nous" in visible:
-        # Nous is deliberately not sent through CodexBar. The sidecar uses the
-        # access token already persisted by Hermes and never rotates a refresh token.
-        providers.append(apply_provider_display_config(collect_nous_portal_usage()))
-    return {
-        "schemaVersion": 1,
-        "success": any(provider.get("available") for provider in providers),
-        "available": True,
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "providers": providers,
-    }
+    catalog_snapshot = provider_usage_catalog_snapshot()
+    catalog = catalog_snapshot.get("providers", [])
+    catalog_available = catalog_snapshot.get("available") is True
+    selected = selected_usage_providers(catalog) if catalog_available else stored_usage_providers()
+    cache_path = provider_usage_snapshot_path()
+    collectable = selected if catalog_available else tuple(p for p in selected if p == "nous")
+    request_background_provider_usage_refresh(
+        cache_path, collectable, lambda due: collect_selected_usage(due, catalog),
+        selection=lambda: selected_usage_providers(catalog) if catalog_available else stored_usage_providers(),
+        clear_discovery_failure=catalog_available,
+    )
+    snapshot = read_provider_usage_snapshot(cache_path, selected)
+    snapshot["providers"] = [apply_provider_display_config(entry) for entry in snapshot["providers"]]
+    snapshot["stale"] = any(entry.get("stale") for entry in snapshot["providers"])
+    snapshot["refreshing"] = any(entry.get("refreshState") == "running" for entry in snapshot["providers"])
+    return snapshot
 
 
 def _resolve_access_token() -> Optional[str]:
@@ -2045,6 +2125,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json(200, load_sessions_usage())
             return
+        if parsed.path == "/api/local/provider-usage/catalog":
+            if not _is_authorized(self):
+                self._unauthorized()
+                return
+            force_refresh = _parse_bool((params.get("refresh") or [None])[0], default=False)
+            self._json(200, provider_usage_catalog_snapshot(force_refresh=force_refresh))
+            return
         if parsed.path == "/api/local/provider-usage":
             if not _is_authorized(self):
                 self._unauthorized()
@@ -2306,6 +2393,45 @@ class Handler(BaseHTTPRequestHandler):
         if self._reject_mutation_in_read_only_mode():
             return
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/local/provider-usage/selection":
+            if not _is_authorized(self):
+                self._unauthorized()
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                self._json(400, {"error": "bad_request", "detail": "Invalid Content-Length."})
+                return
+            if length > 32_768:
+                self._json(413, {"error": "bad_request", "detail": "Selection payload is too large."})
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            if set(payload) != {"selectedProviders", "expectedRevision"}:
+                self._json(400, {"error": "bad_request", "detail": "Expected selectedProviders and expectedRevision."})
+                return
+            revision = payload.get("expectedRevision")
+            if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision):
+                self._json(400, {"error": "bad_request", "detail": "Invalid selection revision."})
+                return
+            catalog = provider_usage_catalog_snapshot().get("providers", [])
+            catalog_ids = {
+                item["provider"] for item in catalog
+                if isinstance(item, dict)
+                and isinstance(item.get("provider"), str)
+                and (item.get("enabled") is True or item.get("source") == "mission-control")
+            }
+            try:
+                selection = save_selected_usage_provider_snapshot(payload.get("selectedProviders"), catalog_ids, revision)
+            except ProviderUsageSelectionConflict as exc:
+                self._json(409, {"error": "selection_conflict", "detail": str(exc)})
+                return
+            except ValueError as exc:
+                self._json(400, {"error": "bad_request", "detail": str(exc)})
+                return
+            self._json(200, selection)
+            return
         if parsed.path == '/api/local/config':
             if not _is_authorized(self):
                 self._unauthorized()

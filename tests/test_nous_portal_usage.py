@@ -37,7 +37,6 @@ class NousPortalUsageTests(unittest.TestCase):
         self._home_backup = os.environ.get("HERMES_HOME")
         os.environ["HERMES_HOME"] = str(self._tmp / "hermes")
         (self._tmp / "hermes").mkdir()
-        nous_portal_usage.reset_nous_portal_usage_cache()
 
     def tearDown(self):
         if self._home_backup is None:
@@ -47,7 +46,15 @@ class NousPortalUsageTests(unittest.TestCase):
         import shutil
 
         shutil.rmtree(self._tmp, ignore_errors=True)
-        nous_portal_usage.reset_nous_portal_usage_cache()
+
+    def test_valid_empty_native_account_is_no_data_and_private_plan_is_not_written(self):
+        empty = nous_portal_usage.normalize_account_payload({})
+        self.assertFalse(empty["available"], "an empty successful account response is not usage")
+        self.assertEqual(empty["dataState"], "no_data")
+        safe = nous_portal_usage.normalize_account_payload({"subscription": {"plan": "private@example.test"},
+                                                          "paid_service_access": {"total_usable_credits": 0}})
+        self.assertTrue(safe["available"], "zero balance is usable data")
+        self.assertNotIn("private@example.test", json.dumps(safe))
 
     def test_normalizes_portal_account_into_billing_shape(self):
         payload = {

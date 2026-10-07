@@ -37,6 +37,16 @@
   --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+.provider-usage-cards {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.provider-usage-cards > article {
+  flex: 1 1 22rem;
+  min-width: 0;
+}
+
 
 /* Runtime recovery surface for iOS foreground-resume failures. */
 .app-error-screen {
