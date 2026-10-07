@@ -60,10 +60,19 @@ def _safe_id(value: Any) -> Optional[str]:
 
 
 def _unique_id(value: str, seen: set[str]) -> str:
+    # Prefixes and duplicate suffixes must fit the same contract as source IDs.
+    if len(value) > 160:
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
+        value = f"{value[:135]}:{digest}"
     candidate = value
     occurrence = 2
     while candidate in seen:
-        candidate = f"{value}:{occurrence}"
+        suffix = f":{occurrence}"
+        base = value
+        if len(base) + len(suffix) > 160:
+            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
+            base = f"{value[:135]}:{digest}"
+        candidate = f"{base}{suffix}"
         occurrence += 1
     seen.add(candidate)
     return candidate
@@ -121,6 +130,16 @@ def _infer_field_role(collection: str, field: Dict[str, Any]) -> Optional[str]:
         return role
     if collection == "windows" and (field_id in ("primary", "secondary", "tertiary") or field_id.startswith("extra:")):
         return "quota"
+    if collection == "metrics":
+        if field.get("kind") == "chart":
+            return "diagnostic"
+        vocabulary = {
+            "API key": {"API key limit": "spend_limit", "API key remaining": "limit_remaining",
+                        "API key used": "diagnostic", "Today": "spend_today",
+                        "This month": "spend_month", "This week": "diagnostic"},
+            "Credits": {"Remaining": "account_balance", "Used": "diagnostic", "Total added": "diagnostic"},
+        }
+        return vocabulary.get(field.get("sectionLabel"), {}).get(field.get("label"))
     return None
 
 

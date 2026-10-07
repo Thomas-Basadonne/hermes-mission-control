@@ -48,6 +48,22 @@ class GenericContractTests(unittest.TestCase):
             field.pop("role")
             self.assertEqual(normalize_cached_entry(entry)[group], [field])
 
+    def test_long_source_ids_and_duplicate_ids_survive_cache_roundtrip(self):
+        source_id = "x" * 160
+        usage = {
+            "extraRateWindows": [{"id": source_id, "title": "Long quota", "window": {"usedPercent": 7}}] * 2,
+            "details": [{"title": "Counters", "rows": [{"id": source_id, "label": "Long counter", "value": 8}] * 2}],
+        }
+        normalized = self.normalize(usage)
+        cached = normalize_cached_entry(normalized)
+        for group in ("windows", "metrics"):
+            self.assertEqual(len(cached[group]), 2)
+            self.assertEqual(cached[group], normalized[group])
+            self.assertEqual(len({field["id"] for field in cached[group]}), 2)
+            self.assertTrue(all(len(field["id"]) <= 160 for field in cached[group]))
+        self.assertEqual(normalize_cached_entry(cached), cached)
+        self.assertEqual(self.normalize(usage), normalized)
+
     def test_common_generated_fields_have_roles_without_provider_dispatch(self):
         usage = {"primary": {"usedPercent": 7}, "secondary": {"usedPercent": 12},
                  "tertiary": {"usedPercent": 3},
