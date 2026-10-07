@@ -37,6 +37,40 @@ The chat connects to the gateway's WebSocket endpoint, not to the telemetry side
 | Commands | `src/lib/chat-commands.ts` | Slash-command output |
 | Rendering | `src/components/chat-messages.tsx` | Message bubbles, reasoning bubble, attachments |
 | Live plan | `src/lib/todo-plan.ts` + `src/components/chat/ChatTodoPlan.tsx` + session payload | Derives and displays the current `todo` tool snapshot in live chat and preview mode |
+| Drawer rail | `src/components/chat/ChatModeTabs.tsx` | Chat/Rooms navigation, right-aligned Sessions trigger, aggregate live indicator |
+| Sessions picker | `src/components/chat/SessionPicker.tsx` + `src/lib/chat-session-picker.ts` | Scrollable session pages, filters, polling, request cancellation, exact-ID selection |
+| Session-list queries | `src/lib/session-list-request.ts` | Encodes profile, filters, page and lightweight metadata options for the sidecar |
+
+## Sessions picker
+
+The drawer rail contains **Chat · Rooms · Sessions**, with **Sessions at the far right**. It opens a dropdown from either Chat or Rooms; it is not a third transcript mode or a navigation to the Sessions page.
+
+### Browse and select
+
+- The initial view shows **Live** sessions across available local profiles and origins. Choose **All statuses** to browse historical sessions, or **Idle** / **Ended** to narrow the list.
+- Filter by **Profile** and **Origin** independently. Search is sent to the backend after a 250ms typing pause and applies to the full available list before pagination, not just the visible rows.
+- Pages contain up to **25 sessions**, with previous/next controls and the backend's filtered result count. Changing search or a filter returns to the first page. Only the list scrolls; filters and page controls stay visible.
+- Rows show title, owning profile, origin, model, last activity and a colored **Live / Idle / Ended** indicator. The Sessions trigger also shows a green dot when the global snapshot contains live sessions; amber indicates a failed activity lookup.
+- Opening the picker **does not autofocus search**, so it does not open a mobile keyboard automatically. Escape, the close button or an outside click dismisses it.
+- Clicking a resumable row closes the picker and resumes that conversation in Chat. Non-resumable automation/system records remain visible with a disabled action and explanatory label.
+
+### Refresh and identity
+
+The picker refreshes the current page approximately every **5 seconds** while the document is visible. The trigger's aggregate live count refreshes while the drawer is open, even with the picker closed. **Background polling never disables existing resumable rows**. Filter/page changes invalidate old requests; late responses cannot replace the new results, and closing aborts in-flight work.
+
+List metadata comes from `GET /api/local/mission-control/sessions` on the telemetry sidecar, with `include_recent_messages=false` to avoid loading full transcript previews on every poll. Resume itself uses `session.resume` over the existing Hermes `/api/ws` transport once that socket is ready. Ordinary preview deep links keep their explicit Resume action.
+
+Selection carries the exact **session ID and owning profile**, including an explicit default profile when leaving a named-profile context. It does not resolve an arbitrary shared platform key to the newest historical rotation. A live gateway session reuses its runtime; a closed stored conversation can receive a new ephemeral runtime ID without creating a new stored conversation or submitting a prompt.
+
+The sidecar overlays runtime presence onto the canonical stored session. A legacy presence with no profile belongs to the default store, not every profile. When stored and runtime rows both exist, the proven `resumedFrom` / durable ID relationship collapses the runtime duplicate before global counts and pagination. **Equal titles alone never merge different conversations**; transcript rows and SessionDB state remain unchanged. Interactive CLI, Bot Room, ACP and API-server histories are resumable independently of their display category, unless explicitly marked non-resumable.
+
+For query parameters and response fields, see [Session-list API](api.md#session-list-queries).
+
+### Verification
+
+`pnpm test:frontend` includes controller, profile-safe selection and request-encoding tests (`chat-session-picker.test.ts`, `chat-session-selection.test.ts`, `session-list-request.test.ts`). Backend regression tests cover legacy profile scope, canonical/runtime duplicate collapse, resumable origins and multi-profile aggregation (`server/tests/test_chat_runtime_presence.py`, `tests/test_session_picker_resume_origins.py`, `tests/test_session_runtime_identity.py`).
+
+The live QA path checks desktop and 390px touch-layout geometry, global search for a later-page session, combined filters, Rooms-to-picker navigation, selection during a deliberately held polling request and duplicate-free rows across successive polls. A historical CLI resume is checked against real WebSocket frames and the unchanged canonical transcript, without submitting a prompt. Touch-layout emulation does not replace testing Safari on an actual device.
 
 ## Connection & auth
 

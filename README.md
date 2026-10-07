@@ -55,6 +55,7 @@ Mission Control uses [Semantic Versioning](https://semver.org/) in `package.json
 ### Chat and agent workspace
 
 - Streaming Chat with presence states, reasoning events, and completion recovery
+- **Sessions picker** at the far right of the Chat/Rooms rail: search across available local profiles and origins, scrollable 25-row pages, Live by default, and one-click profile-safe resume. Background refresh keeps session selection enabled; opening the picker does not focus search or summon the mobile keyboard. See [Chat session picker](docs/chat.md#sessions-picker).
 - **Bot Mode**: managed bot roster, canonical Bot Chat per bot, attributed handoffs
 - **Group Rooms**: several bots on one request, with a shared timeline, per-member tool strips, driver controls (`stop` / `approve` / `retry` / `rename` / `disband`), and a cross-device last-room pointer
 - **Expanded Chat + tldraw Agent Mode**: session-bound whiteboard, authenticated bridge, screenshot-to-chat, agent actions, Mermaid import, board lints, exports, and mobile-safe persistence

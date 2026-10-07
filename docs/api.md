@@ -60,9 +60,29 @@ selection writes against them.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/local/mission-control/agents` | Agent snapshot, including the `capabilities` object ([contract](contracts/compatibility-matrix.md)) |
-| GET | `/api/local/mission-control/sessions` | Paged sessions for the Agents view (`limit`, `offset`, `profile`, `session_id`) |
+| GET | `/api/local/mission-control/sessions` | Paged session metadata for Agents, Sessions and the Chat picker; see [query parameters](#session-list-queries) |
 | GET | `/api/local/mission-control/agents/trace` | Trace for one session ([contract](contracts/mission-control-trace-v1.json)) |
 | GET | `/api/local/mission-control/agents/trace/stream` | Same trace as Server-Sent Events (`event: trace`) |
+
+### Session-list queries
+
+`GET /api/local/mission-control/sessions` accepts:
+
+| Parameter | Behavior |
+|-----------|----------|
+| `limit`, `offset` | Page size (1–500; default 100) and zero-based offset (default 0) |
+| `profile` | Exact owning profile, including `default`; omitted means the default store plus discovered local profile stores |
+| `session_id` | Optional exact session/reference lookup for preview consumers |
+| `query` | Case-insensitive substring search over session ID, title, preview and origin/model metadata, before page slicing |
+| `origin`, `model` | Exact source or model filter |
+| `status` | `live`, `idle` or `ended`; omit for all statuses |
+| `category`, `tab` | Existing session category/view filters (`all`, `live`, `conversation`, `automation`, `system`, where supported) |
+| `include_recent_messages` | Defaults to true; false returns metadata without reading recent transcript/plan previews |
+| `include_facets` | Defaults to true; includes global metadata collection for facets and counts |
+
+The response contains `items`, `pagination` (`total`, `offset`, `limit`, `hasMore`), `stats` (`totalSessions`, `liveSessions`, `activeAgents`), `facets` and `tabCounts`. Filtering applies before pagination; `pagination.total` is the number of matching rows, not the number loaded in the browser. Within the selected profile scope, `stats` and facets describe the available unfiltered snapshot. The `/api/local/sessions` alias accepts the same list parameters except `session_id`.
+
+The Chat picker requests `limit=25&offset=0&status=live&include_recent_messages=false` initially, then forwards the chosen profile, origin, search and page. Runtime-presence metadata is merged with the corresponding stored row so a resumed conversation is not counted as both a historical session and an ephemeral runtime. The merge is read-only and never deduplicates different sessions merely because their titles match. See [Chat picker behavior](chat.md#sessions-picker).
 
 ## Configuration, tools, skills, memory
 

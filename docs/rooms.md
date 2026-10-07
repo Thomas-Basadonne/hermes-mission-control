@@ -46,7 +46,7 @@ Two transports, cleanly split:
 
 ## Opening a room
 
-The drawer carries a `Chat | Rooms` tab rail. Rooms is a real entry point in the drawer — a `?chatMode=room` deep link alone is not discoverable enough to count as one.
+The drawer carries a `Chat | Rooms` mode rail with a **Sessions** picker at the far right. Rooms is a real entry point in the drawer — a `?chatMode=room` deep link alone is not discoverable enough to count as one. The [Sessions picker](chat.md#sessions-picker) is available while viewing a room; choosing a session returns to Chat and resumes it in its owning profile without clearing the last-room pointer.
 
 Selecting a room loads its log. The room list and the room state come from `groups.list` / `groups.state`, both authenticated with the Mission Control token.
 

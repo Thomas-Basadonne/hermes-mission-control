@@ -59,7 +59,7 @@ Full reference: **[docs/rooms.md](rooms.md)** — room lifecycle, tool-trace col
 
 In brief:
 
-- The drawer carries a `Chat | Rooms` tab rail (auto-hiding on fast scroll, overlay so the transcript never reflows).
+- The drawer carries a `Chat | Rooms` mode rail (auto-hiding on fast scroll, overlay so the transcript never reflows), plus the right-aligned [Sessions picker](chat.md#sessions-picker) for profile-safe resume. The rail stays visible while that picker is open.
 - Authenticated RPC client (`group-gateway.ts`): built with `requestBotRpc(method, params, storedToken)` — the MC token is required otherwise `groups.*` answers 401.
 - Honest empty state when `groups.list` returns zero rooms.
 - Member actions go through the driver: `groups.stop` / `groups.approve` / `groups.retry` / `groups.rename` / `groups.disband`, with an inline rename in the header and a 2-click confirm on disband.
