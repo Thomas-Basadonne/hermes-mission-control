@@ -9,10 +9,20 @@ import tailwind from '@tailwindcss/postcss';
 import autoprefixer from 'autoprefixer';
 
 const require = createRequire(import.meta.url);
+const crypto = require('node:crypto');
 const [fixtureFile, runtime, sourceArgument] = process.argv.slice(2);
 const root = resolve(sourceArgument || process.cwd());
 const state = JSON.parse(readFileSync(fixtureFile, 'utf8'));
 let currentRevision = state.catalog.selectionRevision;
+let revisionCounter = 0;
+// Mirror the backend fence: the revision binds the selection to a nonce so an
+// identical re-save still advances it and later replays are rejected.
+const nextRevision = (selectedProviders) => {
+  revisionCounter += 1;
+  return crypto.createHash('sha256')
+    .update(JSON.stringify({ selectedProviders, previous: currentRevision, nonce: revisionCounter }))
+    .digest('hex');
+};
 const requests = [];
 const entryId = '\0provider-browser-entry.tsx';
 const storeId = '\0provider-browser-store';
@@ -88,8 +98,8 @@ const server = createHttpServer(async (req, res) => {
       let body = ''; for await (const chunk of req) body += chunk;
       const { selectedProviders, expectedRevision } = JSON.parse(body);
       if (!Array.isArray(selectedProviders) || selectedProviders.some(id => !state.catalog.providers.some(p => p.provider === id))) return json(400, { error: 'Invalid selection' });
-      if (expectedRevision !== currentRevision) return json(409, { error: 'selection_conflict', selectionRevision: currentRevision });
-      currentRevision = 'b'.repeat(64);
+      if (expectedRevision !== currentRevision) return json(409, { error: 'selection_conflict', detail: 'The selection changed after the caller read its revision.' });
+      currentRevision = nextRevision(selectedProviders);
       state.catalog.selectedProviders = selectedProviders;
       state.catalog.selectionRevision = currentRevision;
       writeFileSync(resolve(runtime, 'selection.json'), JSON.stringify({ selectedProviders, selectionRevision: currentRevision }), { mode: 0o600 });
@@ -99,7 +109,18 @@ const server = createHttpServer(async (req, res) => {
   }
   if (path === '/fixture/control' && req.method === 'POST') {
     let body = ''; for await (const chunk of req) body += chunk;
-    Object.assign(state, JSON.parse(body)); return json(200, { accepted: true });
+    const payload = JSON.parse(body);
+    // Simulate another client committing a selection between this tab's read
+    // and its next PUT, so a stale write is genuinely rejected with 409.
+    if (Array.isArray(payload.externalSelection)) {
+      currentRevision = nextRevision(payload.externalSelection);
+      state.catalog.selectedProviders = payload.externalSelection;
+      state.catalog.selectionRevision = currentRevision;
+      writeFileSync(resolve(runtime, 'selection.json'), JSON.stringify({ selectedProviders: payload.externalSelection, selectionRevision: currentRevision }), { mode: 0o600 });
+    }
+    const { externalSelection, ...rest } = payload;
+    Object.assign(state, rest);
+    return json(200, { accepted: true });
   }
   if (path === '/fixture/state') return json(200, { ...state, requests });
   if (path === '/' || path === '/index.html') {

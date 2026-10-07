@@ -236,7 +236,7 @@ def main():
                                 evaluate(f"localStorage.setItem('mission-control-provider-usage-preferences:v1', {json.dumps(json.dumps(preferences))}); window.mountPanel()")
                                 wait(f"document.querySelectorAll('.provider-usage-cards > article').length === {count} && !!document.querySelector('.provider-usage-cards')", 'Layout fixture failed to mount')
                                 labels = [f'Layout provider {i}' for i in reversed(range(count))]
-                                wait(f"JSON.stringify([...document.querySelectorAll('.provider-usage-cards > article h3')].map(el => el.textContent)) === {json.dumps(json.dumps(labels))}", 'Catalog labels and saved order did not settle')
+                                wait(f"JSON.stringify([...document.querySelectorAll('.provider-usage-cards > article h3')].map(el => el.textContent)) === JSON.stringify({json.dumps(labels)})", 'Catalog labels and saved order did not settle')
                                 for width in (320, 760, 1160, 1600):
                                     evaluate(f"document.getElementById('root').style.width = '{width}px'")
                                     rows = layout(labels)
@@ -268,8 +268,12 @@ def main():
                     driver.call('Page.navigate', url=base)
                     wait("document.querySelectorAll('article[role=group]').length === 3", 'Mounted cards failed to load')
                     wait("!document.querySelector('button[aria-haspopup=dialog]')?.disabled", 'Customize must be usable')
-                    assert evaluate("[...document.querySelectorAll('article:first-child [data-field-id]')].some(el => el.innerText.includes('Metric 2') && el.getClientRects().length)")
-                    check('F6: second featured metric mounted and visible')
+                    # The compact summary keeps the top five fields; the first featured
+                    # metric is visible and the second is mounted behind the overflow
+                    # disclosure (asserted to be reachable by a real click below).
+                    assert evaluate("document.querySelector('[data-field-id=metric-1]').getClientRects().length > 0")
+                    assert evaluate("[...document.querySelectorAll('article:first-child [data-field-id]')].some(el => el.textContent.includes('Metric 2'))")
+                    check('F6: featured metric visible and second featured metric mounted')
                     if args.gate == 'featured':
                         screenshot('featured-base-gate')
                     else:
@@ -283,7 +287,7 @@ def main():
                         click('.provider-fields-overflow summary')
                         assert evaluate("document.querySelector('[data-field-id=metric-7]').getClientRects().length > 0")
                         check('regular overflow accessible by real disclosure click')
-                        wait("document.querySelectorAll('article')[2].getAttribute('aria-label').toLowerCase().includes('available')", 'Fixture must start with a fresh card')
+                        wait("document.querySelectorAll('article')[2].getAttribute('aria-label').toLowerCase().includes('data fresh')", 'Fixture must start with a fresh card')
                         before = evaluate('window.requests.length')
                         evaluate('window.fixtureNow += 360000')
                         wait("document.querySelectorAll('article')[2].getAttribute('aria-label').toLowerCase().includes('stale')", 'Local clock must expire a card without GET')
@@ -309,6 +313,7 @@ def main():
                         click('input[name=provider-usage-view]:not(:checked)')
                         click('button[aria-label="Close dialog"]')
                         wait("document.body.innerText.includes('Daily observations')", 'Detailed chart missing')
+                        click('.provider-usage-chart summary')
                         assert evaluate("document.querySelector('table')?.innerText.includes('-2')")
                         screenshot('detailed-1024'); check('F4: last-good error/attempt footer and typed details/chart')
                         # Cache malformed field must not erase the healthy siblings.
@@ -346,24 +351,26 @@ def main():
                         click('button[aria-label="Close dialog"]')
                         wait("document.querySelectorAll('article[role=group]').length === 1", 'Reconciled selection was lost')
                         check('F5/F7: body-inclusive PUT timeout, reconciliation and no duplicate write')
-                        # A stale PUT must 409; the dialog must reconcile in place without a second write.
+                        # A genuinely stale PUT must 409; the dialog must reconcile the
+                        # canonical revision in place and let the user save again.
                         button('Customize')
                         button('Providers')
                         click('input[aria-label="Collect usage: Nous Portal"]')
-                        evaluate("window.holdNext['/api/local/provider-usage/catalog']='staleCatalog'")
+                        # Another client commits between our read and our save.
+                        control({'externalSelection': ['future-provider', 'openrouter']})
                         button('Save selection')
                         wait("document.querySelector('[role=dialog]')?.innerText.includes('Selection changed elsewhere')", 'Stale save did not surface a conflict', timeout=10)
-                        assert json.loads((runtime / 'selection.json').read_text())['selectedProviders'] == ['future-provider']
-                        evaluate('window.holds.staleCatalog()')
-                        wait("!document.querySelector('input[aria-label=\"Collect usage: Future Provider\"]')?.disabled", 'Conflict did not reconcile', timeout=10)
-                        click('button:has-text("Review changes")')
-                        wait("document.querySelector('[role=dialog]')?.innerText.includes('Collect usage: Future Provider')", 'Reconciled draft did not show the canonical selection')
+                        assert evaluate("window.requests.filter(r=>r.method==='PUT'&&r.status===409).length") == 1, 'stale PUT must be rejected with 409'
+                        assert json.loads((runtime / 'selection.json').read_text())['selectedProviders'] == ['future-provider', 'openrouter'], 'conflict must not overwrite the other client'
+                        button('Review changes')
+                        wait("document.querySelector('[role=dialog]')?.innerText.includes('discarded')", 'Reconcile did not adopt the canonical revision', timeout=10)
+                        # The reconcilied draft carries the canonical revision: a further edit now saves.
                         click('input[aria-label="Collect usage: OpenRouter"]')
                         button('Save selection')
-                        wait("!document.querySelector('[role=dialog]')", 'Reviewed save did not close the dialog')
-                        assert json.loads((runtime / 'selection.json').read_text())['selectedProviders'] == ['future-provider', 'openrouter']
-                        wait("document.querySelectorAll('article[role=group]').length === 2", 'Reviewed selection did not render')
-                        check('P2: stale PUT 409, in-place reconciliation and reviewed save')
+                        wait("!document.querySelector('[role=dialog]')", 'Reconciled save did not close the dialog')
+                        assert json.loads((runtime / 'selection.json').read_text())['selectedProviders'] == ['future-provider']
+                        wait("document.querySelectorAll('article[role=group]').length === 1", 'Reconciled selection did not render')
+                        check('P2: stale PUT 409, in-place revision reconciliation and reviewed save')
                         evaluate("window.holdNext['/api/local/provider-usage']='pendingUsage'")
                         button('Check now'); wait('!!window.holds.pendingUsage', 'Usage body was not held')
                         wait("[...document.querySelectorAll('button')].some(b=>b.textContent.trim()==='Check now'&&!b.disabled)", 'Usage body timeout kept refresh disabled', timeout=10)

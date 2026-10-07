@@ -322,11 +322,12 @@ try {
     assert.ok(harness.dialog().error);
     assert.equal(harness.dialog().open, true, 'conflict keeps Customize open');
     assert.deepEqual(harness.dialog().draftSelection, ['a', 'b'], 'conflict keeps the stale draft visible');
-    assert.equal(harness.dialog().error, 'provider.selectionSaveFailed', 'conflict shows a save error');
+    assert.equal(harness.dialog().error, 'provider.selectionConflict', 'conflict reports the canonical revision changed');
     assert.equal(harness.dialog().saving, false);
     assert.equal(writes.length, 1, 'reconciliation must never retry the stale write automatically');
     harness.dialog().onReconcileSelection(); await harness.flush();
     assert.deepEqual(harness.dialog().draftSelection, ['c'], 'conflict must reconcile to a fresh canonical draft in the same dialog');
+    assert.equal(harness.dialog().catalog.selectionRevision, 'b'.repeat(64), 'reconcile must adopt the canonical revision, not the stale one');
     assert.equal(harness.dialog().error, 'provider.selectionConflictResolved', 'discarding a stale draft must be explicit');
     harness.dialog().onToggle('b'); await harness.flush();
     harness.dialog().onSave(); await harness.flush();
