@@ -336,6 +336,52 @@ try {
     assert.equal(harness.dialog().open, false, 'reviewed choices save without closing and reopening after a conflict');
     harness.unmount(); harness = null;
   }
+  // Review changes must serialize its recovery read and fence its response.
+  {
+    let selected = ['a'], revision = 'a'.repeat(64), catalogReads = 0, held = null;
+    globalThis.fetch = async (url, options = {}) => {
+      if (options.method === 'PUT') {
+        const body = JSON.parse(options.body);
+        if (body.expectedRevision !== revision) return { status: 409, ok: false, json: async () => ({ error: 'selection_conflict' }) };
+        selected = body.selectedProviders; revision = 'b'.repeat(64);
+        return { status: 200, ok: true, json: async () => ({ selectedProviders: selected, selectionRevision: revision }) };
+      }
+      if (String(url).includes('/catalog')) {
+        catalogReads++;
+        if (held) return { status: 200, ok: true, json: () => held.promise };
+        return { status: 200, ok: true, json: async () => ({ available: true, providers: ['a', 'b', 'c'].map(descriptor), selectedProviders: selected, selectionRevision: revision }) };
+      }
+      return { status: 200, ok: true, json: async () => ({ success: true, available: true, providers: selected.map(usage) }) };
+    };
+    harness = mount(ProviderUsagePanel); await harness.flush();
+    harness.customize(); await harness.flush();
+    harness.dialog().onToggle('b'); await harness.flush();
+    // Another client commits, so the next save conflicts.
+    selected = ['c', 'b']; revision = 'b'.repeat(64);
+    harness.dialog().onSave(); await harness.flush();
+    assert.equal(harness.dialog().error, 'provider.selectionConflict');
+    // The first recovery read is held; its response lands later.
+    held = {}; held.promise = new Promise(resolve => { held.release = () => resolve({ available: true, providers: ['a', 'b', 'c'].map(descriptor), selectedProviders: ['c', 'b'], selectionRevision: 'b'.repeat(64) }); });
+    const readsBefore = catalogReads;
+    harness.dialog().onReconcileSelection();
+    await harness.flush();
+    assert.equal(catalogReads, readsBefore + 1, 'the first recovery read must start');
+    assert.equal(harness.dialog().saving, true, 'the rendered Review changes / save controls disable while the recovery read is pending');
+    // A duplicate click while the recovery is pending must not start a second GET.
+    harness.dialog().onReconcileSelection();
+    await harness.flush();
+    assert.equal(catalogReads, readsBefore + 1, 'a duplicate Review changes click must not start a concurrent recovery read');
+    // End the dialog cycle, then let the stale response arrive.
+    harness.dialog().onClose();
+    await harness.flush();
+    const draftBefore = harness.dialog().draftSelection;
+    held.release();
+    await harness.flush();
+    assert.deepEqual(harness.dialog().draftSelection, draftBefore, 'a recovery response landing after the dialog cycle must not rewrite the draft');
+    assert.equal(harness.dialog().open, false, 'a fenced response must not reopen the dialog');
+    assert.equal(harness.dialog().error, 'provider.selectionConflict', 'a fenced response must not overwrite the pending error');
+    harness.unmount(); harness = null;
+  }
   for (const commitBeforeTimeout of [true, false]) {
     let selected = ['a'], revision = 'a'.repeat(64), pendingPut;
     let usageReads = 0;

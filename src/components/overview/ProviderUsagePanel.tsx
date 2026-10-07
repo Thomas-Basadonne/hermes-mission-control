@@ -305,6 +305,7 @@ export function ProviderUsagePanel() {
   const selectionController = useRef(createProviderUsageSelectionController());
   const catalogAbortRef = useRef<AbortController | null>(null);
   const selectionAbortRef = useRef<AbortController | null>(null);
+  const reconcileAbortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -315,6 +316,7 @@ export function ProviderUsagePanel() {
       window.clearInterval(clock);
       catalogAbortRef.current?.abort();
       selectionAbortRef.current?.abort();
+      reconcileAbortRef.current?.abort();
       selectionController.current.invalidate();
     };
   }, []);
@@ -483,7 +485,11 @@ export function ProviderUsagePanel() {
   };
 
   const closeCustomize = () => {
-    if (!savingSelection) setCustomizeOpen(false);
+    if (savingSelection) return;
+    // Closing the dialog invalidates any in-flight recovery read.
+    reconcileAbortRef.current?.abort();
+    reconcileAbortRef.current = null;
+    setCustomizeOpen(false);
   };
 
   const toggleProvider = (provider: string) => {
@@ -505,6 +511,9 @@ export function ProviderUsagePanel() {
   const saveSelection = async () => {
     if (!selectionController.current.beginSave(draftRevision)) return;
     catalogAbortRef.current?.abort();
+    // A newer save fences any in-flight recovery read.
+    reconcileAbortRef.current?.abort();
+    reconcileAbortRef.current = null;
     setCatalogLoading(false);
     const controller = new AbortController();
     selectionAbortRef.current = controller;
@@ -540,22 +549,32 @@ export function ProviderUsagePanel() {
   };
 
   const reconcileSelectionConflict = async () => {
-    if (!selectionController.current.canSave()) return;
+    // Serialize the recovery: a second click must not start a concurrent read,
+    // and an in-flight recovery must be fenced by any newer save or dialog cycle.
+    if (!selectionController.current.canSave() || reconcileAbortRef.current) return;
+    const captured = selectionController.current.beginRead();
+    if (captured === null) return;
+    const controller = new AbortController();
+    reconcileAbortRef.current = controller;
     setReconcilingSelection(true);
     try {
       // Read the canonical revision directly: never depend on poll timing. A
       // plain read reflects the committed selection; no forced provider refresh.
-      const catalog = await loadProviderUsageCatalog(storedToken || undefined, false);
-      if (!mountedRef.current) return;
+      const catalog = await loadProviderUsageCatalog(storedToken || undefined, false, controller.signal);
+      if (!mountedRef.current || controller.signal.aborted
+        || !selectionController.current.acceptRead(captured, catalog.available, catalog.selectionRevision)) return;
       setProviderCatalog((current) => catalog.available || !current?.available ? catalog : { ...current, error: catalog.error, refreshing: catalog.refreshing });
       setDraftSelection(catalog.selectedProviders);
       setDraftRevision(catalog.selectionRevision);
       setSelectionConflict(false);
       setSelectionError(t('provider.selectionConflictResolved'));
     } catch {
-      if (mountedRef.current) setSelectionError(t('provider.selectionReconcile'));
+      if (mountedRef.current && !controller.signal.aborted) setSelectionError(t('provider.selectionReconcile'));
     } finally {
-      if (mountedRef.current) setReconcilingSelection(false);
+      if (reconcileAbortRef.current === controller) {
+        reconcileAbortRef.current = null;
+        if (mountedRef.current) setReconcilingSelection(false);
+      }
     }
   };
 
@@ -798,7 +817,8 @@ function ProviderUsageCustomizeDialog({
               <button
                 type="button"
                 onClick={onReconcileSelection}
-                className="text-xs font-medium text-accent underline decoration-border-subtle underline-offset-2 hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                disabled={saving}
+                className="text-xs font-medium text-accent underline decoration-border-subtle underline-offset-2 hover:brightness-110 disabled:cursor-wait disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
               >{t('provider.reviewChanges')}</button>
             ) : null}
             {selectionChanged ? (
