@@ -1,5 +1,5 @@
 import { useI18n } from '../lib/i18n';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FilePenLine, Hash, Search, Server, Settings2 } from 'lucide-react';
 import { parse as parseYaml, parseDocument, stringify as stringifyYaml } from 'yaml';
 import { Card } from '../components/ui/Card';
@@ -125,6 +125,7 @@ function MetricCard({
 export function ConfigRoute() {
   const { t } = useI18n();
   const { config, snapshot, reloadConfig, saveConfig } = useMissionControl();
+  const [editorBase, setEditorBase] = useState(config);
   const [draft, setDraft] = useState(config.content);
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -137,28 +138,20 @@ export function ConfigRoute() {
   const [showChangedOnly, setShowChangedOnly] = useState(false);
   const [sectionOpen, setSectionOpen] = useState<Record<string, boolean>>({});
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const operationBusyRef = useRef(false);
+  const acceptConfig = useCallback((updated: typeof config) => {
+    setEditorBase(updated);
+    setDraft(updated.content);
+    setFormState(isPlainObject(updated.config) ? updated.config : {});
+    setComplexDrafts({});
+    setPendingEdits({});
+    setYamlError(null);
+    setSearchQuery('');
+    setShowChangedOnly(false);
+  }, []);
 
-  const { state: pullState } = usePullToReload({
-    containerRef,
-    onReload: async () => {
-      setSaving(true);
-      setStatus(null);
-      try {
-        const updated = await reloadConfig();
-        setDraft(updated.content);
-        setFormState(isPlainObject(updated.config) ? (updated.config as Record<string, unknown>) : {});
-        setComplexDrafts({});
-        setPendingEdits({});
-        setStatus(t('config.reloaded', { path: updated.path }));
-      } catch (error) {
-        setStatus(error instanceof Error ? error.message : t('config.failedReload'));
-      } finally {
-        setSaving(false);
-      }
-    },
-  });
-
-  const dirty = useMemo(() => draft !== config.content || Object.keys(pendingEdits).length > 0 || Object.keys(complexDrafts).length > 0, [draft, config.content, pendingEdits, complexDrafts]);
+  const dirty = useMemo(() => draft !== editorBase.content || Object.keys(pendingEdits).length > 0 || Object.keys(complexDrafts).length > 0, [draft, editorBase.content, pendingEdits, complexDrafts]);
+  const changedExternally = dirty && config.available && (config.hash !== editorBase.hash || config.content !== editorBase.content || config.path !== editorBase.path);
   const formSections = useMemo(() => Object.entries(formState ?? {}), [formState]);
   const changedPathKeys = useMemo(() => new Set(Object.keys(pendingEdits)), [pendingEdits]);
   const searchLower = useMemo(() => searchQuery.trim().toLowerCase(), [searchQuery]);
@@ -179,14 +172,10 @@ export function ConfigRoute() {
   );
 
   useEffect(() => {
-    setDraft(config.content);
-    setFormState(isPlainObject(config.config) ? (config.config as Record<string, unknown>) : {});
-    setComplexDrafts({});
-    setPendingEdits({});
-    setYamlError(null);
-    setSearchQuery('');
-    setShowChangedOnly(false);
-  }, [config]);
+    if (dirty || saving || !config.available) return;
+    if (editorBase.available && config.hash === editorBase.hash && config.content === editorBase.content && config.path === editorBase.path) return;
+    acceptConfig(config);
+  }, [config, dirty, saving, editorBase, acceptConfig]);
 
   useEffect(() => {
     setSectionOpen((previous) => {
@@ -240,6 +229,8 @@ export function ConfigRoute() {
   };
 
   const handleSave = async () => {
+    if (operationBusyRef.current || !editorBase.available) return;
+    operationBusyRef.current = true;
     setSaving(true);
     setStatus(null);
     try {
@@ -271,45 +262,47 @@ export function ConfigRoute() {
         payloadYaml = String(doc);
       }
 
-      const updated = await saveConfig(payloadYaml, config.hash);
-      setDraft(updated.content);
-      setFormState(isPlainObject(updated.config) ? (updated.config as Record<string, unknown>) : {});
-      setComplexDrafts({});
-      setPendingEdits({});
+      const updated = await saveConfig(payloadYaml, editorBase.hash);
+      if (!updated.available) throw new Error(t('config.saveUnverified'));
+      acceptConfig(updated);
       setStatus(t('config.saved', { path: updated.path }));
     } catch (error) {
       setStatus(error instanceof Error ? error.message : t('config.failedSave'));
     } finally {
+      operationBusyRef.current = false;
       setSaving(false);
     }
   };
 
   const handleReload = async () => {
+    if (operationBusyRef.current) return;
+    if (dirty && !window.confirm(t('config.confirmDiscard'))) return;
+    operationBusyRef.current = true;
     setSaving(true);
     setStatus(null);
     try {
       const updated = await reloadConfig();
-      setDraft(updated.content);
-      setFormState(isPlainObject(updated.config) ? (updated.config as Record<string, unknown>) : {});
-      setComplexDrafts({});
-      setPendingEdits({});
-      setYamlError(null);
+      if (!updated.available) throw new Error(t('config.failedReload'));
+      acceptConfig(updated);
       setStatus(t('config.reloaded', { path: updated.path }));
     } catch (error) {
       setStatus(error instanceof Error ? error.message : t('config.failedReload'));
     } finally {
+      operationBusyRef.current = false;
       setSaving(false);
     }
   };
 
   const handleReset = () => {
-    setDraft(config.content);
-    setFormState(isPlainObject(config.config) ? (config.config as Record<string, unknown>) : {});
-    setComplexDrafts({});
-    setPendingEdits({});
-    setYamlError(null);
+    acceptConfig(config.available ? config : editorBase);
     setStatus(t('config.resetNote'));
   };
+
+  const { state: pullState } = usePullToReload({
+    containerRef,
+    onReload: handleReload,
+    disabled: saving,
+  });
 
   const sectionDomId = (section: string) => `config-section-${section.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 
@@ -564,14 +557,14 @@ export function ConfigRoute() {
           <MetricCard
             icon={FilePenLine}
             label={t('config.file')}
-            value={config.path}
-            hint={config.exists ? t('config.fileExists') : t('config.missing')}
+            value={editorBase.path}
+            hint={editorBase.exists ? t('config.fileExists') : t('config.missing')}
             color="text-sky-400"
           />
           <MetricCard
             icon={Hash}
             label={t('config.hash')}
-            value={config.hash ? config.hash.slice(0, 12) : '—'}
+            value={editorBase.hash ? editorBase.hash.slice(0, 12) : '—'}
             hint={t('config.lockToken')}
             color="text-violet-400"
           />
@@ -591,6 +584,12 @@ export function ConfigRoute() {
           />
         </div>
       </Card>
+
+      {changedExternally ? (
+        <div role="status" className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+          {t('config.changedExternally')}
+        </div>
+      ) : null}
 
       <HonchoSettingsPanel />
 
@@ -623,13 +622,14 @@ export function ConfigRoute() {
         </div>
       </div>
 
+      <fieldset disabled={saving || !editorBase.available} className="min-w-0">
       {editorMode === 'yaml' ? (
         <Card padding="none" className="!border-0">
           <div className="flex flex-col gap-2 border-b border-border px-4 pb-3 pt-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <span className="eyebrow">{t('config.editor')}</span>
               <h3 className="mt-0.5 truncate text-sm font-semibold text-text">config.yaml</h3>
-              <p className="mt-1 truncate text-xs text-text-subtle">{t('config.hash')}: {config.hash || '—'}</p>
+              <p className="mt-1 truncate text-xs text-text-subtle">{t('config.hash')}: {editorBase.hash || '—'}</p>
             </div>
             <Badge variant={yamlError ? 'warning' : dirty ? 'warning' : 'default'}>
               {yamlError ? t('config.yamlInvalid') : dirty ? t('config.unsavedChanges') : t('config.inSync')}
@@ -736,12 +736,14 @@ export function ConfigRoute() {
         </Card>
       )}
 
+      </fieldset>
+
       <div className="config-action-bar sticky bottom-3 z-30 flex min-w-0 shrink-0 flex-col gap-2 overflow-hidden rounded-xl border border-border-subtle bg-surface/95 p-3 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
         <p className="min-w-0 truncate text-xs text-text-subtle">
           {status ?? (dirty ? t('config.unsavedChanges') : t('config.inSync'))}
         </p>
         <div className="config-action-bar-buttons -mx-1 flex min-w-0 max-w-[calc(100%+0.5rem)] shrink-0 flex-nowrap gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:mx-0 sm:max-w-none sm:flex-wrap sm:overflow-visible sm:px-0 sm:pb-0">
-          <Button className="shrink-0 whitespace-nowrap" type="button" variant="primary" disabled={saving || !dirty || Boolean(yamlError)} loading={saving} onClick={() => void handleSave()}>
+          <Button className="shrink-0 whitespace-nowrap" type="button" variant="primary" disabled={saving || !editorBase.available || !dirty || Boolean(yamlError)} loading={saving} onClick={() => void handleSave()}>
             {t('config.save')}
           </Button>
           <Button className="shrink-0 whitespace-nowrap" type="button" variant="secondary" onClick={() => void handleReload()} disabled={saving}>
