@@ -35,6 +35,7 @@ import { PluginRegistry } from '../core/plugins/registry';
 import { NavStatusIndicator } from './NavStatusIndicator';
 import type { MCPluginNavItem } from '../core/plugins/types';
 import { resolveIcon } from '../lib/icons';
+import { filterNavigationPaletteItems, isNavigationPaletteTextTarget, mergeNavigationItems } from '../lib/navigation-palette';
 
 const APP_VERSION = packageJson.version;
 
@@ -89,9 +90,10 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
 
   // Plugin nav items (from registry)
   const registryNavItems = registry?.getNavItems() ?? [];
-  // Merge prop navItems (from runtime plugin loader) with registry nav items
-  const navItems: MCPluginNavItem[] = [...defaultNavItems, ...registryNavItems, ...runtimeNavItems]
-    .sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
+  // Merge prop navItems (from the runtime plugin loader) with registry nav items.
+  // The loader wires the same plugin list through both surfaces, so the shared
+  // helper dedupes by destination (see mergeNavigationItems).
+  const navItems: MCPluginNavItem[] = mergeNavigationItems(defaultNavItems, registryNavItems, runtimeNavItems);
 
   const [sideOpen, setSideOpen] = useState(false);
   const [sideCollapsed, setSideCollapsed] = useState(false);
@@ -136,9 +138,12 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
   useEffect(() => {
     const onShortcut = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.key.toLowerCase() !== 'k') return;
-      const target = event.target;
-      if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select, [contenteditable="true"], .cm-editor, [role="textbox"]'))) return;
-      if (authRequired || chatOpen || sideOpen) return;
+      // The palette's own search field is a legitimate text target, but it is not
+      // an independent editor: with the palette open the shortcut must still
+      // toggle it closed, or Cmd/Ctrl+K is dead exactly while the user is in it.
+      const insideOpenPalette = paletteOpen && event.target instanceof Node && paletteRef.current?.contains(event.target);
+      if (!insideOpenPalette && isNavigationPaletteTextTarget(event.target)) return;
+      if (authRequired || sideOpen) return;
       event.preventDefault();
       if (paletteOpen) closePalette();
       else openPalette();
@@ -152,7 +157,12 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
     paletteInputRef.current?.focus();
     const onDialogKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        event.stopPropagation();
+        // Capture phase: the palette is the topmost layer, so Escape must be
+        // consumed here before the chat drawer / sidebar / route handlers see it.
+        // A bubble listener would run after React's root-delegated drawer
+        // handler and closing the palette would also close the drawer beneath.
+        event.preventDefault();
+        event.stopImmediatePropagation();
         closePalette();
         return;
       }
@@ -164,8 +174,8 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
-    window.addEventListener('keydown', onDialogKeyDown);
-    return () => window.removeEventListener('keydown', onDialogKeyDown);
+    window.addEventListener('keydown', onDialogKeyDown, true);
+    return () => window.removeEventListener('keydown', onDialogKeyDown, true);
   }, [closePalette, paletteOpen]);
 
   const closeChat = useCallback(() => {
@@ -265,13 +275,10 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
 
   const activeNav = navItems.find((item) => (item.to === '/' ? location.pathname === '/' : location.pathname.startsWith(item.to)));
   const isOverviewRoute = activeNav?.to === '/';
-  const paletteItems = [
+  const paletteItems = filterNavigationPaletteItems([
     ...navItems.map((item) => ({ kind: 'route' as const, label: item.label.includes('.') ? t(item.label) : item.label, to: item.to, icon: item.icon })),
     { kind: 'chat' as const, label: t('chat.button'), to: '', icon: 'MessageSquare' },
-  ].filter((item) => {
-    const query = paletteQuery.trim().toLocaleLowerCase();
-    return !query || item.label.toLocaleLowerCase().includes(query) || item.to.toLocaleLowerCase().includes(query);
-  });
+  ], paletteQuery);
 
   useEffect(() => {
     setSideOpen(false);
