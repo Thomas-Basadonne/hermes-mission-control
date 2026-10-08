@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   getFallbackConfig,
   getFallbackSkills,
@@ -122,6 +122,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   const [tools, setTools] = useState<MissionControlToolsSnapshot>(getFallbackTools());
   const [skills, setSkills] = useState<MissionControlSkillsSnapshot>(getFallbackSkills());
   const [config, setConfig] = useState<MissionControlConfigSnapshot>(getFallbackConfig());
+  const configRequestIdRef = useRef(0);
   const [loading, setLoading] = useState(true);
   const [authRequired, setAuthRequired] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -181,8 +182,9 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   }, [resolvedTheme]);
 
   const refreshConfig = useCallback(async (token?: string) => {
+    const requestId = ++configRequestIdRef.current;
     const updated = await loadMissionControlConfig(token);
-    setConfig(updated);
+    if (requestId === configRequestIdRef.current) setConfig(updated);
     return updated;
   }, []);
 
@@ -396,13 +398,15 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const reloadConfig = useCallback(async () => {
-    const updated = await loadMissionControlConfig(storedToken || undefined);
-    setConfig(updated);
-    return updated;
-  }, [storedToken]);
+    return refreshConfig(storedToken || undefined);
+  }, [refreshConfig, storedToken]);
 
   const saveConfig = useCallback(async (content: string, expectedHash?: string | null) => {
+    // A pre-save read, or a poll started during the write, cannot roll back the
+    // canonical post-save readback when its response eventually arrives.
+    ++configRequestIdRef.current;
     const updated = await saveMissionControlConfig(storedToken || undefined, content, expectedHash ?? config.hash ?? undefined);
+    ++configRequestIdRef.current;
     setConfig(updated);
     return updated;
   }, [config.hash, storedToken]);
@@ -426,8 +430,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       }
 
       if (action.id === 'reload-config') {
-        const updated = await loadMissionControlConfig(token || undefined);
-        setConfig(updated);
+        const updated = await refreshConfig(token || undefined);
         setActionResult({
           label: action.label,
           endpoint: action.endpoint,
@@ -472,7 +475,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     } finally {
       setActionLoading(null);
     }
-  }, [refreshAll, storedToken]);
+  }, [refreshAll, refreshConfig, storedToken]);
 
   const value = useMemo<MissionControlContextValue>(() => ({
     snapshot,
