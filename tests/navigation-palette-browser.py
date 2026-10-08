@@ -6,8 +6,10 @@ and the chat WebSocket is completed by a stub upgrade handler. Nothing here
 touches user data, the user's Chrome profile, or the live telemetry backend.
 
 Covers the acceptance contract of epic MC-F07: keyboard open/close, search,
+keyboard navigation (up/down selection, Enter activation, single-match Enter),
 navigation, focus entry/restoration, Escape, editor/composer non-interference,
-plugin-present vs plugin-absent catalogs and the mobile layout.
+plugin-present vs plugin-absent catalogs, and the mobile behavior (no header
+trigger, palette not reachable below the breakpoint).
 """
 from __future__ import annotations
 
@@ -118,6 +120,13 @@ def main():
                     report['console_errors'] = evaluate('window.consoleErrors || []')
                     report['requests'] = evaluate('window.requests || []')
                     report['rendered_text'] = evaluate("document.body?.innerText?.slice(0, 3000)")
+                    report['palette_state'] = evaluate('''(() => {
+                        const items = [...document.querySelectorAll('.navigation-palette-item')];
+                        return { open: !!document.querySelector('.navigation-palette'),
+                                 total: items.length,
+                                 selected: items.findIndex(el => el.classList.contains('is-selected')),
+                                 active: document.activeElement ? document.activeElement.className : null };
+                    })()''')
                     driver.screenshot(str(evidence / 'failure.png'))
                     raise AssertionError(message)
 
@@ -333,41 +342,132 @@ def main():
                 wait("document.querySelector('[data-testid=location]')?.textContent === '/reports'", 'plugin route item did not navigate')
                 check('plugin-present and plugin-absent catalogs: plugin nav items appear, are searchable and navigate; absent when not registered')
 
-                # --- 7. mobile layout ---
+                # --- 7. keyboard navigation: arrows cycle, Enter activates ---
+                driver.call('Emulation.setDeviceMetricsOverride', width=1280, height=1000, deviceScaleFactor=1, mobile=False)
+                evaluate('window.mountShell({pluginItems: ' + json.dumps(plugin_items) + '})')
+                wait("!!document.querySelector('.palette-open-button')", 'shell failed to remount for the keyboard pass')
+
+                def press_key(key, code, vk):
+                    driver.call('Input.dispatchKeyEvent', type='keyDown', key=key, code=code, windowsVirtualKeyCode=vk)
+                    driver.call('Input.dispatchKeyEvent', type='keyUp', key=key, code=code, windowsVirtualKeyCode=vk)
+                    # Let React flush the state update before the next key, so a
+                    # fast burst of arrows cannot race the re-render.
+                    time.sleep(0.06)
+
+                def selected_index():
+                    return evaluate('''[...document.querySelectorAll('.navigation-palette-item')]
+                        .findIndex(el => el.classList.contains('is-selected'))''')
+
+                def selected_label():
+                    return evaluate('''(() => { const el = document.querySelector('.navigation-palette-item.is-selected');
+                        if (!el) return null;
+                        return [...el.querySelectorAll('span')].filter(s => !s.hasAttribute('aria-hidden')).map(s => s.textContent).join(''); })()''')
+
+                def selected_route():
+                    return evaluate('''(() => { const el = document.querySelector('.navigation-palette-item.is-selected');
+                        if (!el) return null; const kbd = el.querySelector('kbd'); return kbd ? kbd.textContent : null; })()''')
+
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not open the palette')
+                total = evaluate("document.querySelectorAll('.navigation-palette-item').length")
+                assert total >= 8, total
+                assert selected_index() == -1, 'nothing must be preselected before the user arrows'
+                assert evaluate("document.querySelector('.navigation-palette-search input').getAttribute('role')") == 'combobox'
+                assert evaluate("document.querySelector('.navigation-palette-results').getAttribute('role')") == 'listbox'
+
+                def wait_selected(n, message=''):
+                    wait(f"(document.querySelectorAll('.navigation-palette-item')[{n}]||{{}}).classList?.contains('is-selected')",
+                         message or f'expected option {n} to be highlighted')
+
+                press_key('ArrowDown', 'ArrowDown', 40)
+                wait_selected(0, 'ArrowDown from no selection must select the first option')
+                first_label = selected_label()
+                assert evaluate("document.querySelector('.navigation-palette-search input').getAttribute('aria-activedescendant')") == 'navigation-palette-option-0', 'the combobox must point at the selected option'
+                assert evaluate("document.querySelector('.navigation-palette-item.is-selected').getAttribute('aria-selected')") == 'true', 'the selected option must be marked aria-selected'
+                assert evaluate("document.querySelector('.navigation-palette-search input') === document.activeElement"), 'arrowing must keep focus in the search field'
+                assert evaluate("document.querySelectorAll('.navigation-palette-item.is-selected').length === 1"), 'exactly one option must be highlighted'
+
+                # Cyclic movement, then wrap-around at both ends.
+                press_key('ArrowDown', 'ArrowDown', 40)
+                wait_selected(1)
+                press_key('ArrowUp', 'ArrowUp', 38)
+                wait_selected(0)
+                press_key('ArrowUp', 'ArrowUp', 38)
+                wait_selected(total - 1, 'ArrowUp from the first option must wrap to the last')
+                press_key('ArrowDown', 'ArrowDown', 40)
+                wait_selected(0, 'ArrowDown from the last option must wrap to the first')
+                assert selected_label() == first_label, (selected_label(), first_label)
+                screenshot('palette-keyboard-selection')
+                check('arrow keys cycle the selection with a visible/aria highlight, wrapping at both ends and keeping focus in the search field')
+
+                # Enter navigates to the option currently selected: arrow down to a
+                # route the fixture actually renders, then activate it.
+                for _ in range(total):
+                    if selected_route() == '/cron':
+                        break
+                    press_key('ArrowDown', 'ArrowDown', 40)
+                    time.sleep(0.05)
+                assert selected_route() == '/cron', f'expected to reach /cron by arrowing, got {selected_route()}'
+                press_key('Enter', 'Enter', 13)
+                wait("!document.querySelector('.navigation-palette')", 'Enter did not activate the selected option')
+                wait("document.querySelector('[data-testid=location]')?.textContent === '/cron'", 'Enter did not navigate to the selected route')
+                check('Enter navigates to the option selected with the arrow keys')
+
+                # Single filtered match: Enter goes straight there, no arrows.
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not reopen the palette')
+                type_search('cron')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1", f'search did not collapse to a single match: {labels()}')
+                assert selected_index() == -1, 'filtering must not auto-select an option the user never chose'
+                press_key('Enter', 'Enter', 13)
+                wait("!document.querySelector('.navigation-palette')", 'Enter on a single result did not close the palette')
+                wait("document.querySelector('[data-testid=location]')?.textContent === '/cron'", 'Enter on a single result did not navigate directly')
+                check('a single filtered result is activated by Enter directly, without arrowing')
+
+                # Empty state: Enter does nothing, arrows select nothing.
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not reopen the palette')
+                type_search('no-such-page')
+                wait("!!document.querySelector('.navigation-palette-empty')", 'empty state did not render')
+                press_key('ArrowDown', 'ArrowDown', 40)
+                press_key('Enter', 'Enter', 13)
+                time.sleep(0.3)
+                assert is_open(), 'Enter on an empty result set must not navigate'
+                assert selected_index() == -1, 'an empty result set has no selectable option'
+                check('empty result set: arrows select nothing and Enter is inert')
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", 'Escape did not close the palette')
+
+                # --- 8. mobile: no trigger, not reachable ---
                 driver.call('Emulation.setDeviceMetricsOverride', width=390, height=844, deviceScaleFactor=3, mobile=True)
                 evaluate('window.mountShell({pluginItems: ' + json.dumps(plugin_items) + '})')
-                wait("!!document.querySelector('.palette-open-button')", 'mobile shell failed to mount')
+                wait("!!document.querySelector('.workspace-bar')", 'mobile shell failed to mount')
                 assert evaluate('innerWidth') == 390, evaluate('innerWidth')
+                report['mobile_debug'] = evaluate("({ innerWidth, mm: matchMedia('(max-width: 640px)').matches, buttons: document.querySelectorAll('.palette-open-button').length })")
+                # No palette trigger in the header at mobile width. The shell reads
+                # the media query through a listener, so give the state a tick.
+                wait("document.querySelectorAll('.palette-open-button').length === 0",
+                     f"the palette header trigger must not render on mobile: {report['mobile_debug']}")
+                # The shortcut is inert and the overlay is not rendered: the palette
+                # cannot be reached at all.
                 press_shortcut(4)
-                wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not open the palette on mobile')
-                geometry = evaluate('''(() => {
-                    const palette = document.querySelector('.navigation-palette');
-                    const results = document.querySelector('.navigation-palette-results');
-                    const r = palette.getBoundingClientRect();
-                    const items = [...results.querySelectorAll('.navigation-palette-item')].map(el => el.getBoundingClientRect());
-                    return {
-                        width: r.width, left: r.left, right: r.right,
-                        viewport: innerWidth,
-                        resultsScrollable: results.scrollHeight > results.clientHeight + 1,
-                        overflow: document.documentElement.scrollWidth > innerWidth + 1,
-                        visibleItems: items.filter(i => i.width > 0 && i.height > 0).length,
-                        maxRight: Math.max(...items.map(i => i.right)),
-                    };
-                })()''')
-                assert geometry['visibleItems'] >= 10, geometry
-                # The mobile stylesheet keeps a small safe-area gutter on the
-                # backdrop (0.5rem each side), so the panel is inset, not flush.
-                assert geometry['width'] >= geometry['viewport'] * 0.9, geometry
-                assert geometry['left'] >= -1 and geometry['right'] <= geometry['viewport'] + 1, geometry
-                assert geometry['maxRight'] <= geometry['viewport'] + 1, geometry
-                assert not geometry['overflow'], geometry
-                report['mobile_geometry'] = geometry
+                time.sleep(0.4)
+                assert not is_open(), 'Cmd+K must not open the palette on mobile'
+                assert not is_open(), 'the palette must be hidden on mobile'
                 screenshot('palette-mobile-390')
-                click_item('Overview')
-                wait("!document.querySelector('.navigation-palette')", 'mobile selection did not close the palette')
-                check('mobile 390px: palette spans the viewport, items stay inside it, no horizontal overflow, selection works')
+                check('mobile 390px: no palette trigger in the header and the palette is not reachable (inert shortcut, hidden overlay)')
 
-                report['requests'] = evaluate('window.requests')
+                # Back to desktop: the palette is reachable again.
+                driver.call('Emulation.setDeviceMetricsOverride', width=1280, height=1000, deviceScaleFactor=1, mobile=False)
+                evaluate('window.mountShell({pluginItems: ' + json.dumps(plugin_items) + '})')
+                wait("!!document.querySelector('.palette-open-button')", 'desktop shell failed to remount')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'Cmd+K must open the palette again above the mobile breakpoint')
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", 'Escape did not close the palette')
+                check('desktop is unaffected: the palette opens again above the mobile breakpoint')
+
+                report['requests'] = evaluate('window.requests || []')
                 report['browser_errors'] = evaluate('window.failures')
                 assert not report['browser_errors'], report['browser_errors']
                 report['success'] = True

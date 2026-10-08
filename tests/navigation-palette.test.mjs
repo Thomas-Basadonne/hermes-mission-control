@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { filterNavigationPaletteItems, isNavigationPaletteTextTarget, mergeNavigationItems } from '../src/lib/navigation-palette.ts';
+import { filterNavigationPaletteItems, isNavigationPaletteTextTarget, mergeNavigationItems, resolveNavigationPaletteIndex, stepNavigationPaletteIndex, NAVIGATION_PALETTE_MOBILE_QUERY } from '../src/lib/navigation-palette.ts';
 
 class FakeElement {
   constructor({ editable = false, matched = false } = {}) {
@@ -45,6 +45,32 @@ try {
     'first',
     'the first occurrence in merge priority order wins',
   );
+
+  // Arrow-key cycling: wraps around both ends, tolerates a stale index and
+  // reports -1 (nothing selectable) for an empty result set.
+  assert.equal(stepNavigationPaletteIndex(-1, 3, 1), 0, 'ArrowDown from no selection picks the first option');
+  assert.equal(stepNavigationPaletteIndex(-1, 3, -1), 2, 'ArrowUp from no selection picks the last option');
+  assert.equal(stepNavigationPaletteIndex(0, 3, 1), 1, 'ArrowDown advances');
+  assert.equal(stepNavigationPaletteIndex(2, 3, 1), 0, 'ArrowDown wraps to the top');
+  assert.equal(stepNavigationPaletteIndex(0, 3, -1), 2, 'ArrowUp wraps to the bottom');
+  assert.equal(stepNavigationPaletteIndex(7, 3, 1), 2, 'a stale index is normalised before stepping');
+  assert.equal(stepNavigationPaletteIndex(0, 0, 1), -1, 'an empty result set has no selectable option');
+
+  // Enter activation index: a collapsed (single-result) list anchors on the
+  // first option so Enter navigates without an explicit arrow press.
+  assert.equal(resolveNavigationPaletteIndex(0, -1), -1, 'empty list resolves to no selection');
+  assert.equal(resolveNavigationPaletteIndex(1, -1), 0, 'single match activates on Enter with no selection');
+  assert.equal(resolveNavigationPaletteIndex(5, -1), 0, 'unset selection resolves to the first option');
+  assert.equal(resolveNavigationPaletteIndex(5, 3), 3, 'a valid selection is preserved');
+  assert.equal(resolveNavigationPaletteIndex(2, 5), 0, 'a selection past the shrunk list falls back to the first match');
+
+  // The breakpoint is shared between the stylesheet and the matchMedia gate, so
+  // a drift between the two would silently break the mobile hiding.
+  const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const breakpoint = /max-width:\s*(\d+)px/.exec(NAVIGATION_PALETTE_MOBILE_QUERY);
+  assert.ok(breakpoint, `mobile query must carry a px breakpoint: ${NAVIGATION_PALETTE_MOBILE_QUERY}`);
+  assert.match(styles, new RegExp(`@media \\(max-width: ${breakpoint[1]}px\\)[\\s\\S]*?\\.palette-open-button\\s*\\{[^}]*display:\\s*none`), 'mobile stylesheet must hide the header trigger');
+  assert.match(styles, new RegExp(`@media \\(max-width: ${breakpoint[1]}px\\)[\\s\\S]*?\\.navigation-palette-backdrop\\s*\\{[^}]*display:\\s*none`), 'mobile stylesheet must hide the palette overlay');
 } finally {
   if (previousHTMLElement === undefined) delete globalThis.HTMLElement;
   else globalThis.HTMLElement = previousHTMLElement;
@@ -56,5 +82,12 @@ const shell = readFileSync(new URL('../src/components/MissionControlShell.tsx', 
 assert.match(shell, /addEventListener\('keydown', onDialogKeyDown, true\)/, 'palette Escape handler must be capture-phase');
 assert.match(shell, /stopImmediatePropagation\(\)/, 'palette Escape must not fall through to lower layers');
 assert.match(shell, /insideOpenPalette/, 'the palette search field must still toggle the palette closed');
+// Keyboard navigation and mobile gating are wired into the real shell.
+assert.match(shell, /event\.key === 'ArrowDown' \|\| event\.key === 'ArrowUp'/, 'the palette must handle Up/Down arrows');
+assert.match(shell, /stepNavigationPaletteIndex\(/, 'arrow handling must use the cyclic selection helper');
+assert.match(shell, /event\.key === 'Enter'[\s\S]*?activatePaletteItemRef\.current/, 'Enter must activate the selected/resolved option');
+assert.match(shell, /paletteOpen && !paletteMobile/, 'the palette overlay must not render on mobile');
+assert.match(shell, /paletteMobile \? null : \(/, 'the header trigger must not render on mobile');
+assert.match(shell, /if \(paletteMobile\) return;/, 'the shortcut must be inert on mobile');
 
-console.log('navigation palette filtering, catalog merge, shortcut target and Escape-layer behavior passed');
+console.log('navigation palette filtering, catalog merge, keyboard selection, mobile gating, shortcut target and Escape-layer behavior passed');

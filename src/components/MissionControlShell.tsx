@@ -35,7 +35,7 @@ import { PluginRegistry } from '../core/plugins/registry';
 import { NavStatusIndicator } from './NavStatusIndicator';
 import type { MCPluginNavItem } from '../core/plugins/types';
 import { resolveIcon } from '../lib/icons';
-import { filterNavigationPaletteItems, isNavigationPaletteTextTarget, mergeNavigationItems } from '../lib/navigation-palette';
+import { filterNavigationPaletteItems, isNavigationPaletteTextTarget, mergeNavigationItems, NAVIGATION_PALETTE_MOBILE_QUERY, resolveNavigationPaletteIndex, stepNavigationPaletteIndex } from '../lib/navigation-palette';
 
 const APP_VERSION = packageJson.version;
 
@@ -99,8 +99,12 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
   const [sideCollapsed, setSideCollapsed] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState('');
+  const [paletteIndex, setPaletteIndex] = useState(-1);
+  const [paletteMobile, setPaletteMobile] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia(NAVIGATION_PALETTE_MOBILE_QUERY).matches);
   const paletteRef = useRef<HTMLElement | null>(null);
   const paletteInputRef = useRef<HTMLInputElement | null>(null);
+  const paletteListRef = useRef<HTMLDivElement | null>(null);
   const paletteReturnFocusRef = useRef<HTMLElement | null>(null);
   const [showMobileScrollTop, setShowMobileScrollTop] = useState(false);
   const [chatOpen, setChatOpenState] = useState<boolean>(() => {
@@ -128,15 +132,71 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
   const openPalette = useCallback(() => {
     paletteReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setPaletteQuery('');
+    setPaletteIndex(-1);
     setPaletteOpen(true);
   }, []);
   const closePalette = useCallback(() => {
     setPaletteOpen(false);
+    setPaletteIndex(-1);
     requestAnimationFrame(() => paletteReturnFocusRef.current?.focus());
   }, []);
 
+  // Mobile gating: the palette is a desktop affordance. Below the CSS
+  // breakpoint the header trigger is hidden and the shortcut is inert so the
+  // palette cannot be reached at all (it is not rendered either).
+  useEffect(() => {
+    const query = window.matchMedia(NAVIGATION_PALETTE_MOBILE_QUERY);
+    const sync = () => {
+      setPaletteMobile(query.matches);
+      if (query.matches) setPaletteOpen(false);
+    };
+    sync();
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
+  }, []);
+
+  const paletteItems = filterNavigationPaletteItems([
+    ...navItems.map((item) => ({ kind: 'route' as const, label: item.label.includes('.') ? t(item.label) : item.label, to: item.to, icon: item.icon })),
+    { kind: 'chat' as const, label: t('chat.button'), to: '', icon: 'MessageSquare' },
+  ], paletteQuery);
+
+  // Enter, click and arrow selection all funnel through here: one navigation
+  // path for keyboard and pointer.
+  const activatePaletteItem = useCallback((item: (typeof paletteItems)[number] | undefined) => {
+    if (!item) return;
+    if (item.kind === 'chat') setChatOpen(true);
+    else navigate(item.to);
+    closePalette();
+  }, [closePalette, navigate, setChatOpen]);
+
+  // Keep the highlighted option inside the filtered list without introducing a
+  // selection the user never made: nothing is selected on open (index -1), and a
+  // selection that the new query pushed out of range is simply cleared.
+  useEffect(() => {
+    setPaletteIndex((current) => (current < paletteItems.length ? current : -1));
+  }, [paletteItems.length]);
+
+  // Keep the highlighted option visible while arrowing through a long list.
+  useEffect(() => {
+    if (!paletteOpen || paletteIndex < 0) return;
+    paletteListRef.current?.querySelectorAll<HTMLElement>('.navigation-palette-item')[paletteIndex]
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [paletteIndex, paletteOpen]);
+
+  // The dialog key handler is a single capture-phase listener whose identity
+  // must not change on every keystroke, so it reads the live result set, the
+  // current selection and the activator through refs.
+  const paletteItemsRef = useRef(paletteItems);
+  paletteItemsRef.current = paletteItems;
+  const paletteIndexRef = useRef(paletteIndex);
+  paletteIndexRef.current = paletteIndex;
+  const activatePaletteItemRef = useRef(activatePaletteItem);
+  activatePaletteItemRef.current = activatePaletteItem;
+
   useEffect(() => {
     const onShortcut = (event: KeyboardEvent) => {
+      // Mobile: the palette is not reachable, so the shortcut must not open it.
+      if (paletteMobile) return;
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.key.toLowerCase() !== 'k') return;
       // The palette's own search field is a legitimate text target, but it is not
       // an independent editor: with the palette open the shortcut must still
@@ -150,7 +210,7 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
     };
     window.addEventListener('keydown', onShortcut);
     return () => window.removeEventListener('keydown', onShortcut);
-  }, [authRequired, chatOpen, closePalette, openPalette, paletteOpen, sideOpen]);
+  }, [authRequired, chatOpen, closePalette, openPalette, paletteMobile, paletteOpen, sideOpen]);
 
   useEffect(() => {
     if (!paletteOpen) return;
@@ -164,6 +224,25 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
         event.preventDefault();
         event.stopImmediatePropagation();
         closePalette();
+        return;
+      }
+      // Arrow keys move the selection cyclically over the filtered options and
+      // stay in the search field, so typing and navigating share one focus point.
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const delta = event.key === 'ArrowDown' ? 1 : -1;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setPaletteIndex((current) => stepNavigationPaletteIndex(current, paletteItemsRef.current.length, delta));
+        return;
+      }
+      // Enter navigates to the highlighted option. With no explicit selection the
+      // first (single) match is activated directly.
+      if (event.key === 'Enter') {
+        const index = resolveNavigationPaletteIndex(paletteItemsRef.current.length, paletteIndexRef.current);
+        if (index < 0) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        activatePaletteItemRef.current(paletteItemsRef.current[index]);
         return;
       }
       if (event.key !== 'Tab' || !paletteRef.current) return;
@@ -275,10 +354,6 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
 
   const activeNav = navItems.find((item) => (item.to === '/' ? location.pathname === '/' : location.pathname.startsWith(item.to)));
   const isOverviewRoute = activeNav?.to === '/';
-  const paletteItems = filterNavigationPaletteItems([
-    ...navItems.map((item) => ({ kind: 'route' as const, label: item.label.includes('.') ? t(item.label) : item.label, to: item.to, icon: item.icon })),
-    { kind: 'chat' as const, label: t('chat.button'), to: '', icon: 'MessageSquare' },
-  ], paletteQuery);
 
   useEffect(() => {
     setSideOpen(false);
@@ -505,18 +580,20 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
                 <h1>{activeNav ? (activeNav.label.includes('.') ? t(activeNav.label) : activeNav.label) : t('nav.overview')}</h1>
               </div>
             </div>
-            <Button
-              variant="secondary"
-              size="md"
-              icon={<Search size={16} />}
-              className="palette-open-button"
-              type="button"
-              onClick={openPalette}
-              aria-label={t('palette.open')}
-              title={t('palette.open')}
-            >
-              <span>{t('palette.open')}</span><kbd>{typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl+K'}</kbd>
-            </Button>
+            {paletteMobile ? null : (
+              <Button
+                variant="secondary"
+                size="md"
+                icon={<Search size={16} />}
+                className="palette-open-button"
+                type="button"
+                onClick={openPalette}
+                aria-label={t('palette.open')}
+                title={t('palette.open')}
+              >
+                <span>{t('palette.open')}</span><kbd>{typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl+K'}</kbd>
+              </Button>
+            )}
             <Button
               ref={chatButtonRef}
               variant="secondary"
@@ -537,7 +614,7 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
             </Button>
           </header>
 
-          {paletteOpen ? (
+          {paletteOpen && !paletteMobile ? (
             <div className="navigation-palette-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closePalette(); }}>
               <section ref={paletteRef} className="navigation-palette" role="dialog" aria-modal="true" aria-label={t('palette.title')}>
                 <div className="navigation-palette-search">
@@ -549,22 +626,25 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
                     onChange={(event) => setPaletteQuery(event.target.value)}
                     placeholder={t('palette.search')}
                     aria-label={t('palette.search')}
+                    role="combobox"
+                    aria-expanded={paletteItems.length > 0}
+                    aria-controls="navigation-palette-results"
+                    aria-activedescendant={paletteIndex >= 0 ? `navigation-palette-option-${paletteIndex}` : undefined}
                   />
                   <button type="button" onClick={closePalette} aria-label={t('palette.close')}>Esc</button>
                 </div>
-                <div className="navigation-palette-results">
-                  {paletteItems.length ? paletteItems.map((item) => {
+                <div className="navigation-palette-results" id="navigation-palette-results" role="listbox" ref={paletteListRef}>
+                  {paletteItems.length ? paletteItems.map((item, index) => {
                     const Icon = resolveIcon(item.icon) ?? ((props: any) => <span {...props} />);
                     return (
                       <button
-                        className="navigation-palette-item"
+                        id={`navigation-palette-option-${index}`}
+                        className={`navigation-palette-item${index === paletteIndex ? ' is-selected' : ''}`}
                         key={`${item.kind}:${item.to || item.label}`}
                         type="button"
-                        onClick={() => {
-                          if (item.kind === 'chat') setChatOpen(true);
-                          else navigate(item.to);
-                          closePalette();
-                        }}
+                        role="option"
+                        aria-selected={index === paletteIndex}
+                        onClick={() => activatePaletteItem(item)}
                       >
                         <Icon size={17} aria-hidden="true" />
                         <span>{item.label}</span>

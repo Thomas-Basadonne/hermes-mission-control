@@ -668,16 +668,22 @@ body.modal-open .route-page-scroll {
 }
 
 .navigation-palette-item:hover,
-.navigation-palette-item:focus-visible { outline: none; background: var(--color-surface-raised); }
+.navigation-palette-item:focus-visible,
+.navigation-palette-item.is-selected {
+  outline: none;
+  background: var(--color-surface-raised);
+}
+.navigation-palette-item.is-selected { box-shadow: inset 3px 0 0 var(--color-accent); }
 .navigation-palette-item span { flex: 1; }
 .navigation-palette-empty { padding: 1rem; color: var(--color-text-muted); text-align: center; }
 
 @media (max-width: 640px) {
-  .palette-open-button kbd,
-  .palette-open-button > span { display: none; }
-  .navigation-palette-backdrop { padding: max(0.5rem, env(safe-area-inset-top)) 0.5rem max(0.5rem, env(safe-area-inset-bottom)); }
-  .navigation-palette { width: 100%; max-height: 82dvh; border-radius: 0.85rem; }
-  .navigation-palette-results { max-height: 68dvh; }
+  /* The palette is a desktop affordance: on mobile it is neither triggered nor
+     reachable. The header button is removed for good measure even though the
+     shell already skips rendering it at this breakpoint. */
+  .palette-open-button { display: none !important; }
+  .navigation-palette,
+  .navigation-palette-backdrop { display: none !important; }
 }
 
 .workspace-title-wrap {

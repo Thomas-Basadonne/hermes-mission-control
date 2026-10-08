@@ -16,6 +16,32 @@ export function isNavigationPaletteTextTarget(target: EventTarget | null): boole
   return target.isContentEditable || Boolean(target.closest('input, textarea, select, [contenteditable="true"], .cm-editor, [role="textbox"]'));
 }
 
+/** Width (px) at or below which the shell is considered mobile, matching the CSS breakpoint. */
+export const NAVIGATION_PALETTE_MOBILE_QUERY = '(max-width: 640px)';
+
+/**
+ * Move the palette selection by `delta` (normally +1 / -1), wrapping around the
+ * filtered list. With no prior selection (index -1) the first option is taken
+ * going down and the last going up. Returns -1 for an empty result set.
+ */
+export function stepNavigationPaletteIndex(current: number, length: number, delta: number): number {
+  if (length <= 0) return -1;
+  if (current < 0) return delta > 0 ? 0 : length - 1;
+  const base = current % length;
+  return (((base + delta) % length) + length) % length;
+}
+
+/**
+ * Clamp a selection index onto the current result set. A stale index (the query
+ * shrank the list) falls back to the first entry, which is what lets `Enter`
+ * activate a single match without an explicit arrow press.
+ */
+export function resolveNavigationPaletteIndex(length: number, index: number): number {
+  if (length <= 0) return -1;
+  if (index < 0 || index >= length) return 0;
+  return index;
+}
+
 /**
  * Merge the shell's nav catalogs into the single ordered list both the sidebar
  * order and the palette read from.
