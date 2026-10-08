@@ -1,6 +1,6 @@
 import { useI18n } from '../lib/i18n';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowUp, FileText, Loader2, RefreshCw, TerminalSquare } from 'lucide-react';
+import { AlertTriangle, ArrowUp, Check, Copy, FileText, Loader2, Pause, Play, RefreshCw, Search, TerminalSquare } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -16,6 +16,7 @@ import { PullToReloadIndicator } from '../components/PullToReloadIndicator';
 
 const LOGS_REFRESH_INTERVALS = [1000, 2000, 5000] as const;
 type LogsRefreshInterval = (typeof LOGS_REFRESH_INTERVALS)[number];
+type LogsLevelFilter = 'all' | 'error' | 'warn';
 const LOGS_REFRESH_STORAGE_KEY = 'mission-control-logs-refresh-interval';
 
 function readRefreshInterval(): LogsRefreshInterval {
@@ -78,6 +79,14 @@ export function LogsRoute() {
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState<LogsRefreshInterval>(readRefreshInterval);
+  const [updatesPaused, setUpdatesPaused] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [levelFilter, setLevelFilter] = useState<LogsLevelFilter>('all');
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  // Transient per-control feedback for the last copy, so the user sees which
+  // control actually wrote to the clipboard. Reset by a timer.
+  const [copyFeedback, setCopyFeedback] = useState<{ scope: 'filtered' | number; ok: boolean } | null>(null);
+  const copyFeedbackTimerRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const selectedFileNameRef = useRef<string | null>(null);
   const refreshInFlightRef = useRef(false);
@@ -121,6 +130,13 @@ export function LogsRoute() {
 
   useEffect(() => {
     let cancelled = false;
+
+    if (updatesPaused) {
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
 
     async function refreshLogs() {
       if (refreshInFlightRef.current) return;
@@ -166,7 +182,7 @@ export function LogsRoute() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [refreshInterval, storedToken]);
+  }, [refreshInterval, storedToken, updatesPaused]);
 
   const files = logs?.files ?? [];
 
@@ -211,6 +227,16 @@ export function LogsRoute() {
     [visibleFiles, selectedFileName],
   );
 
+  const visibleEntries = useMemo(() => {
+    if (!activeFile) return [];
+    const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+    return [...activeFile.entries]
+      .sort((a, b) => b.lineNumber - a.lineNumber)
+      .slice(0, 160)
+      .filter((entry) => (levelFilter === 'all' || entry.level === levelFilter)
+        && (!normalizedQuery || entry.text.toLocaleLowerCase().includes(normalizedQuery)));
+  }, [activeFile, levelFilter, searchQuery]);
+
   const changeRefreshInterval = (next: LogsRefreshInterval) => {
     setRefreshInterval(next);
     try {
@@ -219,6 +245,29 @@ export function LogsRoute() {
       // Storage can be unavailable in private browsing; the setting still applies in memory.
     }
   };
+
+  const copyText = async (text: string, scope: 'filtered' | number) => {
+    let ok = false;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(text);
+      ok = true;
+      setCopyStatus(t('logs.copySuccess'));
+    } catch {
+      setCopyStatus(t('logs.copyFailed'));
+    }
+    // Show the outcome on the control that was pressed, then fade it back.
+    setCopyFeedback({ scope, ok });
+    if (copyFeedbackTimerRef.current !== null) window.clearTimeout(copyFeedbackTimerRef.current);
+    copyFeedbackTimerRef.current = window.setTimeout(() => {
+      setCopyFeedback(null);
+      copyFeedbackTimerRef.current = null;
+    }, 2000);
+  };
+
+  useEffect(() => () => {
+    if (copyFeedbackTimerRef.current !== null) window.clearTimeout(copyFeedbackTimerRef.current);
+  }, []);
 
   return (
     <div ref={containerRef} className="logs-page route-page-scroll flex min-w-0 flex-col gap-5 h-full overflow-y-auto sm:gap-6">
@@ -273,6 +322,16 @@ export function LogsRoute() {
             <span className="eyebrow">{t('logs.filters')}</span>
             <h3 className="text-sm font-semibold text-text">{t('logs.streamTitle')}</h3>
           </div>
+          <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            type="button"
+            icon={updatesPaused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+            aria-pressed={updatesPaused}
+            onClick={() => setUpdatesPaused((paused) => !paused)}
+          >
+            {updatesPaused ? t('logs.resume') : t('logs.pause')}
+          </Button>
           <div className="logs-refresh-control">
             <label htmlFor="logs-auto-refresh" className="sr-only">{t('logs.autoRefreshLabel')}</label>
             <select
@@ -289,6 +348,7 @@ export function LogsRoute() {
               <option value={2000}>{t('logs.autoRefresh2')}</option>
               <option value={5000}>{t('logs.autoRefresh5')}</option>
             </select>
+          </div>
           </div>
         </div>
 
@@ -328,18 +388,79 @@ export function LogsRoute() {
                 </div>
               </div>
 
+              <div className="flex flex-col gap-2 border-b border-border p-3 sm:flex-row sm:items-center sm:p-4">
+                <label className="relative min-w-0 flex-1">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-subtle" aria-hidden="true" />
+                  <span className="sr-only">{t('logs.searchLabel')}</span>
+                  <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder={t('logs.searchPlaceholder')}
+                    className="min-h-11 w-full rounded-md border border-border bg-surface px-3 pl-9 text-sm text-text placeholder:text-text-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                  />
+                </label>
+                <div className="flex gap-1.5" role="group" aria-label={t('logs.levelFilterLabel')}>
+                  {(['all', 'error', 'warn'] as const).map((filter) => (
+                    <Button
+                      key={filter}
+                      size="sm"
+                      variant={levelFilter === filter ? 'primary' : 'secondary'}
+                      type="button"
+                      aria-pressed={levelFilter === filter}
+                      onClick={() => setLevelFilter(filter)}
+                    >
+                      {t(`logs.level.${filter}`)}
+                    </Button>
+                  ))}
+                </div>
+                <Button
+                  size="sm"
+                  type="button"
+                  variant={copyFeedback?.scope === 'filtered' ? (copyFeedback.ok ? 'primary' : 'danger') : 'secondary'}
+                  icon={copyFeedback?.scope === 'filtered' && copyFeedback.ok ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                  disabled={visibleEntries.length === 0}
+                  aria-live="polite"
+                  onClick={() => void copyText(visibleEntries.map((entry) => entry.text).join('\n'), 'filtered')}
+                >
+                  {copyFeedback?.scope === 'filtered'
+                    ? t(copyFeedback.ok ? 'logs.copiedFiltered' : 'logs.copyFailed')
+                    : t('logs.copyFiltered')}
+                </Button>
+              </div>
+              <p className="px-3 pb-3 text-xs text-text-subtle sm:px-4" role="note">
+                {t('logs.searchLoadedOnly')}
+                {copyStatus ? <span className="ml-2" role="status" aria-live="polite">{copyStatus}</span> : null}
+              </p>
+
               <div className="divide-y divide-border">
-                {activeFile.entries.length > 0 ? (
-                  [...activeFile.entries]
-                    .sort((a, b) => b.lineNumber - a.lineNumber)
-                    .slice(0, 160)
-                    .map((entry) => (
+                {visibleEntries.length > 0 ? (
+                  visibleEntries.map((entry) => (
                       <div key={`${activeFile.name}-${entry.lineNumber}`} className="flex items-start gap-3 px-3 py-2.5 sm:px-4">
                         <TerminalSquare className="mt-0.5 h-4 w-4 shrink-0 text-text-muted" />
                         <div className="min-w-0 flex-1">
                           <div className="mb-1 flex items-center justify-between gap-2">
                             <span className="text-xs text-text-subtle">{t('logs.line', { number: entry.lineNumber })}</span>
-                            <Badge variant={levelVariant(entry.level)}>{entry.level}</Badge>
+                            <div className="flex items-center gap-2">
+                              <Badge variant={levelVariant(entry.level)}>{entry.level}</Badge>
+                              <Button
+                                size="sm"
+                                type="button"
+                                iconOnly
+                                variant={copyFeedback?.scope === entry.lineNumber ? (copyFeedback.ok ? 'primary' : 'danger') : 'secondary'}
+                                icon={copyFeedback?.scope === entry.lineNumber && copyFeedback.ok
+                                  ? <Check className="h-3.5 w-3.5" />
+                                  : <Copy className="h-3.5 w-3.5" />}
+                                aria-label={copyFeedback?.scope === entry.lineNumber
+                                  ? t(copyFeedback.ok ? 'logs.copiedLine' : 'logs.copyFailed')
+                                  : t('logs.copyLine', { number: entry.lineNumber })}
+                                aria-live="polite"
+                                title={copyFeedback?.scope === entry.lineNumber
+                                  ? t(copyFeedback.ok ? 'logs.copiedLine' : 'logs.copyFailed')
+                                  : t('logs.copyLine', { number: entry.lineNumber })}
+                                onClick={() => void copyText(entry.text, entry.lineNumber)}
+                              />
+                            </div>
                           </div>
                           <p className="text-xs text-text-muted whitespace-pre-wrap break-words font-mono leading-relaxed">
                             {entry.text}
@@ -348,7 +469,7 @@ export function LogsRoute() {
                       </div>
                     ))
                 ) : (
-                  <div className="px-4 py-6 text-sm text-text-muted italic">{t('logs.noLines')}</div>
+                  <div className="px-4 py-6 text-sm text-text-muted italic">{activeFile.entries.length > 0 ? t('logs.noMatchingLines') : t('logs.noLines')}</div>
                 )}
               </div>
             </Card>
