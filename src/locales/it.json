@@ -735,6 +735,8 @@
   "logs.level.warn": "Avvisi",
   "logs.copyFiltered": "Copia righe filtrate",
   "logs.copyLine": "Copia riga {number}",
+  "logs.copiedFiltered": "Copiato!",
+  "logs.copiedLine": "Copiata!",
   "logs.copySuccess": "Copiato negli appunti.",
   "logs.copyFailed": "Impossibile copiare negli appunti.",
   "logs.noMatchingLines": "Nessuna riga caricata corrisponde ai filtri.",

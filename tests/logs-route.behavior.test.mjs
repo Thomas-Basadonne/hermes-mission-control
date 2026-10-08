@@ -21,6 +21,16 @@ let timerId = 0;
 const intervals = new Map();
 window.setInterval = (fn, delay) => { const id = ++timerId; intervals.set(id, { fn, delay }); return id; };
 window.clearInterval = id => intervals.delete(id);
+// Copy feedback resets on a setTimeout; capture timeouts so the test can fire them
+// deterministically instead of waiting on the wall clock.
+const timeouts = new Map();
+window.setTimeout = (fn, delay) => { const id = ++timerId; timeouts.set(id, { fn, delay }); return id; };
+window.clearTimeout = id => timeouts.delete(id);
+async function fireTimeouts() {
+  for (const [id, timer] of [...timeouts]) {
+    if (timeouts.has(id)) { timeouts.delete(id); await flush(() => timer.fn()); }
+  }
+}
 let clipboardText = null;
 Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { clipboardText = text; } } });
 
@@ -45,7 +55,7 @@ const server = await createServer({
       if (/\/PullToReloadIndicator(?:\.tsx?)?$/.test(id)) return '\0fixture-pull-indicator';
     },
     load(id) {
-      if (id === '\0fixture-i18n') return `export const useI18n = () => ({ t: (key, values) => ({'logs.pause':'Pause','logs.resume':'Resume','logs.searchLabel':'Search loaded lines','logs.searchPlaceholder':'Search loaded lines','logs.levelFilterLabel':'Level filter','logs.level.all':'All','logs.level.error':'Errors','logs.level.warn':'Warnings','logs.copyFiltered':'Copy filtered lines','logs.copySuccess':'Copied','logs.copyFailed':'Copy failed','logs.copyLine':'Copy line {number}','logs.searchLoadedOnly':'Search applies only to loaded lines, not history.','logs.noMatchingLines':'No loaded lines match these filters.','logs.noLines':'No lines','logs.noFiles':'No files','logs.filters':'Filters','logs.streamTitle':'Log stream','logs.title':'Logs','logs.description':'Loaded log tail','logs.eyebrow':'Diagnostics','logs.loading':'Loading','logs.live':'Live','logs.unavailable':'Unavailable','logs.errors':'Errors','logs.warnings':'Warnings','logs.files':'Files','logs.inCurrentTail':'Current tail','logs.path':'Path','logs.lines':'{count} lines','logs.updatedUnknown':'Unknown','logs.updated':'Updated {time}','logs.line':'Line {number}','logs.autoRefreshLabel':'Auto refresh','logs.autoRefresh1':'1 second','logs.autoRefresh2':'2 seconds','logs.autoRefresh5':'5 seconds','logs.scrollToTop':'Scroll to top','logs.authRequired':'Authentication required','logs.failedLoad':'Failed to load'}[key] ?? key).replace(/\\{(\\w+)\\}/g, (_, name) => String(values?.[name] ?? '')) });`;
+      if (id === '\0fixture-i18n') return `export const useI18n = () => ({ t: (key, values) => ({'logs.pause':'Pause','logs.resume':'Resume','logs.searchLabel':'Search loaded lines','logs.searchPlaceholder':'Search loaded lines','logs.levelFilterLabel':'Level filter','logs.level.all':'All','logs.level.error':'Errors','logs.level.warn':'Warnings','logs.copyFiltered':'Copy filtered lines','logs.copiedFiltered':'Copied!','logs.copiedLine':'Copied!','logs.copySuccess':'Copied','logs.copyFailed':'Copy failed','logs.copyLine':'Copy line {number}','logs.searchLoadedOnly':'Search applies only to loaded lines, not history.','logs.noMatchingLines':'No loaded lines match these filters.','logs.noLines':'No lines','logs.noFiles':'No files','logs.filters':'Filters','logs.streamTitle':'Log stream','logs.title':'Logs','logs.description':'Loaded log tail','logs.eyebrow':'Diagnostics','logs.loading':'Loading','logs.live':'Live','logs.unavailable':'Unavailable','logs.errors':'Errors','logs.warnings':'Warnings','logs.files':'Files','logs.inCurrentTail':'Current tail','logs.path':'Path','logs.lines':'{count} lines','logs.updatedUnknown':'Unknown','logs.updated':'Updated {time}','logs.line':'Line {number}','logs.autoRefreshLabel':'Auto refresh','logs.autoRefresh1':'1 second','logs.autoRefresh2':'2 seconds','logs.autoRefresh5':'5 seconds','logs.scrollToTop':'Scroll to top','logs.authRequired':'Authentication required','logs.failedLoad':'Failed to load'}[key] ?? key).replace(/\\{(\\w+)\\}/g, (_, name) => String(values?.[name] ?? '')) });`;
       if (id === '\0fixture-api') return `export class MissionControlAuthError extends Error {}\nexport async function loadMissionControlLogs() { globalThis.__logsFixtures.loaded(); return globalThis.__logsFixtures.snapshots[0]; }`;
       if (id === '\0fixture-store') return 'export const useMissionControl = () => ({ storedToken: null });';
       if (id === '\0fixture-pull') return 'export const usePullToReload = () => ({ state: null });';
@@ -114,6 +124,7 @@ try {
   assert.ok(document.body.textContent.includes('ERROR database failed'));
   await click('Copy filtered lines');
   assert.equal(clipboardText, 'ERROR database failed', 'Filtered copy contains only the matching loaded line');
+  await fireTimeouts(); // clear the transient "Copied!" state before the next lookup
 
   await type(document.querySelector('input[type="search"]'), 'nothing-matches');
   assert.equal(document.querySelectorAll('button[aria-label^="Copy line"]').length, 0);
@@ -133,6 +144,21 @@ try {
   assert.ok(copyLine, 'Each row exposes a single-line copy control');
   await flush(() => copyLine.click());
   assert.equal(clipboardText, 'ERROR second database failed', 'Single-line copy writes only the chosen line');
+
+  // UX feedback: the pressed control shows a transient "Copied!" state and then
+  // returns to its idle label once the reset timer fires.
+  const copiedRowButton = () => [...document.querySelectorAll('button')].find(el => el.textContent.trim() === 'Copied!' || el.getAttribute('aria-label') === 'Copied!');
+  assert.ok(copiedRowButton(), 'After a single-line copy the row control shows a success state');
+  assert.equal([...document.querySelectorAll('button')].filter(el => el.textContent.trim() === 'Copy filtered lines').length, 1, 'The filtered-copy button keeps its idle label when a row was copied');
+  await fireTimeouts();
+  assert.equal(copiedRowButton(), undefined, 'The success state clears after its timeout');
+  assert.ok([...document.querySelectorAll('button[aria-label]')].find(el => el.getAttribute('aria-label') === 'Copy line 2'), 'The row control returns to its idle copy label');
+
+  const filteredButton = button('Copy filtered lines');
+  await flush(() => filteredButton.click());
+  assert.ok([...document.querySelectorAll('button')].some(el => el.textContent.trim() === 'Copied!'), 'The filtered copy shows a success state on its own button');
+  await fireTimeouts();
+  assert.ok(button('Copy filtered lines'), 'The filtered button returns to its idle label');
 
   const interval = [...intervals.values()][0];
   assert.ok(interval, 'Live refresh interval is installed');

@@ -735,6 +735,8 @@
   "logs.level.warn": "Warnings",
   "logs.copyFiltered": "Copy filtered lines",
   "logs.copyLine": "Copy line {number}",
+  "logs.copiedFiltered": "Copied!",
+  "logs.copiedLine": "Copied!",
   "logs.copySuccess": "Copied to clipboard.",
   "logs.copyFailed": "Could not copy to clipboard.",
   "logs.noMatchingLines": "No loaded lines match these filters.",

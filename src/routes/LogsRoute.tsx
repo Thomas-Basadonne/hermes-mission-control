@@ -1,6 +1,6 @@
 import { useI18n } from '../lib/i18n';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowUp, Copy, FileText, Loader2, Pause, Play, RefreshCw, Search, TerminalSquare } from 'lucide-react';
+import { AlertTriangle, ArrowUp, Check, Copy, FileText, Loader2, Pause, Play, RefreshCw, Search, TerminalSquare } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -83,6 +83,10 @@ export function LogsRoute() {
   const [searchQuery, setSearchQuery] = useState('');
   const [levelFilter, setLevelFilter] = useState<LogsLevelFilter>('all');
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  // Transient per-control feedback for the last copy, so the user sees which
+  // control actually wrote to the clipboard. Reset by a timer.
+  const [copyFeedback, setCopyFeedback] = useState<{ scope: 'filtered' | number; ok: boolean } | null>(null);
+  const copyFeedbackTimerRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const selectedFileNameRef = useRef<string | null>(null);
   const refreshInFlightRef = useRef(false);
@@ -242,15 +246,28 @@ export function LogsRoute() {
     }
   };
 
-  const copyText = async (text: string) => {
+  const copyText = async (text: string, scope: 'filtered' | number) => {
+    let ok = false;
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
       await navigator.clipboard.writeText(text);
+      ok = true;
       setCopyStatus(t('logs.copySuccess'));
     } catch {
       setCopyStatus(t('logs.copyFailed'));
     }
+    // Show the outcome on the control that was pressed, then fade it back.
+    setCopyFeedback({ scope, ok });
+    if (copyFeedbackTimerRef.current !== null) window.clearTimeout(copyFeedbackTimerRef.current);
+    copyFeedbackTimerRef.current = window.setTimeout(() => {
+      setCopyFeedback(null);
+      copyFeedbackTimerRef.current = null;
+    }, 2000);
   };
+
+  useEffect(() => () => {
+    if (copyFeedbackTimerRef.current !== null) window.clearTimeout(copyFeedbackTimerRef.current);
+  }, []);
 
   return (
     <div ref={containerRef} className="logs-page route-page-scroll flex min-w-0 flex-col gap-5 h-full overflow-y-auto sm:gap-6">
@@ -400,11 +417,15 @@ export function LogsRoute() {
                 <Button
                   size="sm"
                   type="button"
-                  icon={<Copy className="h-4 w-4" />}
+                  variant={copyFeedback?.scope === 'filtered' ? (copyFeedback.ok ? 'primary' : 'danger') : 'secondary'}
+                  icon={copyFeedback?.scope === 'filtered' && copyFeedback.ok ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                   disabled={visibleEntries.length === 0}
-                  onClick={() => void copyText(visibleEntries.map((entry) => entry.text).join('\n'))}
+                  aria-live="polite"
+                  onClick={() => void copyText(visibleEntries.map((entry) => entry.text).join('\n'), 'filtered')}
                 >
-                  {t('logs.copyFiltered')}
+                  {copyFeedback?.scope === 'filtered'
+                    ? t(copyFeedback.ok ? 'logs.copiedFiltered' : 'logs.copyFailed')
+                    : t('logs.copyFiltered')}
                 </Button>
               </div>
               <p className="px-3 pb-3 text-xs text-text-subtle sm:px-4" role="note">
@@ -426,10 +447,18 @@ export function LogsRoute() {
                                 size="sm"
                                 type="button"
                                 iconOnly
-                                icon={<Copy className="h-3.5 w-3.5" />}
-                                aria-label={t('logs.copyLine', { number: entry.lineNumber })}
-                                title={t('logs.copyLine', { number: entry.lineNumber })}
-                                onClick={() => void copyText(entry.text)}
+                                variant={copyFeedback?.scope === entry.lineNumber ? (copyFeedback.ok ? 'primary' : 'danger') : 'secondary'}
+                                icon={copyFeedback?.scope === entry.lineNumber && copyFeedback.ok
+                                  ? <Check className="h-3.5 w-3.5" />
+                                  : <Copy className="h-3.5 w-3.5" />}
+                                aria-label={copyFeedback?.scope === entry.lineNumber
+                                  ? t(copyFeedback.ok ? 'logs.copiedLine' : 'logs.copyFailed')
+                                  : t('logs.copyLine', { number: entry.lineNumber })}
+                                aria-live="polite"
+                                title={copyFeedback?.scope === entry.lineNumber
+                                  ? t(copyFeedback.ok ? 'logs.copiedLine' : 'logs.copyFailed')
+                                  : t('logs.copyLine', { number: entry.lineNumber })}
+                                onClick={() => void copyText(entry.text, entry.lineNumber)}
                               />
                             </div>
                           </div>
