@@ -1,16 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Window } from 'happy-dom';
+import { JSDOM } from 'jsdom';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
 
-const browser = new Window({ url: 'http://localhost/' });
-globalThis.window = browser;
-globalThis.document = browser.document;
-globalThis.HTMLElement = browser.HTMLElement;
-globalThis.MouseEvent = browser.MouseEvent;
+const browser = new JSDOM('<!doctype html><html><body></body></html>', {
+  url: 'http://localhost/',
+  pretendToBeVisual: true,
+});
+globalThis.window = browser.window;
+globalThis.document = browser.window.document;
+globalThis.HTMLElement = browser.window.HTMLElement;
+globalThis.MouseEvent = browser.window.MouseEvent;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-Object.defineProperty(globalThis, 'navigator', { configurable: true, value: browser.navigator });
+Object.defineProperty(globalThis, 'navigator', { configurable: true, value: browser.window.navigator });
 
 const React = await import('react');
 const { act } = React;
@@ -130,5 +133,5 @@ try {
   });
 } finally {
   await vite.close();
-  browser.happyDOM.abort();
+  browser.window.close();
 }

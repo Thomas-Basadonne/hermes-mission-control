@@ -472,6 +472,12 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         setAuthRequired(true);
         setAuthError('Access token required to keep using Mission Control.');
       }
+
+      // QuickActions owns restart-specific success/error feedback. Preserve the
+      // rejection so a failed restart cannot be reported as completed.
+      if (action.id === 'restart-gateway') {
+        throw error;
+      }
     } finally {
       setActionLoading(null);
     }

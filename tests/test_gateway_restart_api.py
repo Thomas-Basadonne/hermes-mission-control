@@ -95,6 +95,17 @@ class GatewayRestartApiTests(unittest.TestCase):
             start_new_session=True,
         )
 
+    def test_restart_spawn_failure_returns_server_error(self):
+        with patch.object(local_telemetry_server.subprocess, "Popen", side_effect=FileNotFoundError):
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self.request()
+            payload = json.loads(context.exception.read())
+
+        self.assertEqual(context.exception.code, 500)
+        self.assertEqual(payload["success"], False)
+        self.assertTrue(payload["manual"])
+        self.assertIn("not found", payload["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

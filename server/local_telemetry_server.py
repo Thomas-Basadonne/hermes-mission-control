@@ -2756,10 +2756,10 @@ class Handler(BaseHTTPRequestHandler):
                     start_new_session=True,
                 )
             except FileNotFoundError:
-                self._json(200, {'success': False, 'detail': 'hermes CLI not found on PATH.', 'manual': True})
+                self._json(500, {'success': False, 'detail': 'hermes CLI not found on PATH.', 'manual': True})
                 return
             except Exception as exc:
-                self._json(200, {'success': False, 'detail': str(exc), 'manual': True})
+                self._json(500, {'success': False, 'detail': str(exc), 'manual': True})
                 return
             self._json(202, {'success': True, 'detail': 'Gateway restart initiated.'})
             return
