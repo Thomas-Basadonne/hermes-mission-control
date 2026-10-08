@@ -148,10 +148,10 @@ export function SessionPicker({ open, storedToken, currentSessionId, currentProf
       <div className="sp-footer">
         <span role="status">{t('sessionPicker.range', { from:state.items.length ? state.pagination.offset + 1 : 0, to:state.pagination.offset + state.items.length, total:state.pagination.total })}</span>
         {loading ? <Loader2 size={14} className="chat-spin" aria-label={t('sessions.loading')} /> : null}
-        <div className="sp-pages">
+        {state.pagination.offset > 0 || state.pagination.hasMore ? <div className="sp-pages">
           <button type="button" className="sp-icon-button" disabled={loading || state.pagination.offset === 0} onClick={() => void controller.loadPrev()} aria-label={t('sessionPicker.previous')}><ChevronLeft size={16} /></button>
           <button type="button" className="sp-icon-button" disabled={loading || !state.pagination.hasMore} onClick={() => void controller.loadNext()} aria-label={t('sessionPicker.next')}><ChevronRight size={16} /></button>
-        </div>
+        </div> : null}
       </div>
     </div>
   );
