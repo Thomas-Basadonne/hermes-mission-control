@@ -721,7 +721,7 @@ export function KanbanRoute() {
       };
     });
     try {
-      await moveKanbanTask(storedToken, taskId, newStatus);
+      await moveKanbanTask(storedToken, taskId, newStatus, activeBoard);
     } catch {
       void refresh(activeBoard);
     }
@@ -746,7 +746,7 @@ export function KanbanRoute() {
         workspace_path: newTaskWorkspacePath.trim() || undefined,
         parents: newTaskParent || undefined,
         goal_mode: newTaskGoalMode || undefined,
-      });
+      }, activeBoard);
       if (result?.id) {
         setBoard((prev) => {
           if (!prev) return prev;
