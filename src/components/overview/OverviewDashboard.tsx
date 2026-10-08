@@ -2,7 +2,7 @@ import { useI18n } from '../../lib/i18n';
 import { useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Activity, ArrowRight, Clock3, List, MessageSquare, Rocket } from 'lucide-react';
-import { useMissionControl } from '../../lib/mission-control-store';
+import { useMissionControl, type MissionControlSourceStatus } from '../../lib/mission-control-store';
 import { getPluginRegistry } from '../../core/plugin-registry';
 import type { MCPluginAttentionContributor, MCPluginOverviewContributor } from '../../core/plugins/types';
 import { Card } from '../ui/Card';
@@ -14,7 +14,7 @@ import { QuickActions } from './QuickActions';
 import { UsagePanel } from './UsagePanel';
 import { ProviderUsagePanel } from './ProviderUsagePanel';
 import { DashboardGrid, type DashboardWidget } from './DashboardGrid';
-import { formatRelativeSchedule, formatRelativeTime } from '../../lib/format';
+import { formatDateTime, formatRelativeSchedule, formatRelativeTime } from '../../lib/format';
 import { type MissionControlCronJob } from '../../lib/hermes-api';
 import { getSessionActionAvailability } from '../../lib/session-view';
 import { usePullToReload } from '../../hooks/usePullToReload';
@@ -110,7 +110,7 @@ export function OverviewDashboard() {
   const {
     snapshot,
     loading,
-    lastUpdatedAt,
+    sources,
     actionLoading,
     gatewayActions,
     runGatewayAction,
@@ -123,6 +123,9 @@ export function OverviewDashboard() {
   const failedCron = cron.items.filter(cronHasError).length;
   const pausedCron = cron.items.filter((job) => !job.enabled || job.state === 'paused').length;
   const scheduledCron = cron.items.filter((job) => job.enabled && job.state !== 'paused' && job.state !== 'running' && !cronHasError(job)).length;
+  const sourceStatuses = Object.entries(sources).filter((entry): entry is [string, MissionControlSourceStatus] => Boolean(entry[1]));
+  const sourceIssues = sourceStatuses.filter(([, status]) => status.state === 'error' || status.state === 'fallback');
+  const sessionIsLive = sources.sessions?.state === 'live';
 
   const widgets: DashboardWidget[] = [
     {
@@ -150,7 +153,7 @@ export function OverviewDashboard() {
       id: 'attention',
       label: 'Attention needed',
       className: 'widget-attention',
-      content: <AttentionNeeded alerts={alerts.items} pluginContributors={attentionContributors} />,
+      content: <AttentionNeeded alerts={alerts.items} pluginContributors={attentionContributors} dataWarningCount={sourceIssues.length} />,
     },
     {
       id: 'current-session',
@@ -159,7 +162,11 @@ export function OverviewDashboard() {
       content: (
         <SectionCard
           eyebrow={t('overview.currentSession')}
-          title={liveSessionItems.length > 0 ? t('overview.liveSessionsTitle', { count: liveSessionItems.length }) : t('overview.noActiveSession')}
+          title={liveSessionItems.length > 0
+            ? sessionIsLive
+              ? t('overview.liveSessionsTitle', { count: liveSessionItems.length })
+              : t('overview.previousSessionsTitle', { count: liveSessionItems.length })
+            : t('overview.noActiveSession')}
           actions={
           <SectionLink to="/sessions" label={t('overview.allSessions')}>
             <List className="h-4 w-4" />
@@ -175,12 +182,12 @@ export function OverviewDashboard() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 items-center gap-2">
-                        <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-positive shadow-[0_0_0_3px_rgba(52,211,153,0.14)] animate-pulse" />
+                        <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${sessionIsLive ? 'bg-positive shadow-[0_0_0_3px_rgba(52,211,153,0.14)] animate-pulse' : 'bg-warning'}`} />
                         <p className="min-w-0 flex-1 truncate text-sm font-medium text-text">{session.title}</p>
-                        <span className="sr-only">{t('sessions.liveStatus')}</span>
-                        <span className="hidden shrink-0 sm:inline-flex">
+                        {sessionIsLive ? <span className="sr-only">{t('sessions.liveStatus')}</span> : null}
+                        {sessionIsLive ? <span className="hidden shrink-0 sm:inline-flex">
                           <Badge variant="positive" dot>{t('sessions.liveStatus')}</Badge>
-                        </span>
+                        </span> : null}
                       </div>
                       <p className="mt-1 line-clamp-1 text-xs text-text-muted">{session.preview || t('overview.noPreview')}</p>
                     </div>
@@ -296,11 +303,43 @@ export function OverviewDashboard() {
       <AgentStatusBar />
       <div className="p-4 sm:p-6">
         <DashboardGrid widgets={widgets} />
-        <div className="mt-6 border-t border-border-subtle pt-4">
-          <span className="text-xs text-text-subtle">
-            {loading ? 'Refreshing…' : lastUpdatedAt ? `Last synced ${lastUpdatedAt}` : 'Not yet synced'}
-          </span>
-        </div>
+        <section className="mt-6 border-t border-border-subtle pt-4" aria-label={t('overview.dataFreshness')}>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h2 className="text-xs font-semibold text-text">{t('overview.dataFreshness')}</h2>
+            {loading ? <span className="text-xs text-text-subtle">{t('overview.refreshing')}</span> : null}
+          </div>
+          {sourceIssues.length > 0 ? (
+            <p role="alert" className="mb-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+              {t('overview.partialDataWarning', { count: sourceIssues.length })}
+            </p>
+          ) : null}
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {sourceStatuses.map(([name, status]) => {
+              const unavailable = status.state === 'error' && !status.lastSuccessAt;
+              const previous = status.state !== 'live' && status.state !== 'loading' && Boolean(status.lastSuccessAt);
+              const stateLabel = unavailable
+                ? t('overview.sourceUnavailable')
+                : previous
+                  ? t('overview.sourcePrevious')
+                  : status.state === 'live'
+                    ? t('overview.sourceLive')
+                    : status.state === 'loading'
+                      ? status.lastSuccessAt ? t('overview.sourceRefreshingPrevious') : t('overview.refreshing')
+                      : t('overview.sourceUnavailable');
+              return (
+                <div key={name} className="rounded-md bg-surface-sunken/40 px-3 py-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-text">{t(`overview.source.${name}`)}</span>
+                    <Badge variant={status.state === 'live' ? 'positive' : status.state === 'loading' ? 'default' : previous ? 'warning' : 'negative'}>{stateLabel}</Badge>
+                  </div>
+                  {previous && status.source ? <p className="mt-1 truncate text-text-subtle">{t('overview.sourceProvenance', { source: status.source })}</p> : null}
+                  <p className="mt-1 text-text-muted">{t('overview.lastSuccess')}: {status.lastSuccessAt ? formatDateTime(status.lastSuccessAt, locale) : t('overview.never')}</p>
+                  <p className="text-text-muted">{t('overview.lastAttempt')}: {status.lastAttemptAt ? formatDateTime(status.lastAttemptAt, locale) : t('overview.never')}</p>
+                </div>
+              );
+            })}
+          </div>
+        </section>
       </div>
     </div>
   );

@@ -40,6 +40,17 @@ type MissionControlActionResult = {
   payload: string;
 };
 
+export type MissionControlSourceStatus = {
+  state: 'loading' | 'live' | 'fallback' | 'error';
+  source: string | null;
+  lastSuccessAt: string | null;
+  lastAttemptAt: string | null;
+  error: string | null;
+};
+
+export type MissionControlSourceName = 'machine' | 'sessions' | 'cron' | 'alerts' | 'snapshot' | 'tools' | 'skills';
+export type MissionControlSources = Partial<Record<MissionControlSourceName, MissionControlSourceStatus>>;
+
 type MissionControlContextValue = {
   snapshot: MissionControlSnapshot;
   tools: MissionControlToolsSnapshot;
@@ -63,6 +74,8 @@ type MissionControlContextValue = {
   linkStatus: string | null;
   setLinkStatus: (value: string | null) => void;
   lastUpdatedAt: string | null;
+  /** Per-endpoint freshness and provenance; missing entries have not been requested. */
+  sources: MissionControlSources;
   theme: ThemeMode;
   setTheme: (theme: ThemeMode) => void;
   resolvedTheme: ResolvedTheme;
@@ -132,6 +145,10 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [linkStatus, setLinkStatus] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
+  const [sources, setSources] = useState<MissionControlSources>({});
+  const refreshSequence = useRef(0);
+  const sourceSequences = useRef<Partial<Record<MissionControlSourceName, number>>>({});
+  const referenceSequence = useRef(0);
   const [theme, setThemeState] = useState<ThemeMode>(initialTheme);
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>('dark');
 
@@ -189,19 +206,46 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const refreshReferenceData = useCallback(async (token?: string) => {
+    const requestId = ++referenceSequence.current;
+    const attemptedAt = new Date().toISOString();
+    setSources((previous) => ({
+      ...previous,
+      tools: { state: 'loading', source: previous.tools?.source ?? null, lastAttemptAt: attemptedAt, lastSuccessAt: previous.tools?.lastSuccessAt ?? null, error: null },
+      skills: { state: 'loading', source: previous.skills?.source ?? null, lastAttemptAt: attemptedAt, lastSuccessAt: previous.skills?.lastSuccessAt ?? null, error: null },
+    }));
     const [toolsRes, skillsRes] = await Promise.allSettled([
       loadMissionControlTools(token),
       loadMissionControlSkills(token),
     ]);
 
+    const recordReference = (name: 'tools' | 'skills', result: PromiseSettledResult<MissionControlToolsSnapshot | MissionControlSkillsSnapshot>) => {
+      if (referenceSequence.current !== requestId) return;
+      const completedAt = new Date().toISOString();
+      setSources((previous) => {
+        const old = previous[name];
+        const dataSource = result.status === 'fulfilled' ? result.value.dataSource ?? 'fallback' : null;
+        const dataError = result.status === 'fulfilled' ? result.value.dataError : undefined;
+        const fallback = dataSource === 'fallback';
+        return { ...previous, [name]: {
+          state: result.status === 'rejected' || dataError ? 'error' : fallback ? 'fallback' : 'live',
+          source: dataSource,
+          lastAttemptAt: attemptedAt,
+          lastSuccessAt: result.status === 'fulfilled' && !fallback && !dataError ? completedAt : old?.lastSuccessAt ?? null,
+          error: dataError ?? (result.status === 'rejected' ? (result.reason instanceof Error ? result.reason.message : 'Request failed') : null),
+        } };
+      });
+    };
+    recordReference('tools', toolsRes);
+    recordReference('skills', skillsRes);
+
     if (toolsRes.status === 'fulfilled') {
       const nextTools = toolsRes.value;
-      setTools((previous) => (nextTools.available ? nextTools : previous));
+      if (nextTools.dataSource !== 'fallback' && referenceSequence.current === requestId) setTools(nextTools);
     }
 
     if (skillsRes.status === 'fulfilled') {
       const nextSkills = skillsRes.value;
-      setSkills((previous) => (nextSkills.available ? nextSkills : previous));
+      if (nextSkills.dataSource !== 'fallback' && referenceSequence.current === requestId) setSkills(nextSkills);
     }
   }, []);
 
@@ -211,6 +255,45 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     const includeSnapshot = options?.includeSnapshot ?? !silent;
     const includeSessions = options?.includeSessions ?? !silent;
     const includeCron = options?.includeCron ?? true;
+    const refreshId = ++refreshSequence.current;
+    const attemptedAt = new Date().toISOString();
+    const sourceNames: MissionControlSourceName[] = ['machine', 'alerts'];
+    if (includeSessions) sourceNames.push('sessions');
+    if (includeCron) sourceNames.push('cron');
+    if (includeSnapshot) sourceNames.push('snapshot');
+    const sourceRequestIds = Object.fromEntries(sourceNames.map((name) => {
+      const requestId = (sourceSequences.current[name] ?? 0) + 1;
+      sourceSequences.current[name] = requestId;
+      return [name, requestId];
+    })) as Partial<Record<MissionControlSourceName, number>>;
+
+    setSources((previous) => ({
+      ...previous,
+      ...Object.fromEntries(sourceNames.map((name) => [name, {
+        state: 'loading', source: previous[name]?.source ?? null,
+        lastAttemptAt: attemptedAt, lastSuccessAt: previous[name]?.lastSuccessAt ?? null, error: null,
+      }])),
+    }));
+    const isCurrentRefresh = () => refreshSequence.current === refreshId;
+    const isCurrentSourceRequest = (name: MissionControlSourceName) =>
+      sourceSequences.current[name] === sourceRequestIds[name];
+    let hasLiveSource = false;
+    const finishSource = (name: MissionControlSourceName, source: string | null, error?: unknown) => {
+      if (!isCurrentSourceRequest(name)) return;
+      const completedAt = new Date().toISOString();
+      const failed = error !== undefined;
+      const fallback = source === 'fallback' || source === 'gateway-status-fallback';
+      if (!failed && !fallback) hasLiveSource = true;
+      setSources((previous) => {
+        const old = previous[name];
+        return { ...previous, [name]: {
+          state: failed ? 'error' : fallback ? 'fallback' : 'live', source,
+          lastAttemptAt: attemptedAt,
+          lastSuccessAt: !failed && !fallback ? completedAt : old?.lastSuccessAt ?? null,
+          error: failed ? (error instanceof Error ? error.message : 'Request failed') : null,
+        } };
+      });
+    };
     if (!silent) {
       setLoading(true);
     }
@@ -221,51 +304,54 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
     try {
       const updateMachine = loadMissionControlMachineStatus(token).then((machine) => {
+        finishSource('machine', machine.source ?? 'fallback');
+        if (!isCurrentSourceRequest('machine') || machine.source === 'fallback') return;
         setSnapshot((previous) => {
           const nextMachine = machine as MissionControlSnapshot['machine'];
-          const machineValue = nextMachine.source === 'fallback' && previous.machine.source !== 'fallback' ? previous.machine : nextMachine;
-          return { ...previous, machine: machineValue };
+          return { ...previous, machine: nextMachine };
         });
-      });
+      }).catch((error) => { finishSource('machine', null, error); throw error; });
 
       const updateSessions = includeSessions
         ? loadMissionControlSessions(token).then((sessions) => {
+            finishSource('sessions', sessions.dataSource ?? 'fallback', sessions.dataError ? new Error(sessions.dataError) : undefined);
+            if (!isCurrentSourceRequest('sessions') || sessions.dataSource === 'fallback' || sessions.dataSource === 'gateway-status-fallback') return;
             setSnapshot((previous) => {
               const nextSessions = sessions as MissionControlSnapshot['sessions'];
-              const sessionsValue = nextSessions.totalSessions === 0 && previous.sessions.totalSessions > 0 ? previous.sessions : nextSessions;
+              const sessionsValue = nextSessions;
               return {
                 ...previous,
                 sessions: sessionsValue,
                 activeAgents: sessionsValue.activeAgents,
               };
             });
-          })
+          }).catch((error) => { finishSource('sessions', null, error); throw error; })
         : Promise.resolve();
 
       const updateCron = includeCron
         ? loadMissionControlCron(token).then((cron) => {
+            finishSource('cron', cron.dataSource ?? 'fallback', cron.dataError ? new Error(cron.dataError) : undefined);
+            if (!isCurrentSourceRequest('cron') || cron.dataSource === 'fallback') return;
             setSnapshot((previous) => {
               const nextCron = cron as MissionControlSnapshot['cron'];
-              const cronValue = nextCron.items.length === 0 && previous.cron.items.length > 0 ? previous.cron : nextCron;
+              const cronValue = nextCron;
               return {
                 ...previous,
                 cron: cronValue,
                 queuedJobs: cronValue.queuedJobs,
               };
             });
-          })
+          }).catch((error) => { finishSource('cron', null, error); throw error; })
         : Promise.resolve();
 
       const updateAlerts = loadMissionControlAlerts(token).then((alerts) => {
+        finishSource('alerts', alerts.dataSource ?? 'fallback', alerts.dataError ? new Error(alerts.dataError) : undefined);
+        if (!isCurrentSourceRequest('alerts') || alerts.dataSource === 'fallback') return;
         setSnapshot((previous) => {
           const nextAlerts = alerts as MissionControlSnapshot['alerts'];
-          const alertsValue =
-            nextAlerts.items.length === 1 && nextAlerts.items[0]?.id === 'fallback-gateway' && previous.alerts.items.length > 0
-              ? previous.alerts
-              : nextAlerts;
-          return { ...previous, alerts: alertsValue };
+          return { ...previous, alerts: nextAlerts };
         });
-      });
+      }).catch((error) => { finishSource('alerts', null, error); throw error; });
 
       const liveResults = await Promise.allSettled([updateMachine, updateSessions, updateCron, updateAlerts]);
       const authFailure = liveResults.find(
@@ -278,7 +364,8 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       if (includeSnapshot) {
         try {
           const dashboard = await loadMissionControlSnapshot(token);
-          setSnapshot((previous) => ({
+          finishSource('snapshot', dashboard.dataSource ?? 'fallback', dashboard.dataError ? new Error(dashboard.dataError) : undefined);
+          if (isCurrentSourceRequest('snapshot') && dashboard.dataSource !== 'fallback' && !dashboard.dataError) setSnapshot((previous) => ({
             ...previous,
             backendHealth: dashboard.backendHealth,
             activeModel: dashboard.activeModel,
@@ -293,6 +380,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
             recentSignals: dashboard.recentSignals,
           }));
         } catch (error) {
+          finishSource('snapshot', null, error);
           if (error instanceof MissionControlAuthError) {
             throw error;
           }
@@ -301,11 +389,21 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
       setAuthRequired(false);
       setAuthError(null);
-      setLastUpdatedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      if (isCurrentRefresh() && hasLiveSource) {
+        setLastUpdatedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      }
     } catch (error) {
+      if (!isCurrentRefresh()) return;
       if (error instanceof MissionControlAuthError) {
         setAuthRequired(true);
         setAuthError('Access token required to enter the cockpit.');
+        setSources((previous) => Object.fromEntries(Object.entries(previous).map(([name, status]) => [name, status ? {
+          ...status,
+          state: 'error',
+          source: 'fallback',
+          lastSuccessAt: null,
+          error: 'Authentication required.',
+        } : [name, status]])) as MissionControlSources);
 
         // Auth failures should lock the UI and scrub live state.
         setSnapshot(getFallbackSnapshot());
@@ -319,7 +417,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         setAuthError(null);
       }
     } finally {
-      if (!silent) {
+      if (!silent && isCurrentRefresh()) {
         setLoading(false);
       }
     }
@@ -506,6 +604,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     linkStatus,
     setLinkStatus,
     lastUpdatedAt,
+    sources,
     theme,
     setTheme: setThemeState,
     resolvedTheme,
@@ -526,6 +625,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     runGatewayAction,
     saveConfig,
     snapshot,
+    sources,
     skills,
     storedToken,
     theme,
