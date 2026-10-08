@@ -124,7 +124,7 @@ export function OverviewDashboard() {
   const pausedCron = cron.items.filter((job) => !job.enabled || job.state === 'paused').length;
   const scheduledCron = cron.items.filter((job) => job.enabled && job.state !== 'paused' && job.state !== 'running' && !cronHasError(job)).length;
   const sourceStatuses = Object.entries(sources).filter((entry): entry is [string, MissionControlSourceStatus] => Boolean(entry[1]));
-  const sourceIssues = sourceStatuses.filter(([, status]) => status.state === 'error' || status.state === 'fallback');
+  const sourceIssues = computeSourceIssues(loading, sourceStatuses);
   const sessionIsLive = sources.sessions?.state === 'live';
 
   const widgets: DashboardWidget[] = [
@@ -153,7 +153,7 @@ export function OverviewDashboard() {
       id: 'attention',
       label: 'Attention needed',
       className: 'widget-attention',
-      content: <AttentionNeeded alerts={alerts.items} pluginContributors={attentionContributors} dataWarningCount={sourceIssues.length} />,
+      content: <AttentionNeeded alerts={loading ? [] : alerts.items} pluginContributors={attentionContributors} dataWarningCount={sourceIssues.length} />,
     },
     {
       id: 'current-session',
@@ -343,4 +343,17 @@ export function OverviewDashboard() {
       </div>
     </div>
   );
+}
+
+// Only count a source as an issue once the first refresh has settled. Before that
+// every source is still unpopulated and the dashboard still shows its fallback
+// snapshot, so counting them flashed a burst of false warnings on the very first
+// paint (transient, then collapsed to the one real item). A genuine outage keeps
+// `loading` false after the failed load, so its warning survives.
+export function computeSourceIssues(
+  loading: boolean,
+  sourceStatuses: Array<[string, MissionControlSourceStatus]>,
+): Array<[string, MissionControlSourceStatus]> {
+  if (loading) return [];
+  return sourceStatuses.filter(([, status]) => status.state === 'error' || status.state === 'fallback');
 }

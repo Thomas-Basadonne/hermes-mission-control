@@ -73,7 +73,55 @@ let context;
 try {
   const { createRoot } = await import('react-dom/client');
   const { MissionControlProvider, useMissionControl } = await server.ssrLoadModule('/src/lib/mission-control-store.tsx');
+  const { deriveAlerts } = await server.ssrLoadModule('/src/lib/hermes-api.ts');
   function Observe() { context = useMissionControl(); return null; }
+
+  // Regression: a status payload that has not arrived yet (or failed) must not be
+  // reported as "Gateway offline". A missing payload is "not loaded", not "down";
+  // treating it as down produced a false alert on the first paint.
+  {
+    const noStatus = deriveAlerts(null, { health: 'degraded', source: 'fallback', summary: 'fallback' }, { activeAgents: 0 }, { items: [] });
+    assert.equal(
+      noStatus.items.some((alert) => alert.id === 'gateway-offline'),
+      false,
+      'a missing status payload must not raise a Gateway offline alert',
+    );
+    const downStatus = deriveAlerts({ gateway_running: false }, { health: 'healthy', source: 'local-psutil', summary: 'live' }, { activeAgents: 0 }, { items: [] });
+    assert.equal(
+      downStatus.items.some((alert) => alert.id === 'gateway-offline'),
+      true,
+      'a status payload that reports the gateway down still raises the alert',
+    );
+  }
+
+  // Regression: the partial-data warning must not count sources while the first
+  // refresh is still in flight. On first paint every source is unpopulated (the
+  // dashboard still renders the fallback snapshot), so counting them flashed a
+  // burst of false warnings that then collapsed to the one real item. Once the
+  // load settles a genuine error/fallback source is still surfaced.
+  {
+    const { computeSourceIssues } = await server.ssrLoadModule('/src/components/overview/OverviewDashboard.tsx');
+    const transient = [
+      ['machine', { state: 'fallback' }],
+      ['alerts', { state: 'fallback' }],
+    ];
+    assert.equal(
+      computeSourceIssues(true, transient).length,
+      0,
+      'a source still loading must not count as a partial-data issue on first paint',
+    );
+    assert.equal(
+      computeSourceIssues(false, transient).length,
+      2,
+      'after the load settles, fallback/error sources are still surfaced',
+    );
+    assert.equal(
+      computeSourceIssues(false, [['machine', { state: 'live' }]]).length,
+      0,
+      'live sources are never counted as issues',
+    );
+  }
+
   root = createRoot(document.getElementById('root'));
   await flush(() => root.render(React.createElement(MissionControlProvider, null, React.createElement(Observe))));
   await waitFor(() => context.sources.sessions?.state !== 'loading' && context.sources.cron?.state !== 'loading');

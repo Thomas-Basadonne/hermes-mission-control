@@ -2028,7 +2028,7 @@ function normalizeOfficialCronJob(input: Record<string, unknown>): MissionContro
   });
 }
 
-function deriveAlerts(
+export function deriveAlerts(
   status: OfficialStatusPayload | null,
   machine: MissionControlMachineStatus,
   sessions: MissionControlSessionsSnapshot,
@@ -2037,7 +2037,10 @@ function deriveAlerts(
   const items: MissionControlAlert[] = [];
   const gatewayRunning = readBoolean(status?.gateway_running, false);
 
-  if (!gatewayRunning) {
+  // Only report the gateway as offline when we actually have a status payload
+  // that says so. A missing payload means "not loaded yet" (or the request
+  // failed), not "offline" — reporting it produced a false alert on first paint.
+  if (status !== null && !gatewayRunning) {
     items.push({
       id: 'gateway-offline',
       category: 'gateway',
