@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { filterNavigationPaletteItems, isNavigationPaletteTextTarget, mergeNavigationItems, resolveNavigationPaletteIndex, stepNavigationPaletteIndex, NAVIGATION_PALETTE_MOBILE_QUERY } from '../src/lib/navigation-palette.ts';
+import { filterNavigationPaletteItems, isNavigationPaletteTextTarget, mergeNavigationItems, paletteSelectionIndexAfterChange, resolveNavigationPaletteIndex, stepNavigationPaletteIndex, NAVIGATION_PALETTE_MOBILE_QUERY } from '../src/lib/navigation-palette.ts';
 
 class FakeElement {
   constructor({ editable = false, matched = false } = {}) {
@@ -64,6 +64,34 @@ try {
   assert.equal(resolveNavigationPaletteIndex(5, 3), 3, 'a valid selection is preserved');
   assert.equal(resolveNavigationPaletteIndex(2, 5), 0, 'a selection past the shrunk list falls back to the first match');
 
+  // Regression (PR #105 review): the selection is positional, so editing the
+  // query must not carry the old index onto a different destination — otherwise
+  // Enter navigates to an item the user never selected.
+  assert.equal(paletteSelectionIndexAfterChange('', 's', 2, 6), -1, 'a query change clears the selection even when the index is still in range');
+  assert.equal(paletteSelectionIndexAfterChange('s', 'sk', 2, 4), -1, 'every keystroke clears the stale selection');
+  assert.equal(paletteSelectionIndexAfterChange('s', 's', 2, 6), 2, 'a same-query re-render keeps a still-valid selection');
+  assert.equal(paletteSelectionIndexAfterChange('s', 's', 5, 3), -1, 'a same-query shrink past the list clears the selection');
+  assert.equal(paletteSelectionIndexAfterChange('', '', -1, 6), -1, 'no selection stays unset');
+
+  // End-to-end on the real helpers: open, arrow down to a mid-list item, then
+  // narrow the query. Enter must not activate the item the stale index now hits.
+  {
+    const full = ['Logs', 'Cron', 'Config', 'Kanban', 'Sessions', 'Skills', 'System', 'Bots']
+      .map((label, order) => ({ kind: 'route', label, to: `/${label.toLowerCase()}`, icon: 'x', order }));
+    const selectedBefore = stepNavigationPaletteIndex(stepNavigationPaletteIndex(stepNavigationPaletteIndex(-1, full.length, 1), full.length, 1), full.length, 1);
+    assert.equal(full[selectedBefore].label, 'Config', 'three ArrowDown presses select the third entry');
+
+    const narrowed = filterNavigationPaletteItems(full, 's');
+    const staleIndex = selectedBefore < narrowed.length ? selectedBefore : -1;
+    assert.equal(staleIndex, 2, 'the naive length-only guard would keep index 2');
+    assert.notEqual(narrowed[staleIndex].label, 'Config', 'but index 2 on the narrowed list is a different destination');
+
+    const guarded = paletteSelectionIndexAfterChange('', 's', selectedBefore, narrowed.length);
+    const activated = resolveNavigationPaletteIndex(narrowed.length, guarded);
+    assert.equal(activated, 0, 'after the guard, Enter falls back to the first match');
+    assert.equal(narrowed[activated].label, 'Logs', 'and activates the first match, not the stale position');
+  }
+
   // The breakpoint is shared between the stylesheet and the matchMedia gate, so
   // a drift between the two would silently break the mobile hiding.
   const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
@@ -85,6 +113,7 @@ assert.match(shell, /insideOpenPalette/, 'the palette search field must still to
 // Keyboard navigation and mobile gating are wired into the real shell.
 assert.match(shell, /event\.key === 'ArrowDown' \|\| event\.key === 'ArrowUp'/, 'the palette must handle Up/Down arrows');
 assert.match(shell, /stepNavigationPaletteIndex\(/, 'arrow handling must use the cyclic selection helper');
+assert.match(shell, /paletteSelectionIndexAfterChange\(/, 'the shell must clear a stale selection when the query changes');
 assert.match(shell, /event\.key === 'Enter'[\s\S]*?activatePaletteItemRef\.current/, 'Enter must activate the selected/resolved option');
 assert.match(shell, /paletteOpen && !paletteMobile/, 'the palette overlay must not render on mobile');
 assert.match(shell, /paletteMobile \? null : \(/, 'the header trigger must not render on mobile');

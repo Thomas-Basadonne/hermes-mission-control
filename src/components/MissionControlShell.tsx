@@ -35,7 +35,7 @@ import { PluginRegistry } from '../core/plugins/registry';
 import { NavStatusIndicator } from './NavStatusIndicator';
 import type { MCPluginNavItem } from '../core/plugins/types';
 import { resolveIcon } from '../lib/icons';
-import { filterNavigationPaletteItems, isNavigationPaletteTextTarget, mergeNavigationItems, NAVIGATION_PALETTE_MOBILE_QUERY, resolveNavigationPaletteIndex, stepNavigationPaletteIndex } from '../lib/navigation-palette';
+import { filterNavigationPaletteItems, isNavigationPaletteTextTarget, mergeNavigationItems, NAVIGATION_PALETTE_MOBILE_QUERY, paletteSelectionIndexAfterChange, resolveNavigationPaletteIndex, stepNavigationPaletteIndex } from '../lib/navigation-palette';
 
 const APP_VERSION = packageJson.version;
 
@@ -169,12 +169,17 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
     closePalette();
   }, [closePalette, navigate, setChatOpen]);
 
-  // Keep the highlighted option inside the filtered list without introducing a
-  // selection the user never made: nothing is selected on open (index -1), and a
-  // selection that the new query pushed out of range is simply cleared.
+  // Keep the highlighted option valid for the list it belongs to. The selection
+  // is positional, so a query change must clear it: the same index can point at a
+  // different destination after filtering, and Enter would then activate something
+  // the user never selected. A result-set change under the same query keeps a
+  // still-in-range selection and clears one that fell out of range.
+  const paletteQueryRef = useRef(paletteQuery);
   useEffect(() => {
-    setPaletteIndex((current) => (current < paletteItems.length ? current : -1));
-  }, [paletteItems.length]);
+    const previousQuery = paletteQueryRef.current;
+    paletteQueryRef.current = paletteQuery;
+    setPaletteIndex((current) => paletteSelectionIndexAfterChange(previousQuery, paletteQuery, current, paletteItems.length));
+  }, [paletteQuery, paletteItems.length]);
 
   // Keep the highlighted option visible while arrowing through a long list.
   useEffect(() => {

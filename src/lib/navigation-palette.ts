@@ -43,6 +43,27 @@ export function resolveNavigationPaletteIndex(length: number, index: number): nu
 }
 
 /**
+ * The selection index to carry across a re-render of the result set.
+ *
+ * The index is positional, so it only means something for the exact list it was
+ * chosen on: editing the query can leave the same number pointing at a different
+ * destination, and `Enter` would then activate an item the user never selected.
+ * Any query change therefore clears the selection (the resolved first / single
+ * match is what `Enter` falls back to); a result-set change under the same query
+ * keeps a still-in-range selection and drops one that fell out of range.
+ */
+export function paletteSelectionIndexAfterChange(
+  previousQuery: string,
+  nextQuery: string,
+  currentIndex: number,
+  resultLength: number,
+): number {
+  if (previousQuery !== nextQuery) return -1;
+  if (currentIndex < 0) return -1;
+  return currentIndex < resultLength ? currentIndex : -1;
+}
+
+/**
  * Merge the shell's nav catalogs into the single ordered list both the sidebar
  * order and the palette read from.
  *

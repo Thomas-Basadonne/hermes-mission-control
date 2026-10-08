@@ -424,6 +424,32 @@ def main():
                 wait("document.querySelector('[data-testid=location]')?.textContent === '/cron'", 'Enter on a single result did not navigate directly')
                 check('a single filtered result is activated by Enter directly, without arrowing')
 
+                # Regression (PR #105 review): a selection made with the arrows must
+                # not survive a query edit. The index is positional, so after the list
+                # is re-filtered the same number can point at a different destination;
+                # Enter would then activate an item the user never selected.
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not reopen the palette')
+                type_search('')
+                wait("document.querySelectorAll('.navigation-palette-item').length > 3", f'expected the full list back: {labels()}')
+                press_key('ArrowDown', 'ArrowDown', 40)
+                press_key('ArrowDown', 'ArrowDown', 40)
+                press_key('ArrowDown', 'ArrowDown', 40)
+                wait_selected(2, 'three ArrowDown presses must select the third option')
+                stale_label = selected_label()
+                stale_route = selected_route()
+                # Narrow the query to a set that is still longer than the stale index,
+                # so a length-only guard would keep it while a query-aware guard clears
+                # it. The third entry of the narrowed list is a different destination.
+                type_search('c')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 3", f'expected three matches, got: {labels()}')
+                assert selected_index() == -1, f'editing the query must clear the stale selection, kept index {selected_index()}'
+                assert stale_route != '/cron', f'the stale entry must differ from the first match (stale was {stale_route})'
+                press_key('Enter', 'Enter', 13)
+                wait("!document.querySelector('.navigation-palette')", 'Enter after a query edit did not close the palette')
+                wait("document.querySelector('[data-testid=location]')?.textContent === '/cron'", 'Enter after a query edit did not navigate to the current first match')
+                check('editing the query after an arrow selection clears the stale index: Enter activates the current match, not the previously highlighted item')
+
                 # Empty state: Enter does nothing, arrows select nothing.
                 press_shortcut(4)
                 wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not reopen the palette')
