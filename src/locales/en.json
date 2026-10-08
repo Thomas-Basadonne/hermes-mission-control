@@ -162,7 +162,7 @@
   "overview.restartConfirmTitle": "Restart gateway?",
   "overview.restartConfirmDescription": "Restarting the gateway will interrupt its current connections and may briefly interrupt active work. Continue only if that is acceptable.",
   "overview.restartConfirmAction": "Restart gateway",
-  "overview.restartSuccess": "Gateway restart request completed.",
+  "overview.restartSuccess": "Gateway restart initiated.",
   "overview.restartError": "Gateway restart failed. Try again when it is safe.",
   "overview.scheduledJobs": "Scheduled jobs",
   "overview.refreshing": "Refreshing…",

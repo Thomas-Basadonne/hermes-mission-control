@@ -94,7 +94,7 @@ try {
       assert.equal(calls[0].id, 'restart-gateway');
       action.resolve();
       await act(async () => { await action.promise; });
-      assert.match(ui.container.querySelector('[role="status"]').textContent, /restart request completed/i);
+      assert.match(ui.container.querySelector('[role="status"]').textContent, /restart initiated/i);
     } finally {
       await ui.unmount();
     }

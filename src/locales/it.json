@@ -162,7 +162,7 @@
   "overview.restartConfirmTitle": "Riavviare il gateway?",
   "overview.restartConfirmDescription": "Il riavvio interromperà le connessioni correnti del gateway e potrebbe interrompere brevemente il lavoro attivo. Continua solo se è accettabile.",
   "overview.restartConfirmAction": "Riavvia gateway",
-  "overview.restartSuccess": "Richiesta di riavvio del gateway completata.",
+  "overview.restartSuccess": "Richiesta di riavvio del gateway avviata.",
   "overview.restartError": "Riavvio del gateway non riuscito. Riprova quando è sicuro.",
   "overview.scheduledJobs": "Attività pianificate",
   "overview.refreshing": "Aggiornamento…",
