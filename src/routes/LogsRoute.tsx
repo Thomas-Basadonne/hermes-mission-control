@@ -178,7 +178,7 @@ export function LogsRoute() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [refreshInterval, storedToken, updatesPaused, selectedFileName]);
+  }, [refreshInterval, storedToken, updatesPaused]);
 
   const files = logs?.files ?? [];
 
