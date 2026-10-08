@@ -39,6 +39,7 @@ jobs:
       - run: pnpm test:rooms
       - run: pnpm test:chat-profile
       - run: pnpm test:mobile-route-layout
+      - run: pnpm test:navigation-palette
       - run: pnpm test:cron-model-selection
       - run: pnpm test:cron-schedule-input
       - run: pnpm test:system-health-ui

@@ -301,6 +301,7 @@ pnpm test:vite-config
 pnpm test:rooms
 pnpm test:chat-profile
 pnpm test:mobile-route-layout
+pnpm test:navigation-palette
 pnpm test:cron-model-selection
 pnpm test:cron-schedule-input
 pnpm test:system-health-ui
@@ -321,6 +322,13 @@ available.
 
 For a live sidecar smoke test, start `pnpm dev:telemetry`, export
 `MISSION_CONTROL_TOKEN`, then run `pnpm test:smoke`.
+
+`pnpm test:navigation-palette-browser` runs the mounted-shell acceptance for the
+global navigation palette (**not** part of CI: it needs Chrome and a Python venv
+with `websockets`/`psutil`). It starts a loopback-only synthetic API fixture and
+its own throwaway Chrome profile, drives real keystrokes against the production
+`MissionControlShell` + `ChatDrawer`, and writes evidence (JSON + screenshots) to
+`~/.hermes/cache/scratch/navigation-palette-browser`.
 
 ## Security notes
 
