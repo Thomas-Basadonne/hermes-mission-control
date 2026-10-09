@@ -100,25 +100,44 @@ try {
   // burst of false warnings that then collapsed to the one real item. Once the
   // load settles a genuine error/fallback source is still surfaced.
   {
-    const { computeSourceIssues } = await server.ssrLoadModule('/src/components/overview/OverviewDashboard.tsx');
+    const { summarizeFreshness } = await server.ssrLoadModule('/src/components/overview/DataFreshnessPanel.tsx');
     const transient = [
       ['machine', { state: 'fallback' }],
       ['alerts', { state: 'fallback' }],
     ];
     assert.equal(
-      computeSourceIssues(true, transient).length,
+      summarizeFreshness(transient, true).issues.length,
       0,
       'a source still loading must not count as a partial-data issue on first paint',
     );
     assert.equal(
-      computeSourceIssues(false, transient).length,
+      summarizeFreshness(transient, false).issues.length,
       2,
       'after the load settles, fallback/error sources are still surfaced',
     );
     assert.equal(
-      computeSourceIssues(false, [['machine', { state: 'live' }]]).length,
+      summarizeFreshness([['machine', { state: 'live' }]], false).issues.length,
       0,
       'live sources are never counted as issues',
+    );
+
+    // A source that failed but still has a last known good response is `previous`
+    // (stale but real data on screen); one that never succeeded is `unavailable`.
+    const degraded = summarizeFreshness([
+      ['machine', { state: 'fallback', lastSuccessAt: '2026-10-09T09:00:00.000Z' }],
+      ['cron', { state: 'error' }],
+      ['sessions', { state: 'live', lastSuccessAt: '2026-10-09T09:05:00.000Z' }],
+    ], false);
+    assert.deepEqual(
+      degraded.rows.map((row) => [row.name, row.kind]),
+      [['machine', 'previous'], ['cron', 'unavailable'], ['sessions', 'live']],
+      'only a source that never succeeded is unavailable',
+    );
+    assert.equal(degraded.liveCount, 1);
+    assert.equal(
+      degraded.lastIssueAttemptAt,
+      null,
+      'a previous-data issue with no recorded attempt reports no attempt time',
     );
   }
 

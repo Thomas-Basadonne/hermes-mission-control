@@ -14,7 +14,8 @@ import { QuickActions } from './QuickActions';
 import { UsagePanel } from './UsagePanel';
 import { ProviderUsagePanel } from './ProviderUsagePanel';
 import { DashboardGrid, type DashboardWidget } from './DashboardGrid';
-import { formatDateTime, formatRelativeSchedule, formatRelativeTime } from '../../lib/format';
+import { DataFreshnessPanel, summarizeFreshness } from './DataFreshnessPanel';
+import { formatRelativeSchedule, formatRelativeTime } from '../../lib/format';
 import { type MissionControlCronJob } from '../../lib/hermes-api';
 import { getSessionActionAvailability } from '../../lib/session-view';
 import { usePullToReload } from '../../hooks/usePullToReload';
@@ -114,6 +115,8 @@ export function OverviewDashboard() {
     actionLoading,
     gatewayActions,
     runGatewayAction,
+    refreshAll,
+    storedToken,
   } = useMissionControl();
 
   const { machine, sessions, cron, alerts, backendHealth, gatewayStatus } = snapshot;
@@ -124,7 +127,7 @@ export function OverviewDashboard() {
   const pausedCron = cron.items.filter((job) => !job.enabled || job.state === 'paused').length;
   const scheduledCron = cron.items.filter((job) => job.enabled && job.state !== 'paused' && job.state !== 'running' && !cronHasError(job)).length;
   const sourceStatuses = Object.entries(sources).filter((entry): entry is [string, MissionControlSourceStatus] => Boolean(entry[1]));
-  const sourceIssues = computeSourceIssues(loading, sourceStatuses);
+  const freshness = summarizeFreshness(sourceStatuses, loading);
   const sessionIsLive = sources.sessions?.state === 'live';
 
   const widgets: DashboardWidget[] = [
@@ -153,7 +156,23 @@ export function OverviewDashboard() {
       id: 'attention',
       label: 'Attention needed',
       className: 'widget-attention',
-      content: <AttentionNeeded alerts={loading ? [] : alerts.items} pluginContributors={attentionContributors} dataWarningCount={sourceIssues.length} />,
+      content: <AttentionNeeded alerts={loading ? [] : alerts.items} pluginContributors={attentionContributors} dataWarningCount={freshness.issues.length} />,
+    },
+    {
+      id: 'freshness',
+      label: 'Data freshness',
+      className: 'widget-freshness',
+      content: (
+        <DataFreshnessPanel
+          sources={sourceStatuses}
+          loading={loading}
+          onRetry={() => refreshAll(storedToken || undefined, {
+            silent: false,
+            includeReference: true,
+            includeSnapshot: true,
+          })}
+        />
+      ),
     },
     {
       id: 'current-session',
@@ -289,7 +308,6 @@ export function OverviewDashboard() {
   ].filter((widget): widget is DashboardWidget => Boolean(widget.content));
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const { refreshAll, storedToken } = useMissionControl();
   const { state: pullState } = usePullToReload({
     containerRef,
     onReload: async () => {
@@ -303,57 +321,7 @@ export function OverviewDashboard() {
       <AgentStatusBar />
       <div className="p-4 sm:p-6">
         <DashboardGrid widgets={widgets} />
-        <section className="mt-6 border-t border-border-subtle pt-4" aria-label={t('overview.dataFreshness')}>
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <h2 className="text-xs font-semibold text-text">{t('overview.dataFreshness')}</h2>
-            {loading ? <span className="text-xs text-text-subtle">{t('overview.refreshing')}</span> : null}
-          </div>
-          {sourceIssues.length > 0 ? (
-            <p role="alert" className="mb-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-              {t('overview.partialDataWarning', { count: sourceIssues.length })}
-            </p>
-          ) : null}
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {sourceStatuses.map(([name, status]) => {
-              const unavailable = status.state === 'error' && !status.lastSuccessAt;
-              const previous = status.state !== 'live' && status.state !== 'loading' && Boolean(status.lastSuccessAt);
-              const stateLabel = unavailable
-                ? t('overview.sourceUnavailable')
-                : previous
-                  ? t('overview.sourcePrevious')
-                  : status.state === 'live'
-                    ? t('overview.sourceLive')
-                    : status.state === 'loading'
-                      ? status.lastSuccessAt ? t('overview.sourceRefreshingPrevious') : t('overview.refreshing')
-                      : t('overview.sourceUnavailable');
-              return (
-                <div key={name} className="rounded-md bg-surface-sunken/40 px-3 py-2 text-xs">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-text">{t(`overview.source.${name}`)}</span>
-                    <Badge variant={status.state === 'live' ? 'positive' : status.state === 'loading' ? 'default' : previous ? 'warning' : 'negative'}>{stateLabel}</Badge>
-                  </div>
-                  {previous && status.source ? <p className="mt-1 truncate text-text-subtle">{t('overview.sourceProvenance', { source: status.source })}</p> : null}
-                  <p className="mt-1 text-text-muted">{t('overview.lastSuccess')}: {status.lastSuccessAt ? formatDateTime(status.lastSuccessAt, locale) : t('overview.never')}</p>
-                  <p className="text-text-muted">{t('overview.lastAttempt')}: {status.lastAttemptAt ? formatDateTime(status.lastAttemptAt, locale) : t('overview.never')}</p>
-                </div>
-              );
-            })}
-          </div>
-        </section>
       </div>
     </div>
   );
-}
-
-// Only count a source as an issue once the first refresh has settled. Before that
-// every source is still unpopulated and the dashboard still shows its fallback
-// snapshot, so counting them flashed a burst of false warnings on the very first
-// paint (transient, then collapsed to the one real item). A genuine outage keeps
-// `loading` false after the failed load, so its warning survives.
-export function computeSourceIssues(
-  loading: boolean,
-  sourceStatuses: Array<[string, MissionControlSourceStatus]>,
-): Array<[string, MissionControlSourceStatus]> {
-  if (loading) return [];
-  return sourceStatuses.filter(([, status]) => status.state === 'error' || status.state === 'fallback');
 }
