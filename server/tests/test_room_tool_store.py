@@ -196,6 +196,27 @@ class RoomToolStoreTests(unittest.TestCase):
         self.assertEqual(len(reasoning), 1)
         self.assertEqual(reasoning[0]["output"], "thinking out loud")
 
+    def test_reasoning_details_extracts_thinking_without_provider_signature(self) -> None:
+        details = json.dumps([{
+            "type": "thinking",
+            "thinking": "I should inspect the member trace before answering.",
+            "signature": "provider-private-signature",
+        }])
+
+        result = room_tool_store._reasoning_text(details)
+
+        self.assertEqual(result, "I should inspect the member trace before answering.")
+        self.assertNotIn("provider-private-signature", result)
+
+        object_details = json.dumps({
+            "type": "thinking",
+            "thinking": "The member is still processing this turn.",
+            "signature": "another-private-signature",
+        })
+        object_result = room_tool_store._reasoning_text(object_details)
+        self.assertEqual(object_result, "The member is still processing this turn.")
+        self.assertNotIn("another-private-signature", object_result)
+
     def test_old_schema_without_reasoning_columns_keeps_tool_only_behavior(self) -> None:
         with patch.object(room_tool_store, "room_store_path", return_value=self.state), \
              patch.object(room_tool_store, "profile_store_path", side_effect=self._profile_path):

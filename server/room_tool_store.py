@@ -93,29 +93,34 @@ def _reasoning_text(*values: Any) -> str:
             continue
         if isinstance(value, str):
             text = value.strip()
-            if text.startswith("["):
+            if text.startswith(("[", "{")):
                 try:
                     parsed = json.loads(text)
                     if isinstance(parsed, list):
                         parts = [
-                            str(item.get("summary") or item.get("content") or item.get("text") or "").strip()
+                            str(item.get("thinking") or item.get("summary") or item.get("content") or item.get("text") or "").strip()
                             for item in parsed
                             if isinstance(item, dict)
                         ]
                         text = "\n".join(part for part in parts if part)
                         if text:
                             return text
+                    elif isinstance(parsed, dict):
+                        for key in ("thinking", "summary", "content", "text", "reasoning"):
+                            candidate = parsed.get(key)
+                            if isinstance(candidate, str) and candidate.strip():
+                                return candidate.strip()[:MAX_TOOL_TEXT]
                 except (TypeError, ValueError):
                     pass
             return text[: MAX_TOOL_TEXT] if text else ""
         if isinstance(value, (dict, list)):
             if isinstance(value, dict):
-                for key in ("summary", "content", "text", "reasoning"):
+                for key in ("thinking", "summary", "content", "text", "reasoning"):
                     if isinstance(value.get(key), str) and value[key].strip():
                         return value[key].strip()[: MAX_TOOL_TEXT]
             elif isinstance(value, list):
                 parts = [
-                    str(item.get("summary") or item.get("content") or item.get("text") or "").strip()
+                    str(item.get("thinking") or item.get("summary") or item.get("content") or item.get("text") or "").strip()
                     for item in value
                     if isinstance(item, dict)
                 ]
