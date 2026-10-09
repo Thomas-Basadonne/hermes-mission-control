@@ -1,8 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import {AlertTriangle, Check, ChevronRight, Loader2, Plus, RefreshCw, Send, ShieldAlert, Trash2, Users, X, XCircle, XOctagon, ChevronDown} from 'lucide-react';
+import {AlertTriangle, Check, ChevronRight, Loader2, Plus, RefreshCw, Send, ShieldAlert, Trash2, Users, X, XCircle, XOctagon, ChevronDown, EyeOff} from 'lucide-react';
 import { useI18n } from '../../lib/i18n';
 import { ChatMessageCard } from '../chat-messages';
-import { Badge } from '../ui/Badge';
 import { loadMissionControlVaults, type MissionControlVaultDescriptor } from '../../lib/hermes-api';
 import { loadRoomTools, type RoomToolTrace } from '../../lib/room-tools';
 import { RoomToolStrip } from './RoomToolPanel';
@@ -29,12 +28,12 @@ const statusKey: Record<GroupMemberStatus, string> = {
   settled: 'rooms.status.settled',
   unavailable: 'rooms.status.unavailable',
 };
-const statusVariant: Record<GroupMemberStatus, 'default' | 'positive' | 'warning' | 'negative'> = { idle: 'default', working: 'warning', settled: 'positive', unavailable: 'negative' };
-
-function StatusBadge({ status, compact = false }: { status: GroupMemberStatus; compact?: boolean }) {
+function MemberFilterStatus({ status }: { status: GroupMemberStatus }) {
   const { t } = useI18n();
-  if (compact) return <span aria-label={t(statusKey[status])} title={t(statusKey[status])} className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${statusVariant[status] === 'positive' ? 'bg-positive' : statusVariant[status] === 'warning' ? 'bg-warning' : statusVariant[status] === 'negative' ? 'bg-negative' : 'bg-current opacity-50'}`} />;
-  return <Badge variant={statusVariant[status]} dot>{t(statusKey[status])}</Badge>;
+  return <span className={`chat-room-member-status is-${status}`}>
+    {status === 'working' ? <Loader2 size={12} className="animate-spin" aria-hidden="true" /> : <span className="chat-room-member-dot" aria-hidden="true" />}
+    <span>{t(statusKey[status])}</span>
+  </span>;
 }
 
 function notEmptyString(value: unknown): value is string {
@@ -325,7 +324,8 @@ export const GroupRoomView = memo(function GroupRoomView({ state, onSend, classN
     return result;
   }, [state.events]);
   const filtered = focusedMember ? entries.filter(({ event, member }) => event.actor.kind === 'user' || member?.id === focusedMember) : entries;
-  const hiddenWorking = state.room?.members.some((member) => member.id !== focusedMember && deriveGroupMemberStatus(member, state.driverStatus, latestByMember[member.id]) === 'working');
+  const hiddenWorkingMembers = focusedMember === null ? [] : (state.room?.members ?? []).filter((member) =>
+    member.id !== focusedMember && deriveGroupMemberStatus(member, state.driverStatus, latestByMember[member.id] ?? null) === 'working');
 
   // Tools per member-final turn: attach each trace whose timestamp falls
   // between the previous member reply and this member reply, matching the
@@ -421,10 +421,27 @@ export const GroupRoomView = memo(function GroupRoomView({ state, onSend, classN
         </button>
       ) : null}
     </div>
-    {hiddenWorking ? <div className="flex items-center gap-2 text-[11px] text-warning" role="status"><Loader2 size={12} className="animate-spin" />{t('rooms.backgroundMemberWorking')}</div> : null}
-    <div className="chat-room-filterbar" role="tablist" aria-label={t('rooms.members')}>
-      <button type="button" role="tab" aria-selected={!focusedMember} onClick={() => setFocusedMember(null)} className={`chat-room-filter-chip ${!focusedMember ? 'is-active' : ''}`}><Users size={12} />{t('rooms.everyone')}</button>
-      {(state.room?.members ?? []).map((member) => { const status = deriveGroupMemberStatus(member, state.driverStatus, latestByMember[member.id] ?? null); return <button key={member.id} type="button" role="tab" aria-selected={focusedMember === member.id} onClick={() => setFocusedMember(member.id)} className={`chat-room-filter-chip ${focusedMember === member.id ? 'is-active' : ''}`}><StatusBadge status={status} compact /><span>{member.displayName || `@${member.handle}`}</span></button>; })}
+    <div className="chat-room-filters">
+      <div className="chat-room-filter-label">{t('rooms.showMessagesFrom')}</div>
+      <div className="chat-room-filterbar" role="group" aria-label={t('rooms.showMessagesFrom')}>
+        <button type="button" aria-pressed={!focusedMember} onClick={() => setFocusedMember(null)} className="chat-room-filter-chip">
+          <Users size={14} aria-hidden="true" />{t('rooms.everyone')}
+        </button>
+        {(state.room?.members ?? []).map((member) => {
+          const status = deriveGroupMemberStatus(member, state.driverStatus, latestByMember[member.id] ?? null);
+          return <button key={member.id} type="button" aria-pressed={focusedMember === member.id} onClick={() => setFocusedMember(member.id)} className="chat-room-filter-chip">
+            <span className="chat-room-member-name">{member.displayName || `@${member.handle}`}</span>
+            <MemberFilterStatus status={status} />
+          </button>;
+        })}
+      </div>
+      {hiddenWorkingMembers.length > 0 ? <div className="chat-room-outside-activity" role="status">
+        <EyeOff size={13} aria-hidden="true" />
+        <span>{t(hiddenWorkingMembers.length === 1 ? 'rooms.outsideMemberWorking' : 'rooms.outsideMembersWorking', {
+          names: hiddenWorkingMembers.map((member) => member.displayName || `@${member.handle}`).join(', '),
+        })}</span>
+        <button type="button" onClick={() => setFocusedMember(null)}>{t('rooms.showAll')}</button>
+      </div> : null}
     </div>
     {onSend ? <GroupRoomComposer state={state} onSend={onSend} mentionRoster={mentionRoster} /> : null}
   </section>;
