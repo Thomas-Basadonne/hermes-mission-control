@@ -2,7 +2,7 @@ import { useI18n } from '../../lib/i18n';
 import { useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Activity, ArrowRight, Clock3, List, MessageSquare, Rocket } from 'lucide-react';
-import { useMissionControl } from '../../lib/mission-control-store';
+import { useMissionControl, type MissionControlSourceStatus } from '../../lib/mission-control-store';
 import { getPluginRegistry } from '../../core/plugin-registry';
 import type { MCPluginAttentionContributor, MCPluginOverviewContributor } from '../../core/plugins/types';
 import { Card } from '../ui/Card';
@@ -14,6 +14,7 @@ import { QuickActions } from './QuickActions';
 import { UsagePanel } from './UsagePanel';
 import { ProviderUsagePanel } from './ProviderUsagePanel';
 import { DashboardGrid, type DashboardWidget } from './DashboardGrid';
+import { DataFreshnessPanel, summarizeFreshness } from './DataFreshnessPanel';
 import { formatRelativeSchedule, formatRelativeTime } from '../../lib/format';
 import { type MissionControlCronJob } from '../../lib/hermes-api';
 import { getSessionActionAvailability } from '../../lib/session-view';
@@ -110,10 +111,12 @@ export function OverviewDashboard() {
   const {
     snapshot,
     loading,
-    lastUpdatedAt,
+    sources,
     actionLoading,
     gatewayActions,
     runGatewayAction,
+    refreshAll,
+    storedToken,
   } = useMissionControl();
 
   const { machine, sessions, cron, alerts, backendHealth, gatewayStatus } = snapshot;
@@ -123,6 +126,9 @@ export function OverviewDashboard() {
   const failedCron = cron.items.filter(cronHasError).length;
   const pausedCron = cron.items.filter((job) => !job.enabled || job.state === 'paused').length;
   const scheduledCron = cron.items.filter((job) => job.enabled && job.state !== 'paused' && job.state !== 'running' && !cronHasError(job)).length;
+  const sourceStatuses = Object.entries(sources).filter((entry): entry is [string, MissionControlSourceStatus] => Boolean(entry[1]));
+  const freshness = summarizeFreshness(sourceStatuses, loading);
+  const sessionIsLive = sources.sessions?.state === 'live';
 
   const widgets: DashboardWidget[] = [
     {
@@ -150,7 +156,23 @@ export function OverviewDashboard() {
       id: 'attention',
       label: 'Attention needed',
       className: 'widget-attention',
-      content: <AttentionNeeded alerts={alerts.items} pluginContributors={attentionContributors} />,
+      content: <AttentionNeeded alerts={loading ? [] : alerts.items} pluginContributors={attentionContributors} dataWarningCount={freshness.issues.length} />,
+    },
+    {
+      id: 'freshness',
+      label: 'Data freshness',
+      className: 'widget-freshness',
+      content: (
+        <DataFreshnessPanel
+          sources={sourceStatuses}
+          loading={loading}
+          onRetry={() => refreshAll(storedToken || undefined, {
+            silent: false,
+            includeReference: true,
+            includeSnapshot: true,
+          })}
+        />
+      ),
     },
     {
       id: 'current-session',
@@ -159,7 +181,11 @@ export function OverviewDashboard() {
       content: (
         <SectionCard
           eyebrow={t('overview.currentSession')}
-          title={liveSessionItems.length > 0 ? t('overview.liveSessionsTitle', { count: liveSessionItems.length }) : t('overview.noActiveSession')}
+          title={liveSessionItems.length > 0
+            ? sessionIsLive
+              ? t('overview.liveSessionsTitle', { count: liveSessionItems.length })
+              : t('overview.previousSessionsTitle', { count: liveSessionItems.length })
+            : t('overview.noActiveSession')}
           actions={
           <SectionLink to="/sessions" label={t('overview.allSessions')}>
             <List className="h-4 w-4" />
@@ -175,12 +201,12 @@ export function OverviewDashboard() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 items-center gap-2">
-                        <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-positive shadow-[0_0_0_3px_rgba(52,211,153,0.14)] animate-pulse" />
+                        <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${sessionIsLive ? 'bg-positive shadow-[0_0_0_3px_rgba(52,211,153,0.14)] animate-pulse' : 'bg-warning'}`} />
                         <p className="min-w-0 flex-1 truncate text-sm font-medium text-text">{session.title}</p>
-                        <span className="sr-only">{t('sessions.liveStatus')}</span>
-                        <span className="hidden shrink-0 sm:inline-flex">
+                        {sessionIsLive ? <span className="sr-only">{t('sessions.liveStatus')}</span> : null}
+                        {sessionIsLive ? <span className="hidden shrink-0 sm:inline-flex">
                           <Badge variant="positive" dot>{t('sessions.liveStatus')}</Badge>
-                        </span>
+                        </span> : null}
                       </div>
                       <p className="mt-1 line-clamp-1 text-xs text-text-muted">{session.preview || t('overview.noPreview')}</p>
                     </div>
@@ -282,7 +308,6 @@ export function OverviewDashboard() {
   ].filter((widget): widget is DashboardWidget => Boolean(widget.content));
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const { refreshAll, storedToken } = useMissionControl();
   const { state: pullState } = usePullToReload({
     containerRef,
     onReload: async () => {
@@ -296,11 +321,6 @@ export function OverviewDashboard() {
       <AgentStatusBar />
       <div className="p-4 sm:p-6">
         <DashboardGrid widgets={widgets} />
-        <div className="mt-6 border-t border-border-subtle pt-4">
-          <span className="text-xs text-text-subtle">
-            {loading ? 'Refreshing…' : lastUpdatedAt ? `Last synced ${lastUpdatedAt}` : 'Not yet synced'}
-          </span>
-        </div>
       </div>
     </div>
   );

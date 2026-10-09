@@ -71,6 +71,9 @@ export type MissionControlSessionItem = {
 };
 
 export type MissionControlSessionsSnapshot = {
+  /** Identifies successful endpoint data (including empty data) vs a compatibility fallback. */
+  dataSource?: 'mission-control-sessions' | 'gateway-status-fallback' | 'fallback';
+  dataError?: string;
   totalSessions: number;
   totalMessages: number;
   activeAgents: number;
@@ -176,6 +179,9 @@ export type MissionControlCronJob = {
 };
 
 export type MissionControlCronSnapshot = {
+  /** An empty items array may be a successful live response. */
+  dataSource?: 'mission-control-cron' | 'fallback';
+  dataError?: string;
   queuedJobs: number;
   items: MissionControlCronJob[];
 };
@@ -190,6 +196,8 @@ export type MissionControlAlert = {
 };
 
 export type MissionControlAlertsSnapshot = {
+  dataSource?: 'mission-control-alerts' | 'fallback';
+  dataError?: string;
   items: MissionControlAlert[];
 };
 
@@ -213,6 +221,8 @@ export type MissionControlToolCatalogItem = {
 };
 
 export type MissionControlToolsSnapshot = {
+  dataSource?: 'mission-control-tools' | 'fallback';
+  dataError?: string;
   available: boolean;
   count: number;
   toolCount: number;
@@ -241,6 +251,8 @@ export type MissionControlSkillCategory = {
 };
 
 export type MissionControlSkillsSnapshot = {
+  dataSource?: 'mission-control-skills' | 'fallback';
+  dataError?: string;
   available: boolean;
   count: number;
   hint: string | null;
@@ -318,6 +330,8 @@ export type MissionControlLogsSnapshot = {
 };
 
 export type MissionControlSnapshot = {
+  dataSource?: 'mission-control-snapshot' | 'fallback';
+  dataError?: string;
   backendHealth: 'healthy' | 'degraded' | 'offline';
   activeModel: string;
   fallbackModel: string;
@@ -2014,7 +2028,7 @@ function normalizeOfficialCronJob(input: Record<string, unknown>): MissionContro
   });
 }
 
-function deriveAlerts(
+export function deriveAlerts(
   status: OfficialStatusPayload | null,
   machine: MissionControlMachineStatus,
   sessions: MissionControlSessionsSnapshot,
@@ -2023,7 +2037,10 @@ function deriveAlerts(
   const items: MissionControlAlert[] = [];
   const gatewayRunning = readBoolean(status?.gateway_running, false);
 
-  if (!gatewayRunning) {
+  // Only report the gateway as offline when we actually have a status payload
+  // that says so. A missing payload means "not loaded yet" (or the request
+  // failed), not "offline" — reporting it produced a false alert on first paint.
+  if (status !== null && !gatewayRunning) {
     items.push({
       id: 'gateway-offline',
       category: 'gateway',
@@ -2135,7 +2152,7 @@ export async function loadMissionControlSnapshot(accessToken?: string): Promise<
 
     const sessions = fallbackSessions;
     const alerts = deriveAlerts(status, machine, sessions, cron);
-    return normalizeSnapshot({
+    return { ...normalizeSnapshot({
       backendHealth: deriveBackendHealth(status, machine),
       activeModel: formatModelRef(readString(modelInfo?.model), readString(modelInfo?.provider)),
       fallbackModel: deriveFallbackModel(configRaw),
@@ -2149,13 +2166,15 @@ export async function loadMissionControlSnapshot(accessToken?: string): Promise<
       sessions,
       cron,
       alerts,
-    });
+    }), dataSource: 'mission-control-snapshot', ...(!status || !machineRaw || cron.dataSource === 'fallback'
+      ? { dataError: 'One or more snapshot dependencies are unavailable; snapshot includes fallback values.' }
+      : {}) };
   } catch (error) {
     if (error instanceof MissionControlAuthError) {
       throw error;
     }
 
-    return fallbackSnapshot;
+    return { ...fallbackSnapshot, dataSource: 'fallback' };
   }
 }
 
@@ -2194,7 +2213,7 @@ export async function loadMissionControlMachineStatus(accessToken?: string): Pro
     // No official backend available; return local-only degraded status
     return normalizeMachineStatus({
       ...fallbackMachine,
-      source: 'local-psutil',
+      source: 'fallback',
       health: 'degraded',
       summary: 'Local telemetry active; no official backend connected.',
     });
@@ -2255,24 +2274,28 @@ export async function loadMissionControlSessions(accessToken?: string): Promise<
         }),
       );
       const totalMessages = items.reduce((total, item) => total + item.messageCount, 0);
-      return normalizeSessions({
+      return { ...normalizeSessions({
         totalSessions: normalized.stats.totalSessions,
         totalMessages,
         activeAgents: normalized.stats.activeAgents,
         toolCallsToday: fallbackSessions.toolCallsToday,
         items,
-      });
+      }), dataSource: 'mission-control-sessions' };
     }
 
     // Agent sessions are unavailable: fall back to the gateway's active-session count.
     const { payload: status } = await maybeFetchLocalJson<OfficialStatusPayload>('/status', accessToken);
-    return deriveSessionsSnapshot(null, status);
+    return {
+      ...deriveSessionsSnapshot(null, status),
+      dataSource: status ? 'gateway-status-fallback' : 'fallback',
+      dataError: 'Mission Control sessions endpoint unavailable; using gateway status fallback.',
+    };
   } catch (error) {
     if (error instanceof MissionControlAuthError) {
       throw error;
     }
 
-    return fallbackSessions;
+    return { ...fallbackSessions, dataSource: 'fallback', dataError: error instanceof Error ? error.message : 'Sessions request failed.' };
   }
 }
 
@@ -2321,16 +2344,17 @@ export async function loadMissionControlAgentTrace(
 export async function loadMissionControlCron(accessToken?: string): Promise<MissionControlCronSnapshot> {
   try {
     const { payload } = await maybeFetchLocalJson<Array<Record<string, unknown>> | { jobs?: Array<Record<string, unknown>> }>('/cron/jobs', accessToken);
+    if (payload === null) return { ...fallbackCron, dataSource: 'fallback', dataError: 'Cron endpoint unavailable.' };
     const rawJobs = Array.isArray(payload) ? payload : payload?.jobs;
     const items = Array.isArray(rawJobs) ? rawJobs.filter(isRecord).map((job) => normalizeOfficialCronJob(job)) : [];
     const queuedJobs = items.filter((job) => job.enabled && job.state !== 'paused' && Boolean(job.nextRunAt)).length;
-    return normalizeCron({ queuedJobs, items });
+    return { ...normalizeCron({ queuedJobs, items }), dataSource: 'mission-control-cron' };
   } catch (error) {
     if (error instanceof MissionControlAuthError) {
       throw error;
     }
 
-    return fallbackCron;
+    return { ...fallbackCron, dataSource: 'fallback', dataError: error instanceof Error ? error.message : 'Cron request failed.' };
   }
 }
 
@@ -2409,31 +2433,41 @@ export async function deleteMissionControlCronJob(jobId: string, accessToken?: s
 
 export async function loadMissionControlAlerts(accessToken?: string): Promise<MissionControlAlertsSnapshot> {
   try {
-    const [status, machine, cron] = await Promise.all([
-      maybeFetchLocalJson<OfficialStatusPayload>('/status', accessToken).then((r) => r.payload),
+    const [statusResult, machine, cron] = await Promise.all([
+      maybeFetchLocalJson<OfficialStatusPayload>('/status', accessToken),
       loadMissionControlMachineStatus(accessToken),
       loadMissionControlCron(accessToken),
     ]);
-    return deriveAlerts(status ?? null, machine, fallbackSessions, cron);
+    // `maybeFetchLocalJson` returns the `Response` for an HTTP error (503) with a null
+    // payload, so a failed request must not be read as a successful one: check the
+    // payload, matching the tools/skills loaders.
+    const statusLive = statusResult.payload !== null;
+    return {
+      ...deriveAlerts(statusResult.payload, machine, fallbackSessions, cron),
+      dataSource: statusLive ? 'mission-control-alerts' : 'fallback',
+      ...(!statusLive || machine.source === 'fallback' || cron.dataSource === 'fallback'
+        ? { dataError: 'One or more alert dependencies are unavailable; alerts include fallback values.' }
+        : {}),
+    };
   } catch (error) {
     if (error instanceof MissionControlAuthError) {
       throw error;
     }
 
-    return fallbackAlerts;
+    return { ...fallbackAlerts, dataSource: 'fallback', dataError: error instanceof Error ? error.message : 'Alerts request failed.' };
   }
 }
 
 export async function loadMissionControlTools(accessToken?: string): Promise<MissionControlToolsSnapshot> {
-  const { payload } = await maybeFetchLocalJson<MissionControlToolsSnapshot>('/tools', accessToken);
-  if (payload) return normalizeTools(payload);
-  return fallbackTools;
+  const { payload, response } = await maybeFetchLocalJson<MissionControlToolsSnapshot>('/tools', accessToken);
+  if (payload !== null) return { ...normalizeTools(payload), dataSource: 'mission-control-tools' };
+  return { ...fallbackTools, dataSource: 'fallback', dataError: response ? `Tools endpoint returned ${response.status}.` : 'Tools endpoint unavailable.' };
 }
 
 export async function loadMissionControlSkills(accessToken?: string): Promise<MissionControlSkillsSnapshot> {
-  const { payload } = await maybeFetchLocalJson<MissionControlSkillsSnapshot>('/skills', accessToken);
-  if (payload) return normalizeSkills(payload);
-  return fallbackSkills;
+  const { payload, response } = await maybeFetchLocalJson<MissionControlSkillsSnapshot>('/skills', accessToken);
+  if (payload !== null) return { ...normalizeSkills(payload), dataSource: 'mission-control-skills' };
+  return { ...fallbackSkills, dataSource: 'fallback', dataError: response ? `Skills endpoint returned ${response.status}.` : 'Skills endpoint unavailable.' };
 }
 
 export async function loadMissionControlSkillsCatalog(

@@ -10,6 +10,7 @@ import type { MCPluginAttentionContributor } from '../../core/plugins/types';
 type AttentionNeededProps = {
   alerts: MissionControlAlert[];
   pluginContributors?: MCPluginAttentionContributor[];
+  dataWarningCount?: number;
 };
 
 function SectionLink({ to, label, children }: { to: string; label: string; children: React.ReactNode }) {
@@ -21,14 +22,14 @@ function SectionLink({ to, label, children }: { to: string; label: string; child
   );
 }
 
-export function AttentionNeeded({ alerts, pluginContributors = [] }: AttentionNeededProps) {
+export function AttentionNeeded({ alerts, pluginContributors = [], dataWarningCount = 0 }: AttentionNeededProps) {
   const { t } = useI18n();
   const errorAlerts = alerts.filter((a) => a.tone === 'bad');
   const warnAlerts = alerts.filter((a) => a.tone === 'warn');
   const goodAlerts = alerts.filter((a) => a.tone === 'good');
   const [pluginCounts, setPluginCounts] = React.useState<Record<string, number>>({});
   const totalPluginAttention = Object.values(pluginCounts).reduce((sum, count) => sum + count, 0);
-  const totalCount = errorAlerts.length + warnAlerts.length + totalPluginAttention;
+  const totalCount = errorAlerts.length + warnAlerts.length + totalPluginAttention + dataWarningCount;
   const hasAttention = totalCount > 0;
 
   return (
@@ -42,6 +43,7 @@ export function AttentionNeeded({ alerts, pluginContributors = [] }: AttentionNe
           const Component = contributor.component;
           return <Component key={contributor.id} onActiveChange={(count) => setPluginCounts((current) => current[contributor.id] === count ? current : { ...current, [contributor.id]: count })} />;
         })}
+        {dataWarningCount > 0 ? <div role="status" className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">{t('overview.partialDataWarning', { count: dataWarningCount })}</div> : null}
         {errorAlerts.slice(0, 2).map((alert) => <div key={alert.id} className="flex items-start gap-2"><AlertCircle className="h-4 w-4 text-negative mt-0.5 flex-shrink-0" /><div className="flex-1 min-w-0"><p className="text-sm font-medium text-text truncate">{alert.title}</p><p className="text-xs text-text-muted line-clamp-1 mt-0.5">{alert.detail}</p></div><Badge variant="negative" className="flex-shrink-0">{alert.category}</Badge></div>)}
         {warnAlerts.slice(0, 2).map((alert) => <div key={alert.id} className="flex items-start gap-2"><Clock className="h-4 w-4 text-warning mt-0.5 flex-shrink-0" /><div className="flex-1 min-w-0"><p className="text-sm font-medium text-text truncate">{alert.title}</p><p className="text-xs text-text-muted line-clamp-1 mt-0.5">{alert.detail}</p></div><Badge variant="warning" className="flex-shrink-0">{alert.category}</Badge></div>)}
         {!hasAttention && <div className="flex flex-col items-center gap-2 py-3 text-center"><CheckCircle className="h-7 w-7 text-positive" /><p className="text-sm text-text-muted">{t('attention.noIssues')}</p></div>}
