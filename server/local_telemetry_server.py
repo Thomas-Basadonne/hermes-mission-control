@@ -3157,6 +3157,13 @@ def _resolve_telemetry_bind() -> tuple[str, int]:
     return host, port
 
 
+class TelemetryHTTPServer(ThreadingHTTPServer):
+    # Queue the dashboard's ~30-request first-load burst with headroom. This
+    # must be set before server_activate() calls listen(); changing an instance
+    # after construction would leave the socket using the stdlib's backlog.
+    request_queue_size = 128
+
+
 def main() -> None:
     host, port = _resolve_telemetry_bind()
 
@@ -3166,7 +3173,7 @@ def main() -> None:
     start_gateway_watcher()
     terminal_thread = start_terminal_server()
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    server = TelemetryHTTPServer((host, port), Handler)
     # Client handlers must not keep the process alive after the listener is
     # restarted while a browser/proxy still owns an abandoned connection.
     server.daemon_threads = True
