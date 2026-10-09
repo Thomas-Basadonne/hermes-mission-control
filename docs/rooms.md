@@ -64,7 +64,7 @@ Selecting a room loads its log. The room list and the room state come from `grou
 
 A member's tool activity is **not** streamed to Mission Control — the room log carries the conversation, not the member's internal tool calls. Instead the sidecar reads them back from each member profile's own session:
 
-1. `server/room_tool_store.py` looks up the member's session titled `Group: <room_id>` in that profile's `state.db` (read-only).
+1. `server/room_tool_store.py` reads the hosted-room registry from `shared-state.db`, then looks up the member's session titled `Group: <room_id>` in that profile's `state.db` (read-only).
 2. It walks the persisted stream: an `assistant` row carrying `tool_calls`, followed by one `tool` row per executed call.
 3. The TUI gateway's internal `tool_call` wrapper name is translated to the real tool name from the call payload, so the UI shows the actual tool rather than the relay.
 4. Traces are bucketed per member reply and rendered inline by `RoomToolPanel`, expandable like the canonical chat.

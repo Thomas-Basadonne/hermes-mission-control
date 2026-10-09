@@ -363,7 +363,7 @@ export function AgentsRoute() {
     const preferred = liveRichSession ?? richSession ?? selectableSessions[0];
 
     if (preferred) {
-      selectSession(preferred.sessionId);
+      selectSession(preferred.sessionId, false, preferred.profile);
     }
   }, [selectableSessions, selectedSessionId]);
 
@@ -644,9 +644,14 @@ export function AgentsRoute() {
   useEffect(() => {
     if (selectedSessionProfile) return;
     if (!selectedSessionId) return;
-    if (selectableSessions.some((session) => session.sessionId === selectedSessionId)) return;
+    const selectedSession = selectableSessions.find((session) => session.sessionId === selectedSessionId);
+    if (selectedSession) {
+      if (selectedSession.profile) setSelectedSessionProfile(selectedSession.profile);
+      return;
+    }
     manualSessionSelectionRef.current = false;
-    selectSession(selectableSessions[0]?.sessionId ?? '');
+    const fallbackSession = selectableSessions[0];
+    selectSession(fallbackSession?.sessionId ?? '', false, fallbackSession?.profile);
   }, [selectedSessionId, selectedSessionProfile, selectableSessions]);
 
   useEffect(() => {
@@ -655,14 +660,14 @@ export function AgentsRoute() {
 
     const freshest = selectableSessions[0];
     if (!selectedSessionId) {
-      setSelectedSessionId(freshest.sessionId);
+      selectSession(freshest.sessionId, false, freshest.profile);
       return;
     }
 
     const current = selectableSessions.find((session) => session.sessionId === selectedSessionId);
     if (!current) {
       manualSessionSelectionRef.current = false;
-      selectSession(freshest.sessionId);
+      selectSession(freshest.sessionId, false, freshest.profile);
       return;
     }
 
@@ -671,7 +676,7 @@ export function AgentsRoute() {
     }
 
     if (freshest.sessionId !== current.sessionId && (freshest.lastActiveAt ?? 0) > (current.lastActiveAt ?? 0) + 5) {
-      selectSession(freshest.sessionId);
+      selectSession(freshest.sessionId, false, freshest.profile);
     }
   }, [liveMode, selectableSessions, selectedSessionId]);
 
@@ -991,7 +996,11 @@ export function AgentsRoute() {
                 id="agent-session-select"
                 className="h-11 w-full min-w-0 rounded-md bg-surface px-3 py-0 text-xs text-text outline-none focus:ring-1 focus:ring-accent/40 sm:h-9"
                 value={selectedSessionId}
-                onChange={(event) => selectSession(event.target.value, true)}
+                onChange={(event) => {
+                  const sessionId = event.target.value;
+                  const sessionProfile = selectableSessions.find((session) => session.sessionId === sessionId)?.profile ?? null;
+                  selectSession(sessionId, true, sessionProfile);
+                }}
                 disabled={selectableSessions.length === 0 && !externalSelectedSession}
               >
                 {selectedSessionFilteredOut && selectedSessionOption ? (

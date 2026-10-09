@@ -4,7 +4,7 @@ Mission Control-owned edge collector: it is the *only* component that knows
 how to turn member activity into tool traces for the Rooms UI. It reads two
 kinds of SQLite files **read-only** and never writes to Hermes core:
 
-1. ``~/.hermes/state.db`` — the hosted room registry (rooms + members).
+1. ``~/.hermes/shared-state.db`` — the hosted room registry (rooms + members).
 2. ``~/.hermes/profiles/<member-profile>/state.db`` — each member profile's
    sessions table. Room member turns live under ``Group: <room_id>`` sessions
    and the canonical stream already persists the tool_calls / tool rows with
@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from hermes_paths import hermes_root
 
 LOGGER = logging.getLogger("mission_control.room_tools")
 
@@ -42,7 +43,7 @@ def _configured_db_path(env_key: str, fallback: Path) -> Path:
 
 
 def room_store_path() -> Path:
-    return _configured_db_path("MC_GROUP_ROOMS_DB_PATH", Path.home() / ".hermes" / "state.db")
+    return _configured_db_path("MC_GROUP_ROOMS_DB_PATH", hermes_root() / "shared-state.db")
 
 
 def profile_store_path(profile: str) -> Path:

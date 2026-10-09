@@ -21,22 +21,26 @@ function statusValue(value: unknown): GroupMemberStatus | null {
 export function deriveGroupMemberStatus(member: GroupMember, driverStatus: Record<string, unknown>, latestEvent: GroupEvent | null): GroupMemberStatus {
   const unavailable = driverStatus.unavailable;
   if (Array.isArray(unavailable) && unavailable.some((item) => item === member.id || item === member.handle)) return 'unavailable';
+  const targetedId = driverStatus.member_id ?? driverStatus.memberId ?? driverStatus.active_member_id;
+  const global = statusValue(driverStatus.status) ?? statusValue(driverStatus.state);
+  // A targeted live driver state is newer than the last per-member settlement.
+  // Without this precedence, the chip stays "Settled" while that member's
+  // Group: session (and the Agents trace) is actively advancing.
+  if (global && targetedId && (targetedId === member.id || targetedId === member.handle)) return global;
   const members = record(driverStatus.members);
   const memberStatus = record(members[member.id] ?? members[member.handle]);
   const direct = statusValue(memberStatus.status) ?? statusValue(memberStatus.state);
   if (direct) return direct;
-  const targetedId = driverStatus.member_id ?? driverStatus.memberId ?? driverStatus.active_member_id;
-  const global = statusValue(driverStatus.status) ?? statusValue(driverStatus.state);
   if (global && (!targetedId || targetedId === member.id || targetedId === member.handle)) return global;
-  if (latestEvent?.actor.kind === 'member' && (latestEvent.actor.id === member.id || latestEvent.message.member?.id === member.id)) return 'settled';
-
   // The driver exposes activity as booleans/counts (working: true, counts: {running: N}),
   // not as a per-member status string. A member with no private state defaults to
-  // 'working' while the room has live tasks; true idle is only when nothing is running.
+  // 'working' while the room has live tasks. Check this before the last final
+  // message: a previous reply must not keep the chip Settled during a new turn.
   const counts = record(driverStatus.counts);
   const liveCount = ['queued', 'running', 'stopping', 'indeterminate', 'deferred']
     .reduce((sum, key) => sum + (typeof counts[key] === 'number' ? counts[key] as number : 0), 0);
   if (driverStatus.working === true || liveCount > 0) return 'working';
+  if (latestEvent?.actor.kind === 'member' && (latestEvent.actor.id === member.id || latestEvent.message.member?.id === member.id)) return 'settled';
   return 'idle';
 }
 

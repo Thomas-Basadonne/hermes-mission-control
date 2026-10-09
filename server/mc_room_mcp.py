@@ -14,6 +14,7 @@ import os
 import sqlite3
 from pathlib import Path
 from typing import Any
+from hermes_paths import hermes_root
 
 try:
     from mcp.server import MCPServer
@@ -31,7 +32,7 @@ def rooms_db_path() -> Path:
         return Path(configured).expanduser()
     # Hosted Group Rooms belong to the default Mission Control gateway. The
     # active Hermes profile is used only for membership authorization below.
-    return Path.home() / ".hermes" / "state.db"
+    return hermes_root() / "shared-state.db"
 
 
 def active_profile() -> str:

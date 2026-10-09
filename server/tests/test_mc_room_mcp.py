@@ -13,6 +13,13 @@ import mc_room_mcp  # noqa: E402
 
 
 class MissionControlRoomMcpTests(unittest.TestCase):
+    def test_room_mcp_defaults_to_shared_state_database(self):
+        with patch.dict("os.environ", {"MC_GROUP_ROOMS_DB_PATH": ""}):
+            self.assertEqual(
+                mc_room_mcp.rooms_db_path(),
+                Path.home() / ".hermes" / "shared-state.db",
+            )
+
     def make_db(self, root: Path, *, duplicate_name: bool = False) -> Path:
         path = root / "state.db"
         db = sqlite3.connect(path)

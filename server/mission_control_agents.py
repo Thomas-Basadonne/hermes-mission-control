@@ -1731,6 +1731,39 @@ def _trace_stats(events: list[dict[str, Any]], session_ref: dict[str, Any] | Non
     }
 
 
+def _extract_trace_reasoning(message: dict[str, Any]) -> str:
+    direct = message.get("reasoning") or message.get("reasoning_content")
+    if direct:
+        return _normalize_text(direct)
+
+    details = message.get("reasoning_details")
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except (json.JSONDecodeError, TypeError):
+            details = [details]
+    if isinstance(details, dict):
+        details = [details]
+    if not isinstance(details, list):
+        return ""
+
+    parts: list[str] = []
+    for item in details:
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict):
+            candidate = next(
+                (item.get(key) for key in ("thinking", "text", "summary") if isinstance(item.get(key), str)),
+                None,
+            )
+            text = candidate if isinstance(candidate, str) else ""
+        else:
+            text = ""
+        if text.strip():
+            parts.append(text)
+    return "\n\n".join(parts)
+
+
 def _build_trace_from_messages(
     session_item: dict[str, Any] | None,
     messages: list[dict[str, Any]],
@@ -1803,7 +1836,7 @@ def _build_trace_from_messages(
             timestamp = base_ts + message_index
 
         content = _normalize_text(message.get("content"))
-        reasoning = _normalize_text(message.get("reasoning") or message.get("reasoning_content"))
+        reasoning = _extract_trace_reasoning(message)
 
         if starts_new_turn:
             append_event({

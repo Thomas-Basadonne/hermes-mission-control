@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import threading
 import time
@@ -16,6 +17,29 @@ SPEC.loader.exec_module(mission_control_agents)
 
 
 class MissionControlSessionOrderTests(unittest.TestCase):
+    def test_agent_trace_extracts_reasoning_from_bot_reasoning_details(self):
+        payload = mission_control_agents._build_trace_from_messages(
+            {"sessionId": "bot-session", "status": "live"},
+            [{
+                "role": "assistant",
+                "content": "",
+                "reasoning_details": json.dumps([{
+                    "type": "thinking",
+                    "thinking": "I should inspect the repository before acting.",
+                    "signature": "provider-private-signature",
+                }]),
+                "timestamp": 1789047541.0,
+            }],
+            trace_mode="native",
+            limit=50,
+            compact=True,
+        )
+
+        thoughts = [event for event in payload["events"] if event["type"] == "thought"]
+        self.assertEqual(len(thoughts), 1)
+        self.assertEqual(thoughts[0]["detail"], "I should inspect the repository before acting.")
+        self.assertNotIn("provider-private-signature", thoughts[0]["detail"])
+
     def test_profile_scope_filters_before_pagination_and_ignores_handoff_participation(self):
         rows = {
             None: [{"sessionId": "default-handoff", "profile": None, "botProfiles": ["botmaker"],

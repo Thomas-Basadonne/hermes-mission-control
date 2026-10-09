@@ -91,6 +91,13 @@ def _write_reasoning_row(path: Path, column: str, session_id: str, session_title
 
 
 class RoomToolStoreTests(unittest.TestCase):
+    def test_room_registry_defaults_to_shared_state_database(self) -> None:
+        with patch.dict("os.environ", {"MC_GROUP_ROOMS_DB_PATH": ""}):
+            self.assertEqual(
+                room_tool_store.room_store_path(),
+                Path.home() / ".hermes" / "shared-state.db",
+            )
+
     def setUp(self) -> None:
         self.root = tempfile.TemporaryDirectory()
         self.state = Path(self.root.name) / "state.db"

@@ -44,3 +44,21 @@ for (const status of statuses) {
   const driverStatus = status === 'unavailable' ? { unavailable: ['a'] } : status === 'working' ? { status: 'working', member_id: 'a' } : status === 'settled' ? { status: 'settled', member_id: 'a' } : {};
   assertEqual(deriveGroupMemberStatus(members[0], driverStatus, status === 'idle' ? null : event('message.member', 3, 'member', 'done', 'a')), status);
 }
+
+assertEqual(
+  deriveGroupMemberStatus(
+    members[0],
+    { members: { a: { status: 'settled' } }, status: 'working', active_member_id: 'a', counts: { running: 1 } },
+    event('message.member', 3, 'member', 'previous completed answer', 'a'),
+  ),
+  'working',
+);
+
+assertEqual(
+  deriveGroupMemberStatus(
+    members[0],
+    { working: true, counts: { running: 1 } },
+    event('message.member', 3, 'member', 'previous completed answer', 'a'),
+  ),
+  'working',
+);

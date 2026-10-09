@@ -22,6 +22,10 @@ assert.match(agents, /flex min-w-0 flex-nowrap items-center gap-2 overflow-x-aut
 assert.match(agents, /role="group" aria-label=\{t\('agents\.view'\)\}/, 'Trace view controls must be grouped semantically');
 assert.match(agents, /role="group" aria-label=\{t\('agents\.stream'\)\}/, 'Trace stream control must be grouped semantically');
 assert.match(agents, /role="group" aria-label=\{t\('agents\.scope'\)\}/, 'Trace scope controls must be grouped semantically');
+assert.match(agents, /const sessionProfile = selectableSessions\.find\(\(session\) => session\.sessionId === sessionId\)\?\.profile \?\? null;/, 'Manually selecting an agent session must resolve its bot profile');
+assert.match(agents, /selectSession\(sessionId, true, sessionProfile\)/, 'Manually selected traces must retain the resolved bot profile');
+assert.match(agents, /const selectedSession = selectableSessions\.find\(\(session\) => session\.sessionId === selectedSessionId\);[\s\S]*?if \(selectedSession\) \{\s*if \(selectedSession\.profile\) setSelectedSessionProfile\(selectedSession\.profile\);\s*return;\s*\}/, 'Deep-linked sessions must hydrate their profile before requesting a trace');
+assert.match(agents, /selectSession\(preferred\.sessionId, false, preferred\.profile\)/, 'Automatic session selection must preserve the session profile');
 assert.match(agents, /aria-pressed=\{liveMode\}/, 'Stream mode must expose its pressed state');
 assert.doesNotMatch(agents, /AgentRegistryCard|selectedAgentId|agents\.registry/, 'Agents must stay focused on session tracing, not the historical registry');
 assert.match(sessions, /navigate\(`\/agents\?session=/, 'Sessions must be the navigation source for opening a trace');
