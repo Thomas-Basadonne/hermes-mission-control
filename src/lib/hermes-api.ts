@@ -2438,10 +2438,14 @@ export async function loadMissionControlAlerts(accessToken?: string): Promise<Mi
       loadMissionControlMachineStatus(accessToken),
       loadMissionControlCron(accessToken),
     ]);
+    // `maybeFetchLocalJson` returns the `Response` for an HTTP error (503) with a null
+    // payload, so a failed request must not be read as a successful one: check the
+    // payload, matching the tools/skills loaders.
+    const statusLive = statusResult.payload !== null;
     return {
       ...deriveAlerts(statusResult.payload, machine, fallbackSessions, cron),
-      dataSource: statusResult.response ? 'mission-control-alerts' : 'fallback',
-      ...(!statusResult.response || machine.source === 'fallback' || cron.dataSource === 'fallback'
+      dataSource: statusLive ? 'mission-control-alerts' : 'fallback',
+      ...(!statusLive || machine.source === 'fallback' || cron.dataSource === 'fallback'
         ? { dataError: 'One or more alert dependencies are unavailable; alerts include fallback values.' }
         : {}),
     };
