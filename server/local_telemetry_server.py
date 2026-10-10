@@ -1811,6 +1811,16 @@ class Handler(BaseHTTPRequestHandler):
             extra_headers={"WWW-Authenticate": 'Bearer realm="Mission Control"'},
         )
 
+    def _sessions_unavailable(self) -> None:
+        # The session snapshot loader timed out (in-flight wait or busy worker
+        # pool). Answer with JSON so clients can retry instead of seeing a
+        # dropped connection; the internal message is not echoed.
+        self._json(
+            503,
+            {"error": "sessions_unavailable", "detail": "Session snapshot is busy; retry shortly."},
+            extra_headers={"Retry-After": "2"},
+        )
+
     def _reject_mutation_in_read_only_mode(self) -> bool:
         if not _read_only_mode():
             return False
@@ -2130,7 +2140,12 @@ class Handler(BaseHTTPRequestHandler):
             profile = (params.get("profile") or [None])[0] or None
             include_facets = _parse_bool((params.get("include_facets") or [None])[0], default=True)
             include_recent_messages = _parse_bool((params.get("include_recent_messages") or [None])[0], default=True)
-            self._json(200, load_agents_sessions_snapshot(limit=limit, offset=offset, session_id=session_id, include_facets=include_facets, include_recent_messages=include_recent_messages, filters=_session_filter_params(params), profile=profile))
+            try:
+                payload = load_agents_sessions_snapshot(limit=limit, offset=offset, session_id=session_id, include_facets=include_facets, include_recent_messages=include_recent_messages, filters=_session_filter_params(params), profile=profile)
+            except TimeoutError:
+                self._sessions_unavailable()
+                return
+            self._json(200, payload)
             return
         if parsed.path == "/api/local/sessions":
             if not _is_authorized(self):
@@ -2141,7 +2156,12 @@ class Handler(BaseHTTPRequestHandler):
             profile = (params.get("profile") or [None])[0] or None
             include_facets = _parse_bool((params.get("include_facets") or [None])[0], default=True)
             include_recent_messages = _parse_bool((params.get("include_recent_messages") or [None])[0], default=True)
-            self._json(200, load_agents_sessions_snapshot(limit=limit, offset=offset, include_facets=include_facets, include_recent_messages=include_recent_messages, filters=_session_filter_params(params), profile=profile))
+            try:
+                payload = load_agents_sessions_snapshot(limit=limit, offset=offset, include_facets=include_facets, include_recent_messages=include_recent_messages, filters=_session_filter_params(params), profile=profile)
+            except TimeoutError:
+                self._sessions_unavailable()
+                return
+            self._json(200, payload)
             return
         if parsed.path == "/api/local/sessions/usage":
             if not _is_authorized(self):
