@@ -1,8 +1,8 @@
-# Hermes Mission Control
+# Mission Control
 
-![Hermes Mission Control cover](docs/images/mission-control-cover.png)
+![Mission Control cover](docs/images/mission-control-cover.png)
 
-Standalone operational dashboard for [Hermes](https://hermes-agent.nousresearch.com). It runs next to your Hermes agent, reads local telemetry, and gives you a cockpit for sessions, agents, usage, tools, skills, config, and logs.
+Standalone operational dashboard for [Hermes Agent](https://github.com/NousResearch/hermes-agent), the AI agent framework by [@NousResearch](https://github.com/NousResearch). It runs next to your Hermes agent, reads local telemetry, and gives you a cockpit for sessions, agents, usage, tools, skills, config, and logs.
 
 ## In action
 
