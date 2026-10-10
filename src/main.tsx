@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import { I18nProvider, useI18n } from './lib/i18n';
 import { ensureServiceWorker } from './lib/push-client';
-import { installReloadDiagnostics } from './lib/reload-diagnostics';
+import { installReloadDiagnostics, recordReloadDiagnostic } from './lib/reload-diagnostics';
 import './styles.css';
 
 class AppErrorBoundary extends Component<{ children: ReactNode; copy: { title: string; message: string; reload: string } }, { hasError: boolean }> {
@@ -13,8 +13,13 @@ class AppErrorBoundary extends Component<{ children: ReactNode; copy: { title: s
     return { hasError: true };
   }
 
-  componentDidCatch(error: Error, _info: ErrorInfo) {
+  componentDidCatch(error: Error, info: ErrorInfo) {
     console.error('[MissionControl] application render failed:', error);
+    recordReloadDiagnostic('react-render-error', {
+      message: error.message,
+      stack: error.stack,
+      componentStack: info.componentStack,
+    });
   }
 
   render() {
