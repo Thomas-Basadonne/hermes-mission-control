@@ -37,6 +37,7 @@ required_paths=(
   "docs/api.md"
   "SECURITY.md"
   "docs/rooms.md"
+  "docs/overview.md"
   "docs/contracts/compatibility-matrix.md"
   "docs/contracts/mission-control-capabilities-v1.json"
   "docs/contracts/mission-control-trace-v1.json"

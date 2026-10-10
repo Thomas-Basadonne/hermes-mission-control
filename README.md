@@ -6,26 +6,10 @@ Standalone operational dashboard for [Hermes](https://hermes-agent.nousresearch.
 
 ## In action
 
-<table>
-  <tr>
-    <th>Desktop workspace</th>
-    <th>Mobile chat</th>
-  </tr>
-  <tr>
-    <td width="75%" valign="top">
-      <a href="docs/screenshots/overview-chat-desktop.webp"><img src="docs/screenshots/overview-chat-desktop.webp" width="720" alt="Mission Control desktop Overview with the saved release-readiness demo conversation open in Chat"></a>
-    </td>
-    <td width="25%" valign="top" align="center">
-      <a href="docs/screenshots/chat-mobile.webp"><img src="docs/screenshots/chat-mobile.webp" width="240" alt="The same saved demo session on mobile, showing a structured delivery-plan table"></a>
-    </td>
-  </tr>
-</table>
-
-*A local-first workspace for operations and conversation. The desktop and mobile views show different scroll positions of the same saved demo session; click either image for the full-size screenshot.*
-
-Explore the feature pages: [Group Rooms](docs/rooms.md#in-action) · [Chat and session resume](docs/chat.md#in-action) · [Kanban](docs/kanban.md#in-action) · [Telemetry](docs/telemetry.md#in-action).
-
-The screenshots use a release-readiness demo. Chat content is a prepared planning conversation, not evidence of implementation or test execution. Private hostnames, credit balances, and unrelated background sessions or notifications are redacted where present.
+- [Overview — desktop and mobile dashboard](docs/overview.md#in-action)
+- [Group Rooms — multi-agent discussion](docs/rooms.md#in-action)
+- [Chat — the same saved session on desktop and mobile](docs/chat.md#in-action)
+- [Kanban — task boards, blockers, and planning deliverables](docs/kanban.md#in-action)
 
 ## About
 
@@ -84,7 +68,7 @@ Mission Control uses [Semantic Versioning](https://semver.org/) in `package.json
 - **Expanded Chat + tldraw Agent Mode**: session-bound whiteboard, authenticated bridge, screenshot-to-chat, agent actions, Mermaid import, board lints, exports, and mobile-safe persistence
 - Responsive layout: side rail on desktop, drawer and bottom sheets on mobile
 
-Feature docs: [Chat](docs/chat.md) · [Bot Mode](docs/bot-mode.md) · [Group Rooms](docs/rooms.md) · [Localization](docs/i18n.md) · [Telemetry and provider usage](docs/telemetry.md) · [Honcho identity and profile isolation](docs/honcho.md) · [Tools inventory](docs/tools.md) · [HTTP API](docs/api.md).
+Feature docs: [Overview](docs/overview.md) · [Chat](docs/chat.md) · [Bot Mode](docs/bot-mode.md) · [Group Rooms](docs/rooms.md) · [Localization](docs/i18n.md) · [Telemetry sidecar](docs/telemetry.md) · [Honcho identity and profile isolation](docs/honcho.md) · [Tools inventory](docs/tools.md) · [HTTP API](docs/api.md).
 
 ## tldraw Agent Mode
 
