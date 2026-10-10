@@ -44,7 +44,7 @@ export async function routeHarness(route, store, fetcher) {
       if (id === '\0route-pull') return 'export const usePullToReload=()=>({state:null});';
       if (id === '\0route-indicator') return 'export const PullToReloadIndicator=()=>null;';
       if (id === '\0route-diagnostics') return 'export const recordReloadDiagnostic=()=>{};';
-      if (id === '\0route-bots') return `export async function loadBotProfiles(){return {profiles:[{name:'fixture-bot',is_bot:true}]}}export async function loadBotModelOptions(){return [{slug:'fixture-provider',label:'Fixture',models:['fixture-model']}]} `;
+      if (id === '\0route-bots') return `export async function loadBotProfiles(){return {profiles:[{name:'fixture-bot',is_bot:true}]}}export async function loadBotModelOptions(){return [{slug:'fixture-provider',name:'Fixture',models:['fixture-model']}]} `;
     },
   }] });
   const { createRoot } = await import('react-dom/client');
