@@ -688,6 +688,12 @@ def _append_client_diagnostic(payload: Dict[str, Any]) -> None:
             handle.write(line + "\n")
 
 
+# Upper bound for any JSON body read through Handler._read_json_body. Largest
+# legitimate callers are chat sync gateway events (tool output) and handoff
+# transcripts; routes with smaller contracts pass a tighter max_bytes.
+_MAX_JSON_BODY_BYTES = 8 * 1024 * 1024
+
+
 def _read_only_mode() -> bool:
     """Disable every mutating HTTP method for contained deployments."""
     return read_only_mode()
@@ -1810,8 +1816,24 @@ class Handler(BaseHTTPRequestHandler):
         )
         return True
 
-    def _read_json_body(self) -> Dict[str, Any] | None:
-        length = int(self.headers.get("Content-Length") or 0)
+    def _read_json_body(self, max_bytes: int = _MAX_JSON_BODY_BYTES) -> Dict[str, Any] | None:
+        """Read a JSON object body, or send 400/413 and return None.
+
+        Content-Length is validated before any read: a non-numeric or negative
+        value would otherwise raise or turn into an unbounded rfile.read(-1).
+        """
+        header = (self.headers.get("Content-Length") or "").strip()
+        try:
+            length = int(header) if header else 0
+        except ValueError:
+            self._json(400, {"error": "bad_request", "detail": "Invalid Content-Length."})
+            return None
+        if length < 0:
+            self._json(400, {"error": "bad_request", "detail": "Invalid Content-Length."})
+            return None
+        if length > max_bytes:
+            self._json(413, {"error": "payload_too_large", "detail": f"Request body exceeds {max_bytes} bytes."})
+            return None
         raw = self.rfile.read(length).decode("utf-8", errors="replace") if length else "{}"
         try:
             payload = json.loads(raw or "{}")
@@ -2400,7 +2422,7 @@ class Handler(BaseHTTPRequestHandler):
             if length > 32_768:
                 self._json(413, {"error": "bad_request", "detail": "Selection payload is too large."})
                 return
-            payload = self._read_json_body()
+            payload = self._read_json_body(max_bytes=32_768)
             if payload is None:
                 return
             if set(payload) != {"selectedProviders", "expectedRevision"}:
@@ -2633,8 +2655,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._unauthorized()
                 return
             payload = self._read_json_body()
-            if payload is None or not isinstance(payload, dict):
-                self._json(400, {'error': 'bad_request', 'detail': 'JSON body must be an object.'})
+            if payload is None:  # helper already sent 400/413
                 return
             try:
                 result = set_room_vault(str(payload.get('room_id') or ''), str(payload.get('vault') or ''))
@@ -2686,8 +2707,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._unauthorized()
                 return
             payload = self._read_json_body()
-            if payload is None or not isinstance(payload, dict):
-                self._json(400, {'error': 'bad_request', 'detail': 'JSON body must be an object.'})
+            if payload is None:  # helper already sent 400/413
                 return
             try:
                 saved = set_chat_title(
@@ -2705,8 +2725,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._unauthorized()
                 return
             payload = self._read_json_body()
-            if payload is None or not isinstance(payload, dict):
-                self._json(400, {'error': 'bad_request', 'detail': 'JSON body must be an object.'})
+            if payload is None:  # helper already sent 400/413
                 return
             session_id = str(payload.get('session_id') or payload.get('sessionId') or '').strip()
             handoff = payload.get('handoff')
@@ -2725,8 +2744,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._unauthorized()
                 return
             payload = self._read_json_body()
-            if payload is None or not isinstance(payload, dict):
-                self._json(400, {'error': 'bad_request', 'detail': 'JSON body must be an object.'})
+            if payload is None:  # helper already sent 400/413
                 return
             session_id = str(payload.get('session_id') or payload.get('sessionId') or '').strip()
             handoff = payload.get('handoff')
@@ -3030,7 +3048,9 @@ class Handler(BaseHTTPRequestHandler):
             if not _is_authorized(self):
                 self._unauthorized()
                 return
-            body = self._read_json_body() or {}
+            body = self._read_json_body()
+            if body is None:  # helper already sent 400/413
+                return
             params = urllib.parse.parse_qs(parsed.query)
             handled, response, status = dispatch_plugin_request('POST', parsed.path, body, params)
             if handled:

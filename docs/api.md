@@ -22,7 +22,10 @@ is the `do_GET` / `do_POST` / `do_PUT` / `do_PATCH` / `do_DELETE` handlers in
   spawn a shell for a ticket issued before read-only was enabled (close code
   `4403`); shells already open are not terminated.
 - **Errors.** JSON bodies of the form `{"error": "<code>", "detail": "<text>"}`.
-  Unknown paths return `404 {"error": "not_found"}`.
+  Unknown paths return `404 {"error": "not_found"}`. JSON bodies read through
+  the shared helper return `400` for a non-numeric or negative `Content-Length` or a
+  non-object JSON body, and `413 {"error": "payload_too_large"}` above 8 MiB
+  (provider selection keeps its 32 KiB limit).
 - **CORS.** See [telemetry.md](telemetry.md#cors-origin-enforcement).
 
 ## Health
