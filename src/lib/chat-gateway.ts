@@ -232,7 +232,7 @@ export function useGatewayChat(
   const [modelIdentity, setModelIdentity] = useState<ChatModelIdentity | null>(initial.modelIdentity);
   const [contextTokens, setContextTokens] = useState<number | null>(null);
   const [contextMax, setContextMax] = useState<number | null>(null);
-  const [sessionTitle, setSessionTitle] = useState<string | null>(cachedInitialMessages.length ? initial.sessionTitle : null);
+  const [sessionTitle, setSessionTitleState] = useState<string | null>(cachedInitialMessages.length ? initial.sessionTitle : null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modelPickerRefresh, setModelPickerRefresh] = useState(false);
   const [commandPrefill, setCommandPrefill] = useState<string | null>(null);
@@ -258,6 +258,16 @@ export function useGatewayChat(
   const presenceTimerRef = useRef<number | null>(null);
   const sessionIdRef = useRef(sessionId);
   const sessionKeyRef = useRef(sessionKey);
+  // Mirrors `sessionTitle` synchronously. `claimLastChatPointer` runs in the
+  // same tick right after `ensureSession` resolves (which sets the title via
+  // `setSessionTitle` deep inside `hydrateSessionSnapshot`); reading the state
+  // variable there would see the pre-resume title because the React state
+  // update has not re-rendered yet. The ref sidesteps that stale closure.
+  const sessionTitleRef = useRef<string | null>(sessionTitle);
+  const setSessionTitle = useCallback((value: string | null) => {
+    sessionTitleRef.current = value;
+    setSessionTitleState(value);
+  }, []);
   const interactionRef = useRef(interaction);
   const clarifyLocksInFlightRef = useRef(new Set<string>());
   // Open server→client requests (srq-…): the store lets the response path answer the
@@ -523,7 +533,7 @@ export function useGatewayChat(
     activeSessionId: string,
   ): Promise<string> => {
     if (!canClaimLastChatPointer(action)) return activeSessionId;
-    const claimedTitle = sessionTitle?.trim() || null;
+    const claimedTitle = sessionTitleRef.current?.trim() || null;
     let result = await syncLastChatToServer(
       activeSessionId,
       sessionKeyRef.current || activeSessionId,
@@ -546,7 +556,7 @@ export function useGatewayChat(
     }
     if (result.lastChat) adoptServerPointer(result.lastChat);
     return result.lastChat?.sessionKey ?? result.lastChat?.sessionId ?? activeSessionId;
-  }, [adoptServerPointer, modelIdentity, sessionTitle, storedToken]);
+  }, [adoptServerPointer, modelIdentity, storedToken]);
 
   const prepareEventReplay = useCallback((): { sessionId: string; lastSeen: number } | null => {
     if (eventReplayInFlightRef.current || replayHoldRef.current) return null;
