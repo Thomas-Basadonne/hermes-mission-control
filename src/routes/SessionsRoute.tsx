@@ -1,6 +1,6 @@
 import { useI18n } from '../lib/i18n';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Activity,
   Bot,
@@ -45,6 +45,9 @@ const PAGE_SIZE = 50;
 const POLL_INTERVAL_MS = 10_000;
 const LIVE_POLL_INTERVAL_MS = 5_000;
 const SESSION_LOAD_TIMEOUT_MS = 15_000;
+// The search field keeps a local draft; only the settled value reaches the URL
+// (and therefore the server-side search request).
+export const SESSION_SEARCH_DEBOUNCE_MS = 300;
 
 type SessionTab = 'all' | 'live' | SessionCategory;
 type SortKey = 'activity' | 'started' | 'messages' | 'tokens' | 'cost';
@@ -351,6 +354,11 @@ export function SessionsRoute() {
     });
     return () => { cancelled = true; };
   }, [storedToken, rosterRevision]);
+  const location = useLocation();
+  // Search string written by the latest updateView, so the draft sync below can
+  // tell our own URL writes from external navigation (back/forward, links),
+  // even when the query value is equal. Batched writes keep the last one.
+  const ownNavigationSearchRef = useRef<string | null>(null);
   const updateView = useCallback((patch: SessionViewPatch) => {
     const next = new URLSearchParams(searchParams);
     const setOrDelete = (key: typeof SESSION_VIEW_QUERY_KEYS[number], value: string | undefined, defaultValue = '') => {
@@ -364,8 +372,38 @@ export function SessionsRoute() {
     if ('model' in patch) setOrDelete('model', patch.model);
     if ('sessionProfile' in patch) setOrDelete('sessionProfile', patch.sessionProfile);
     if ('sortKey' in patch) setOrDelete('sort', patch.sortKey, 'activity');
+    ownNavigationSearchRef.current = next.toString();
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
+  // Search draft: typing updates the field at once; the URL `query` (and the
+  // request it triggers) follows after SESSION_SEARCH_DEBOUNCE_MS or on Enter.
+  const [queryDraft, setQueryDraft] = useState(filters.query);
+  const committedQueryRef = useRef(filters.query);
+  const updateViewRef = useRef(updateView);
+  updateViewRef.current = updateView;
+  const latestUrlQueryRef = useRef(filters.query);
+  latestUrlQueryRef.current = filters.query;
+  useEffect(() => {
+    // Every navigation gets a new location.key. Our own updateView writes
+    // (query commits, filter/tab changes) keep the draft; anything else
+    // (back/forward, links, initial load) adopts the URL query and drops a
+    // pending draft, even if it equals the last committed value.
+    const own = ownNavigationSearchRef.current;
+    ownNavigationSearchRef.current = null;
+    if (own !== null && own === location.search.replace(/^\?/, '')) return;
+    committedQueryRef.current = latestUrlQueryRef.current;
+    setQueryDraft(latestUrlQueryRef.current);
+  }, [location.key]);
+  const commitQuery = useCallback((value: string) => {
+    if (value === committedQueryRef.current) return;
+    committedQueryRef.current = value;
+    updateViewRef.current({ query: value });
+  }, []);
+  useEffect(() => {
+    if (queryDraft === committedQueryRef.current) return;
+    const timer = window.setTimeout(() => commitQuery(queryDraft), SESSION_SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [commitQuery, queryDraft]);
   const activeFilterCount = [filters.query, filters.status !== 'all' ? filters.status : '', filters.origin, filters.model, sessionProfile].filter(Boolean).length;
 
   const effectiveFilters = useMemo(() => ({
@@ -543,7 +581,7 @@ export function SessionsRoute() {
             <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-center">
               <label className="relative block min-w-0 md:flex-1">
                 <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle" />
-                <input value={filters.query} onChange={(event) => updateView({ query: event.target.value })} placeholder={t('sessions.searchPlaceholder')} aria-label={t('sessions.searchPlaceholder')} className="w-full min-w-0 rounded-md bg-surface h-9 py-0 pl-9 pr-3 text-sm text-text outline-none placeholder:text-text-subtle focus:ring-1 focus:ring-accent/40" />
+                <input value={queryDraft} onChange={(event) => setQueryDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') commitQuery(queryDraft); }} placeholder={t('sessions.searchPlaceholder')} aria-label={t('sessions.searchPlaceholder')} className="w-full min-w-0 rounded-md bg-surface h-9 py-0 pl-9 pr-3 text-sm text-text outline-none placeholder:text-text-subtle focus:ring-1 focus:ring-accent/40" />
               </label>
               <label className="flex min-w-0 items-center gap-2 md:w-64">
                 <span className="shrink-0 text-xs font-medium text-text-muted">{t('sessions.filterByBot')}</span>
