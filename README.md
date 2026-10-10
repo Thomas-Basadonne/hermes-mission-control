@@ -83,6 +83,8 @@ Feature docs: [Overview](docs/overview.md) · [Chat](docs/chat.md) · [Bot Mode]
 
 ## tldraw Agent Mode
 
+The whiteboard is built with the [tldraw SDK](https://github.com/tldraw/tldraw), maintained by [@tldraw](https://github.com/tldraw).
+
 Mission Control links the expanded Chat to a tldraw whiteboard using the current stable `sessionKey`. Hermes can read structured board context, receive a PNG screenshot in Chat, and apply validated actions back to the editable canvas through the authenticated local telemetry bridge.
 
 - Session-bound persistence for shapes, pages, camera, and selection
