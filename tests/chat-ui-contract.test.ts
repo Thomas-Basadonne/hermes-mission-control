@@ -88,6 +88,7 @@ assertIncludes(todoPlan, 'aria-expanded={expanded}', 'TODO capsule exposes expan
 assertIncludes(todoPlan, 'role="progressbar"', 'expanded TODO plan exposes progress semantics');
 assertIncludes(todoPlan, 'chat-plan-item-${item.status}', 'TODO plan maps item status to a semantic class');
 assertIncludes(component, "className={`chat-runtime-footer ${interaction ? 'has-interaction' : ''}`}>", 'runtime footer accounts for approval and clarify surfaces');
+assertIncludes(component, '[interaction?.requestId, interaction?.kind, clarifyQuestionIdForDraft]', 'clarify answer draft resets when the active question changes within one request');
 assertIncludes(component, '{error ? (', 'runtime footer keeps errors below the TODO plan');
 assertIncludes(styles, '.chat-runtime-footer.has-interaction {', 'todo plan reserves a layer above interaction surfaces');
 assertIncludes(component, 'chat-status-line-ring', 'mobile status line exposes compact circular context progress');

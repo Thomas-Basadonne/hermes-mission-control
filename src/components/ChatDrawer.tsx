@@ -991,10 +991,13 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
     };
   }, [messages, interaction, open, scrollToBottom]);
 
+  const clarifyQuestionIdForDraft = interaction?.kind === 'clarify'
+    ? normalizeClarifyInteraction(interaction.payload).questionId
+    : null;
   useEffect(() => {
     setInteractionDraft('');
     setSelectedChoices([]);
-  }, [interaction?.requestId, interaction?.kind]);
+  }, [interaction?.requestId, interaction?.kind, clarifyQuestionIdForDraft]);
 
   const statusClass = connectionState === 'connected'
     ? 'is-online'
