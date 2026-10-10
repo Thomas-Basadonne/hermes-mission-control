@@ -68,8 +68,6 @@ Optional integrations maintained in separate repositories; these features are no
 | **Notifications** | A persistent notification inbox, cron-event ingestion, and notification delivery workflows. | [albidev/mc-notifications-plugin](https://github.com/albidev/mc-notifications-plugin) | [@albidev](https://github.com/albidev) |
 | **Projects** | Local project, Git, and GitHub workspace monitoring. | [imbundle/mc-project-plugin](https://github.com/imbundle/mc-project-plugin) | [@imbundle](https://github.com/imbundle) |
 
-Projects also has an [albidev/mc-project-plugin fork](https://github.com/albidev/mc-project-plugin), maintained by [@albidev](https://github.com/albidev); the original project is by [@imbundle](https://github.com/imbundle).
-
 For installation and the host contract, see [Mission Control plugins](docs/plugins.md). Check each plugin repository for its own requirements and setup instructions.
 
 ### Chat and agent workspace
