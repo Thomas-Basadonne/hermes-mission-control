@@ -648,18 +648,11 @@ def _extract_bearer_token(header_value: Optional[str]) -> Optional[str]:
     return token or None
 
 
-def _extract_query_token(handler: BaseHTTPRequestHandler) -> Optional[str]:
-    parsed = urllib.parse.urlparse(handler.path)
-    params = urllib.parse.parse_qs(parsed.query)
-    token = (params.get("access_token") or [""])[0].strip()
-    return token or None
-
-
-def _is_authorized(handler: BaseHTTPRequestHandler, *, allow_query_token: bool = False) -> bool:
+def _is_authorized(handler: BaseHTTPRequestHandler) -> bool:
+    # Bearer header only. `?access_token=` is not accepted anywhere: both SSE
+    # streams are read with fetch + Authorization (MC-FIX-4, MC-FIX-10).
     expected = _resolve_access_token()
     candidate = _extract_bearer_token(handler.headers.get("Authorization"))
-    if not candidate and allow_query_token:
-        candidate = _extract_query_token(handler)
 
     # Protected telemetry endpoints require the bearer token regardless of source
     # address. `/health` remains the unauthenticated liveness probe.
@@ -2216,7 +2209,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, load_agent_trace_snapshot(session_id=session_id, limit=limit, compact=compact, profile=profile, handoff_id=handoff_id))
             return
         if parsed.path == "/api/local/mission-control/agents/trace/stream":
-            if not _is_authorized(self, allow_query_token=True):
+            if not _is_authorized(self):
                 self._unauthorized()
                 return
             session_id = (params.get("session_id") or [None])[0] or None

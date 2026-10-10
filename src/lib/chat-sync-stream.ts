@@ -54,14 +54,16 @@ export type ChatSyncStreamError = { status?: number; error?: unknown };
 
 export type ChatSyncStreamOptions = {
   url: string;
-  accessToken: string;
+  /** Sent as `Authorization: Bearer`; omit for cookie-authenticated endpoints. */
+  accessToken?: string;
+  credentials?: RequestCredentials;
   onEvent: SseEventHandler;
   /** Called once when the stream fails or ends on its own; never after close(). */
   onError: (error: ChatSyncStreamError) => void;
   fetchImpl?: typeof fetch;
 };
 
-export function openChatSyncStream({ url, accessToken, onEvent, onError, fetchImpl = fetch }: ChatSyncStreamOptions) {
+export function openChatSyncStream({ url, accessToken, credentials, onEvent, onError, fetchImpl = fetch }: ChatSyncStreamOptions) {
   const controller = new AbortController();
   let closed = false;
   const fail = (error: ChatSyncStreamError) => {
@@ -73,9 +75,12 @@ export function openChatSyncStream({ url, accessToken, onEvent, onError, fetchIm
   void (async () => {
     let response: Response;
     try {
+      const headers: Record<string, string> = { Accept: 'text/event-stream' };
+      if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
       response = await fetchImpl(url, {
-        headers: { Accept: 'text/event-stream', Authorization: `Bearer ${accessToken}` },
+        headers,
         cache: 'no-store',
+        ...(credentials ? { credentials } : {}),
         signal: controller.signal,
       });
     } catch (error) {

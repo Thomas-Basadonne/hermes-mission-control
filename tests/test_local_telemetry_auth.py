@@ -118,6 +118,17 @@ class LocalTelemetryAuthTests(unittest.TestCase):
             self._request(f"/api/local/system?access_token={encoded}")
         self.assertEqual(exc.exception.code, 401)
 
+    def test_agent_trace_stream_rejects_query_token_and_accepts_bearer_header(self):
+        encoded = urllib.parse.quote("phase1-secret", safe="")
+        base = "/api/local/mission-control/agents/trace/stream?session_id=s1&interval=0.5"
+        with mock.patch.object(local_telemetry_server, "load_agent_trace_snapshot", return_value={"items": []}):
+            with self.assertRaises(urllib.error.HTTPError) as exc:
+                self._request(f"{base}&access_token={encoded}")
+            self.assertEqual(exc.exception.code, 401)
+            with self._request(base, token="phase1-secret") as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.readline().decode("utf-8").strip(), "event: trace")
+
     def test_chat_sync_stream_rejects_query_token_and_accepts_bearer_header(self):
         encoded = urllib.parse.quote("phase1-secret", safe="")
         base = "/api/local/chat/sync/stream?session_id=s1&client_id=c1"

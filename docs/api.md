@@ -67,7 +67,7 @@ selection writes against them.
 | GET | `/api/local/mission-control/agents` | Agent snapshot, including the `capabilities` object ([contract](contracts/compatibility-matrix.md)) |
 | GET | `/api/local/mission-control/sessions` | Paged session metadata for Agents, Sessions and the Chat picker; see [query parameters](#session-list-queries) |
 | GET | `/api/local/mission-control/agents/trace` | Trace for one session ([contract](contracts/mission-control-trace-v1.json)) |
-| GET | `/api/local/mission-control/agents/trace/stream` | Same trace as Server-Sent Events (`event: trace`) |
+| GET | `/api/local/mission-control/agents/trace/stream` | Same trace as Server-Sent Events (`event: trace`). Bearer header only: `?access_token=` is rejected; the browser reads it with streaming `fetch`, not `EventSource` |
 
 ### Session-list queries
 

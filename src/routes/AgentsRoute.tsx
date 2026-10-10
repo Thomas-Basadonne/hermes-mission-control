@@ -22,6 +22,7 @@ import { loadAllPersistedBotHandoffs } from '../lib/bot-handoff-persistence';
 import { buildBotLineageRows, type BotLineageRecord } from '../lib/bot-lineage';
 import { usePullToReload } from '../hooks/usePullToReload';
 import { PullToReloadIndicator } from '../components/PullToReloadIndicator';
+import { connectAgentTraceStream, traceStreamCandidates } from '../lib/agent-trace-stream';
 
 function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -693,40 +694,26 @@ export function AgentsRoute() {
       return;
     }
 
-    if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
+    if (typeof window === 'undefined' || typeof fetch === 'undefined' || typeof ReadableStream === 'undefined') {
       setSseFallbackToPolling(true);
       return;
-    }
-
-    const localBase = (import.meta.env.VITE_MISSION_CONTROL_LOCAL_API_BASE_URL || '/api/local').replace(/\/$/, '');
-    const officialBase = (import.meta.env.VITE_HERMES_API_BASE_URL || '/api').replace(/\/$/, '');
-    const params = new URLSearchParams();
-    if (selectedSessionId) params.set('session_id', selectedSessionId);
-    if (selectedSessionProfile) params.set('profile', selectedSessionProfile);
-    if (selectedLineageId) params.set('handoff_id', selectedLineageId);
-    params.set('limit', String(LIVE_TRACE_LIMIT));
-    params.set('interval', '1.5');
-    if (storedToken) params.set('access_token', storedToken);
-    if (traceCompactAvailable) {
-      params.set('compact', '1');
     }
 
     if (!hasTraceRef.current) {
       setTraceLoading(true);
     }
-    const streamCandidates = [
-      {
-        url: `${localBase}/mission-control/agents/trace/stream?${params.toString()}`,
-      },
-      {
-        url: `${officialBase}/mission-control/agents/trace/stream?${new URLSearchParams(
-          Array.from(params.entries()).filter(([key]) => key !== 'access_token'),
-        ).toString()}`,
-      },
-    ].filter((candidate, index, array) => array.findIndex((item) => item.url === candidate.url) === index);
-
-    let candidateIndex = 0;
-    let source: EventSource | null = null;
+    // Token travels as `Authorization: Bearer` (fetch streaming), never in the URL.
+    const streamCandidates = traceStreamCandidates({
+      localBase: import.meta.env.VITE_MISSION_CONTROL_LOCAL_API_BASE_URL || '/api/local',
+      officialBase: import.meta.env.VITE_HERMES_API_BASE_URL || '/api',
+      accessToken: storedToken || undefined,
+      sessionId: selectedSessionId,
+      profile: selectedSessionProfile,
+      handoffId: selectedLineageId,
+      limit: LIVE_TRACE_LIMIT,
+      interval: 1.5,
+      compact: traceCompactAvailable,
+    });
 
     const handleTraceFrame = (rawData: string) => {
       try {
@@ -738,35 +725,15 @@ export function AgentsRoute() {
       }
     };
 
-    const connect = (index: number) => {
-      source?.close();
-      source = new EventSource(streamCandidates[index].url, { withCredentials: true });
-      source.onmessage = (event) => {
-        handleTraceFrame(event.data);
-      };
-
-      if (traceNamedSseEventAvailable) {
-        source.addEventListener('trace', (event) => {
-          const messageEvent = event as MessageEvent<string>;
-          handleTraceFrame(messageEvent.data);
-        });
-      }
-
-      source.onerror = () => {
-        source?.close();
-        if (candidateIndex + 1 < streamCandidates.length) {
-          candidateIndex += 1;
-          connect(candidateIndex);
-          return;
-        }
-        setSseFallbackToPolling(true);
-      };
-    };
-
-    connect(candidateIndex);
+    const stream = connectAgentTraceStream({
+      candidates: streamCandidates,
+      acceptNamedTrace: traceNamedSseEventAvailable,
+      onFrame: handleTraceFrame,
+      onExhausted: () => setSseFallbackToPolling(true),
+    });
 
     return () => {
-      source?.close();
+      stream.close();
     };
   }, [selectedSessionId, selectedSessionProfile, selectedLineageId, liveMode, storedToken, sessionsLoading, sseFallbackToPolling, selectableSessions.length, traceCompactAvailable, traceNamedSseEventAvailable, traceStreamAvailable]);
 
