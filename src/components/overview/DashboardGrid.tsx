@@ -30,6 +30,27 @@ function loadOrder(ids: string[], fallback: string[]): string[] {
   }
 }
 
+// Layout persistence is best-effort: SecurityError (storage disabled) or
+// QuotaExceededError must degrade to an in-memory order, never crash the page.
+function persistOrder(order: string[]): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(order));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearPersistedOrder(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Nothing to clear if storage is unavailable.
+  }
+}
+
 export function DashboardGrid({ widgets }: { widgets: DashboardWidget[] }) {
   const { t } = useI18n();
   const widgetIds = widgets.map((widget) => widget.id);
@@ -39,18 +60,22 @@ export function DashboardGrid({ widgets }: { widgets: DashboardWidget[] }) {
   const [order, setOrder] = useState(() => loadOrder(ids, defaultOrder));
   const [arranging, setArranging] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [persisted, setPersisted] = useState(true);
   const pointerId = useRef<number | null>(null);
 
+  // Storage is read once, at mount. Afterwards the in-memory order is the
+  // source of truth: re-reading here would resurrect a stale saved order when
+  // writes fail but reads still work (QuotaExceededError). `order` already
+  // keeps saved ids of widgets that mount later; new ids are appended.
   useEffect(() => {
     setOrder((current) => {
-      const currentKnown = current.filter((id) => ids.includes(id));
-      const newlyAvailable = ids.filter((id) => !currentKnown.includes(id));
-      return loadOrder(ids, [...currentKnown, ...newlyAvailable]);
+      const missing = ids.filter((id) => !current.includes(id));
+      return missing.length ? [...current, ...missing] : current;
     });
   }, [ids]);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') window.localStorage.setItem(STORAGE_KEY, JSON.stringify(order));
+    setPersisted(persistOrder(order));
   }, [order]);
 
   const orderedWidgets = order
@@ -60,8 +85,13 @@ export function DashboardGrid({ widgets }: { widgets: DashboardWidget[] }) {
   const move = (id: string, direction: -1 | 1) => {
     setOrder((current) => {
       const index = current.indexOf(id);
-      const nextIndex = index + direction;
-      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) return current;
+      if (index < 0) return current;
+      // Swap with the nearest *rendered* neighbour: `order` also keeps saved
+      // ids of widgets that are not mounted, which must not absorb a move.
+      const rendered = new Set(ids);
+      let nextIndex = index + direction;
+      while (nextIndex >= 0 && nextIndex < current.length && !rendered.has(current[nextIndex])) nextIndex += direction;
+      if (nextIndex < 0 || nextIndex >= current.length) return current;
       const next = [...current];
       [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
       return next;
@@ -106,7 +136,7 @@ export function DashboardGrid({ widgets }: { widgets: DashboardWidget[] }) {
 
   const reset = () => {
     setOrder(defaultOrder);
-    if (typeof window !== 'undefined') window.localStorage.removeItem(STORAGE_KEY);
+    clearPersistedOrder();
   };
 
   return (
@@ -120,7 +150,8 @@ export function DashboardGrid({ widgets }: { widgets: DashboardWidget[] }) {
               {arranging ? t('ui.arrangeCockpit') : t('ui.yourCockpit')}
             </p>
           </div>
-          {arranging ? <span className="dashboard-saved-badge"><Check className="h-3 w-3" /> {t('ui.autoSaved')}</span> : null}
+          {arranging && persisted ? <span className="dashboard-saved-badge"><Check className="h-3 w-3" /> {t('ui.autoSaved')}</span> : null}
+          {arranging && !persisted ? <span className="dashboard-saved-badge" role="status">{t('ui.layoutNotSaved')}</span> : null}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {arranging ? (

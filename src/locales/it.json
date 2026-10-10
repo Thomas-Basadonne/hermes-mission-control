@@ -1108,6 +1108,7 @@
   "ui.arrangeCockpit": "Organizza il cockpit",
   "ui.yourCockpit": "Il tuo cockpit",
   "ui.autoSaved": "Salvato automaticamente",
+  "ui.layoutNotSaved": "Non salvato su questo dispositivo",
   "nav.cron": "Cron",
   "cron.eyebrow": "Scheduler",
   "cron.title": "Cron job",
