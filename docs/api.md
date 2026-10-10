@@ -47,7 +47,7 @@ is the `do_GET` / `do_POST` / `do_PUT` / `do_PATCH` / `do_DELETE` handlers in
 | PUT | `/api/local/provider-usage/selection` | Save collectable IDs with `{"selectedProviders":[...],"expectedRevision":"<catalog selectionRevision>"}`; returns canonical IDs and their new `selectionRevision`; `409 selection_conflict` if the revision changed; rejected in read-only mode |
 | GET | `/api/local/sessions` | Session list |
 | GET | `/api/local/sessions/usage` | Session token/cost usage |
-| GET | `/api/local/logs` | Tail of recent Hermes log files (`maxFiles`, `maxLines`) |
+| GET | `/api/local/logs` | Tail of recent Hermes log files (`maxFiles` 1–50, default 10; `maxLines` 1–2000, default 160; out-of-range values are clamped) |
 | POST | `/api/local/gateway/restart` | Runs `hermes gateway restart` (requires the `hermes` CLI on `PATH`); answers `202` |
 
 Selection IDs and their opaque 64-character hex revision are read together. The

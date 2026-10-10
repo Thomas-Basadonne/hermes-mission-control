@@ -1693,6 +1693,22 @@ def _collect_skill_files_recursive(skill_name: str) -> Dict[str, Any]:
     }
 
 
+_LOGS_MAX_FILES = 50
+_LOGS_MAX_LINES = 2000
+
+
+def _tail_lines(path: Path, max_lines: int) -> tuple[list[str], int]:
+    """Return (last max_lines lines, total line count) holding at most
+    max_lines lines in memory. I/O is still a linear scan of the file."""
+    tail: deque[str] = deque(maxlen=max(1, max_lines))
+    total = 0
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for raw_line in fh:
+            tail.append(raw_line)
+            total += 1
+    return list(tail), total
+
+
 def _collect_logs(max_files: int = 10, max_lines: int = 160) -> Dict[str, Any]:
     """Read latest log files from the active Hermes logs directory."""
     logs_dir = hermes_logs_dir()
@@ -1717,12 +1733,10 @@ def _collect_logs(max_files: int = 10, max_lines: int = 160) -> Dict[str, Any]:
                 # Read last max_lines lines efficiently
                 entries: list[Dict[str, Any]] = []
                 try:
-                    with open(log_file, "r", encoding="utf-8", errors="replace") as fh:
-                        lines = fh.readlines()
+                    trimmed, total_lines = _tail_lines(log_file, max_lines)
                 except Exception:
-                    lines = []
-                trimmed = lines[-max_lines:] if len(lines) > max_lines else lines
-                for idx, raw_line in enumerate(trimmed, start=max(1, len(lines) - len(trimmed) + 1)):
+                    trimmed, total_lines = [], 0
+                for idx, raw_line in enumerate(trimmed, start=max(1, total_lines - len(trimmed) + 1)):
                     line = raw_line.rstrip("\n\r")
                     level: str = "info"
                     lower = line.lower()
@@ -2303,14 +2317,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # Parse query params for optional limits
             query = urllib.parse.parse_qs(parsed.query)
-            try:
-                max_files = int(query.get('maxFiles', ['10'])[0])
-            except (ValueError, IndexError):
-                max_files = 10
-            try:
-                max_lines = int(query.get('maxLines', ['160'])[0])
-            except (ValueError, IndexError):
-                max_lines = 160
+            max_files = _parse_int((query.get('maxFiles') or [None])[0], default=10, minimum=1, maximum=_LOGS_MAX_FILES)
+            max_lines = _parse_int((query.get('maxLines') or [None])[0], default=160, minimum=1, maximum=_LOGS_MAX_LINES)
             self._json(200, _collect_logs(max_files=max_files, max_lines=max_lines))
             return
         if parsed.path == '/api/local/push/vapid-public-key':
