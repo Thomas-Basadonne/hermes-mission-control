@@ -4,6 +4,14 @@ Mission Control includes a responsive Kanban board for operating Hermes task boa
 
 The feature is available from the **Kanban** route in the side navigation. It supports desktop and mobile layouts and reuses the Hermes core `kanban_db` implementation through the local telemetry sidecar. Mission Control does not duplicate the task database or dispatcher logic.
 
+## In action
+
+![Mission Control Kanban showing the release-readiness demo board](screenshots/kanban-desktop.webp)
+
+*The release-readiness demo board separates queued planning work, an explicit `needs_input` blocker, and completed scope/checklist deliverables. No worker is shown running.*
+
+The board scrolls horizontally: this screenshot preserves one full application viewport, not all eight columns at once. The completed cards represent authored planning documents, not implemented features or passing tests.
+
 ## Capabilities
 
 - Eight workflow columns: `triage`, `todo`, `scheduled`, `ready`, `running`, `blocked`, `review`, and `done`

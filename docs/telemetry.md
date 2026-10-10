@@ -2,6 +2,23 @@
 
 Mission Control is a local-first dashboard: all of its data comes from a small local **telemetry sidecar** (Python stdlib + `psutil`) that runs next to your Hermes agent. The frontend never talks to a remote backend — it reads local state through authenticated `/api/local/*` endpoints.
 
+## In action
+
+![Mission Control desktop Overview with system health and provider usage panels](screenshots/overview-desktop.webp)
+
+*The desktop Overview brings system health, provider usage, the current session, scheduled work, and operational controls into one workspace. The machine hostname, credit balances, and private notification content are redacted.*
+
+<details>
+<summary>Mobile Overview</summary>
+
+<p align="center">
+  <a href="screenshots/overview-mobile.webp"><img src="screenshots/overview-mobile.webp" width="360" alt="Mission Control mobile Overview with stacked system-health and provider-usage panels"></a>
+</p>
+
+*The Overview uses a stacked layout on mobile, keeping system-health metrics and provider controls readable. The hostname is redacted; this is a real application capture, not a redesigned mockup.*
+
+</details>
+
 ## Components
 
 | Component | Path | Port | Stack |

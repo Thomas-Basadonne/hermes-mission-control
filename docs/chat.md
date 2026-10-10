@@ -2,6 +2,25 @@
 
 Mission Control includes an **expanded Chat** that talks directly to the Hermes gateway over a WebSocket — not to a separate backend. It streams reasoning, tools, and the final response live, keeps a per-session presence pill in sync, and links the active conversation to a tldraw whiteboard (see [tldraw Agent Mode](tldraw-feature-matrix.md)).
 
+## In action
+
+![Mission Control desktop Overview with a saved release-readiness Chat session](screenshots/overview-chat-desktop.webp)
+
+*A resumed planning conversation with a structured delivery plan, release checklist, and next action. The full desktop workspace is preserved; private machine and account details are redacted.*
+
+<details>
+<summary>The same session on mobile</summary>
+
+<p align="center">
+  <a href="screenshots/chat-mobile.webp"><img src="screenshots/chat-mobile.webp" width="360" alt="The saved release-readiness demo session on mobile, showing its delivery-plan table"></a>
+</p>
+
+*The same saved session on mobile. The table wraps within the narrower viewport; desktop and mobile are shown at different scroll positions.*
+
+</details>
+
+The conversation is a prepared, saved demo transcript. It illustrates the session and responsive UI, not a completed implementation or a tool-execution trace.
+
 ## Architecture
 
 ```

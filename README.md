@@ -4,6 +4,29 @@
 
 Standalone operational dashboard for [Hermes](https://hermes-agent.nousresearch.com). It runs next to your Hermes agent, reads local telemetry, and gives you a cockpit for sessions, agents, usage, tools, skills, config, and logs.
 
+## In action
+
+<table>
+  <tr>
+    <th>Desktop workspace</th>
+    <th>Mobile chat</th>
+  </tr>
+  <tr>
+    <td width="75%" valign="top">
+      <a href="docs/screenshots/overview-chat-desktop.webp"><img src="docs/screenshots/overview-chat-desktop.webp" width="720" alt="Mission Control desktop Overview with the saved release-readiness demo conversation open in Chat"></a>
+    </td>
+    <td width="25%" valign="top" align="center">
+      <a href="docs/screenshots/chat-mobile.webp"><img src="docs/screenshots/chat-mobile.webp" width="240" alt="The same saved demo session on mobile, showing a structured delivery-plan table"></a>
+    </td>
+  </tr>
+</table>
+
+*A local-first workspace for operations and conversation. The desktop and mobile views show different scroll positions of the same saved demo session; click either image for the full-size screenshot.*
+
+Explore the feature pages: [Group Rooms](docs/rooms.md#in-action) · [Chat and session resume](docs/chat.md#in-action) · [Kanban](docs/kanban.md#in-action) · [Telemetry](docs/telemetry.md#in-action).
+
+The screenshots use a release-readiness demo. Chat content is a prepared planning conversation, not evidence of implementation or test execution. Private hostnames, credit balances, and unrelated background sessions or notifications are redacted where present.
+
 ## About
 
 Mission Control is a local-first operator dashboard for Hermes. It combines a React/Vite frontend with a small Python telemetry sidecar, and it is developed and released separately from Hermes.

@@ -4,6 +4,25 @@ Group Rooms let several Hermes bots work on one request while you watch the whol
 
 Rooms live inside the Chat drawer, next to the canonical Chat, and reuse the canonical chat rendering surfaces instead of duplicating markup.
 
+## In action
+
+![Mission Control desktop with the Release Readiness demo room open](screenshots/room-desktop.webp)
+
+*A shared planning discussion with Planner, Engineer, and Reviewer. The desktop capture shows the Planner and Engineer replies, participant filters, and settled member states. Unrelated background sessions are redacted.*
+
+<details>
+<summary>Mobile view</summary>
+
+<p align="center">
+  <a href="screenshots/room-mobile.webp"><img src="screenshots/room-mobile.webp" width="360" alt="Release Readiness demo room on mobile with the Planner reply and participant filters"></a>
+</p>
+
+*The same room on mobile, focused on the Planner reply and the per-participant message filters. The mobile capture shows a different scroll position, not a different conversation.*
+
+</details>
+
+These are real bot replies in a demo planning discussion; the screenshots do not claim that implementation, testing, or deployment has taken place.
+
 ## Architecture
 
 ```
