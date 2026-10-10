@@ -4,6 +4,8 @@ Mission Control supports **external plugins**. A plugin is a separate repository
 
 > **Boundary:** MC provides the host runtime. The plugin owns its feature. If a plugin is not installed, MC must still build, start, and work normally.
 
+For existing integrations, repository links, and maintainer credits, see [Community plugins in the README](../README.md#community-plugins).
+
 ## What MC provides
 
 MC provides only the plugin host contract:

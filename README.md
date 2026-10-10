@@ -1,6 +1,6 @@
 # Hermes Mission Control
 
-![Hermes Mission Control cover](docs/images/03d032f9-72e5-429d-be0f-1c26e64cd701.png)
+![Hermes Mission Control cover](docs/images/mission-control-cover.png)
 
 Standalone operational dashboard for [Hermes](https://hermes-agent.nousresearch.com). It runs next to your Hermes agent, reads local telemetry, and gives you a cockpit for sessions, agents, usage, tools, skills, config, and logs.
 
@@ -56,8 +56,21 @@ Mission Control uses [Semantic Versioning](https://semver.org/) in `package.json
 - Plugins are installed with `git clone` into `~/.hermes/mc-plugins/<plugin-id>/`
 - Run `scripts/setup-plugins.sh` to link installed plugin UIs for Vite; Mission Control contains no plugin implementation code
 - Mission Control discovers plugin manifests and routes at runtime; an uninstalled plugin is invisible and does not affect the host
-- Example external plugin: [albidev/mc-curate-plugin](https://github.com/albidev/mc-curate-plugin)
 - See [docs/plugins.md](docs/plugins.md) for the plugin contract, install flow, and author requirements
+
+#### Community plugins
+
+Optional integrations maintained in separate repositories; these features are not bundled with Mission Control.
+
+| Plugin | What it adds | Repository | Maintainer / credits |
+|---|---|---|---|
+| **Curate** | Review BDH session-synthesis and candidate proposals, with vault-aware approval and rejection. | [albidev/mc-curate-plugin](https://github.com/albidev/mc-curate-plugin) | [@albidev](https://github.com/albidev) |
+| **Notifications** | A persistent notification inbox, cron-event ingestion, and notification delivery workflows. | [albidev/mc-notifications-plugin](https://github.com/albidev/mc-notifications-plugin) | [@albidev](https://github.com/albidev) |
+| **Projects** | Local project, Git, and GitHub workspace monitoring. | [imbundle/mc-project-plugin](https://github.com/imbundle/mc-project-plugin) | [@imbundle](https://github.com/imbundle) |
+
+Projects also has an [albidev/mc-project-plugin fork](https://github.com/albidev/mc-project-plugin), maintained by [@albidev](https://github.com/albidev); the original project is by [@imbundle](https://github.com/imbundle).
+
+For installation and the host contract, see [Mission Control plugins](docs/plugins.md). Check each plugin repository for its own requirements and setup instructions.
 
 ### Chat and agent workspace
 
