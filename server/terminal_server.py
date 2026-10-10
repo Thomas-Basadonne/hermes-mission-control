@@ -26,6 +26,11 @@ _active_pids: set[int] = set()
 _active_pids_lock = threading.Lock()
 
 
+def read_only_mode() -> bool:
+    """Single parser for MISSION_CONTROL_READ_ONLY, shared with the HTTP sidecar."""
+    return (os.getenv("MISSION_CONTROL_READ_ONLY") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _authorized(value: str) -> bool:
     expected = os.getenv("MISSION_CONTROL_TOKEN", "").strip() or os.getenv("API_SERVER_KEY", "").strip()
     return bool(expected and hmac.compare_digest(value, expected))
@@ -184,6 +189,11 @@ async def _handle(ws: Any) -> None:
     ticket = (params.get("ticket") or [""])[0]
     if not _consume_ticket(ticket):
         await ws.close(code=4401, reason="invalid terminal ticket")
+        return
+    # A ticket issued before read-only was enabled must not bypass the policy.
+    # Shells that are already open are left alone on purpose.
+    if read_only_mode():
+        await ws.close(code=4403, reason="terminal disabled in read-only mode")
         return
 
     if not await asyncio.to_thread(_session_slots.acquire, False):

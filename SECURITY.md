@@ -27,9 +27,11 @@ Treat the token as a shell credential. The complete route list is in
 Routes that need no token: `GET /health` and `GET /api/local/health` (liveness
 only, no secrets).
 
-`MISSION_CONTROL_READ_ONLY=1` rejects mutating HTTP requests on the sidecar.
-It does **not** disable the browser terminal: a token holder can still open a
-shell. Do not rely on read-only mode to contain an untrusted token holder.
+`MISSION_CONTROL_READ_ONLY=1` rejects mutating HTTP requests on the sidecar,
+including terminal ticket issuance, and the terminal WebSocket refuses to spawn
+a new shell while it is set. Shells opened before read-only was enabled keep
+running until they exit. Read-only mode is a policy boundary for a trusted
+token holder, not an authentication layer: protect the token itself.
 
 ## Supported versions
 

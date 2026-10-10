@@ -17,8 +17,10 @@ is the `do_GET` / `do_POST` / `do_PUT` / `do_PATCH` / `do_DELETE` handlers in
   or wrong tokens return `401` with `{"error": "invalid_api_key"}`. Exceptions
   are marked **open** below.
 - **Read-only mode.** With `MISSION_CONTROL_READ_ONLY=1`, every `PUT`, `PATCH`,
-  and `DELETE`, and every `POST` except `/api/local/terminal/ticket` and
-  `/api/local/client-diagnostics`, returns `403 {"error": "read_only_mode"}`.
+  `DELETE` and `POST` (terminal ticket and client diagnostics included) returns
+  `403 {"error": "read_only_mode"}`. The terminal WebSocket also refuses to
+  spawn a shell for a ticket issued before read-only was enabled (close code
+  `4403`); shells already open are not terminated.
 - **Errors.** JSON bodies of the form `{"error": "<code>", "detail": "<text>"}`.
   Unknown paths return `404 {"error": "not_found"}`.
 - **CORS.** See [telemetry.md](telemetry.md#cors-origin-enforcement).

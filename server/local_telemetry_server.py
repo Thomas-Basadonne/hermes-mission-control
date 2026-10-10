@@ -107,7 +107,7 @@ from kanban_bridge import KanbanError as KanbanBridgeError
 import cron_bridge as cron_bridge_mod
 from cron_bridge import CronBridgeError
 from whiteboard_store import acknowledge_commands, enqueue_command, get_whiteboard, load_state, save_snapshot, save_state, get_agent_mode
-from terminal_server import issue_ticket, shutdown_terminal_sessions, start_terminal_server
+from terminal_server import issue_ticket, read_only_mode, shutdown_terminal_sessions, start_terminal_server
 
 CANVAS_DISPATCH: dict[str, Callable[[str, dict], dict]] = {}
 
@@ -690,12 +690,7 @@ def _append_client_diagnostic(payload: Dict[str, Any]) -> None:
 
 def _read_only_mode() -> bool:
     """Disable every mutating HTTP method for contained deployments."""
-    return (os.getenv("MISSION_CONTROL_READ_ONLY") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return read_only_mode()
 
 
 def _isoformat_mtime(path: Path) -> Optional[str]:
@@ -2570,6 +2565,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
+        # Gate before every POST branch: a terminal ticket spawns a shell and
+        # diagnostics append to disk, so neither may run in read-only mode.
+        if self._reject_mutation_in_read_only_mode():
+            return
         if parsed.path == "/api/local/terminal/ticket":
             if not _is_authorized(self):
                 self._unauthorized()
@@ -2597,8 +2596,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             _append_client_diagnostic(payload)
             self._json(200, {"success": True})
-            return
-        if self._reject_mutation_in_read_only_mode():
             return
         if parsed.path == '/api/local/memory/honcho/local-identity':
             if not _is_authorized(self):

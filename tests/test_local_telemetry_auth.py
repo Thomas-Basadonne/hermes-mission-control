@@ -132,6 +132,55 @@ class LocalTelemetryAuthTests(unittest.TestCase):
             payload = json.loads(exc.exception.read().decode("utf-8"))
             self.assertEqual(payload["error"], "read_only_mode")
 
+    def test_read_only_mode_rejects_terminal_ticket_without_issuing_one(self):
+        os.environ["MISSION_CONTROL_READ_ONLY"] = "1"
+        with mock.patch.object(local_telemetry_server, "issue_ticket", return_value="synthetic-ticket") as issue:
+            with self.assertRaises(urllib.error.HTTPError) as exc:
+                self._request("/api/local/terminal/ticket", token="phase1-secret", method="POST", payload={})
+        self.assertEqual(exc.exception.code, 403)
+        self.assertEqual(json.loads(exc.exception.read().decode("utf-8"))["error"], "read_only_mode")
+        issue.assert_not_called()
+
+    def test_read_only_mode_rejects_client_diagnostics_without_writing(self):
+        os.environ["MISSION_CONTROL_READ_ONLY"] = "1"
+        with mock.patch.object(local_telemetry_server, "_append_client_diagnostic") as append:
+            with self.assertRaises(urllib.error.HTTPError) as exc:
+                self._request(
+                    "/api/local/client-diagnostics",
+                    token="phase1-secret",
+                    method="POST",
+                    payload={"event": "synthetic"},
+                )
+        self.assertEqual(exc.exception.code, 403)
+        self.assertEqual(json.loads(exc.exception.read().decode("utf-8"))["error"], "read_only_mode")
+        append.assert_not_called()
+
+    def test_read_only_mode_keeps_health_and_protected_reads_available(self):
+        os.environ["MISSION_CONTROL_READ_ONLY"] = "1"
+        with self._request("/health") as response:
+            self.assertEqual(response.status, 200)
+        with self._request("/api/local/system", token="phase1-secret") as response:
+            self.assertEqual(response.status, 200)
+        with self.assertRaises(urllib.error.HTTPError) as exc:
+            self._request("/api/local/system")
+        self.assertEqual(exc.exception.code, 401)
+
+    def test_terminal_ticket_and_diagnostics_work_when_not_read_only(self):
+        with mock.patch.object(local_telemetry_server, "issue_ticket", return_value="synthetic-ticket") as issue:
+            with self._request("/api/local/terminal/ticket", token="phase1-secret", method="POST", payload={}) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.loads(response.read().decode("utf-8"))["ticket"], "synthetic-ticket")
+        issue.assert_called_once_with("phase1-secret")
+        with mock.patch.object(local_telemetry_server, "_append_client_diagnostic") as append:
+            with self._request(
+                "/api/local/client-diagnostics",
+                token="phase1-secret",
+                method="POST",
+                payload={"event": "synthetic"},
+            ) as response:
+                self.assertEqual(response.status, 200)
+        append.assert_called_once_with({"event": "synthetic"})
+
     def test_honcho_status_requires_auth_and_never_exposes_api_key(self):
         with tempfile.TemporaryDirectory(prefix="mc-honcho-api-") as temp_home:
             root = Path(temp_home) / ".hermes"
