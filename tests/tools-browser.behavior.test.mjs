@@ -1,31 +1,81 @@
 import assert from 'node:assert/strict';
-import {routeHarness} from './helpers/route-dom-harness.mjs';
-const names=Array.from({length:12},(_,i)=>`handler_${i+1}`);
-const group=(name,available,resolvedTools=names)=>({name,available,resolvedTools,toolCount:resolvedTools.length,description:'fixture',requirements:available?[]:['SYNTHETIC_KEY'],directTools:[],includes:[],isComposite:false});
-const ready=group('Ready',true),blocked=group('Blocked',false,['blocked_tool']);
-const catalog=names.map(name=>({name,toolset:'Ready',available:true}));catalog.push({name:'catalog_only',toolset:'Orphan',available:false}, {...catalog[0]});
-const store={tools:{available:true,toolsets:[blocked,ready],availableToolsets:[ready,group('Legacy',true,[])],toolCatalog:catalog},storedToken:'fixture'};
-const h=await routeHarness('ToolsRoute',store,()=>{throw Error('Tools browsing must not fetch');});
-const readyList=()=>h.find('[data-toolset="Ready"] [data-tool-list]');
-try{
-  const search=h.find('input[type="search"][aria-label="tools.search"]');
-  assert.ok(h.find('[data-toolset="Blocked"]').textContent.includes('SYNTHETIC_KEY'));
-  assert.ok(h.find('[data-toolset="Legacy"]'));
-  assert.equal(readyList().children.length,8);
-  const expand=h.find('[data-toolset="Ready"] button');assert.equal(expand.getAttribute('aria-expanded'),'false');
-  await h.flush(()=>expand.click());assert.equal(readyList().children.length,12);assert.equal(expand.getAttribute('aria-expanded'),'true');
-  await h.flush(()=>expand.click());assert.equal(readyList().children.length,8);
-  await h.change(search,'HANDLER_12');assert.equal(readyList().children.length,1);assert.equal(readyList().textContent,'handler_12');
-  assert.equal(document.querySelectorAll('[data-tool-catalog] li').length,1);
-  await h.change(search,'Ready');assert.equal(document.querySelectorAll('[data-toolset]').length,1);
-  await h.change(search,'');assert.equal(readyList().children.length,8);
-  assert.equal(document.querySelectorAll('[data-tool-catalog] li').length,8);
-  await h.flush(()=>h.find('[data-tool-catalog] button').click());assert.equal(document.querySelectorAll('[data-tool-catalog] li').length,13);
-  const ids=[...document.querySelectorAll('[data-tool-catalog] li')].map(e=>e.textContent);assert.equal(new Set(ids).size,13);
-  await h.change(search,'catalog_only');assert.equal(document.querySelectorAll('[data-toolset]').length,0);assert.equal(document.querySelectorAll('[data-tool-catalog] li').length,1);
-  assert.ok(document.body.textContent.includes('tools.unavailable'));
-  await h.change(search,'no-such-tool');assert.ok(document.body.textContent.includes('tools.noMatch'));
-  await h.change(search,'new-tool');store.tools={...store.tools,toolCatalog:[{name:'new-tool',toolset:'New',available:true}]};await h.emit();assert.equal(document.querySelectorAll('[data-tool-catalog] li').length,1);
-  store.tools={available:true,toolsets:[],availableToolsets:[],toolCatalog:[]};await h.emit();assert.ok(document.body.textContent.includes('tools.notFound'));assert.equal(h.calls.length,0);
-  console.log('Tools browser behavior passed: union, full exploration, search, requirements, catalog and empty/update states.');
-}finally{await h.close();}
+import { routeHarness } from './helpers/route-dom-harness.mjs';
+
+// Shape produced by _collect_tools: identical lists, available groups, no
+// requirements, and direct names except the three skills operations.
+function group(name, resolvedTools = [name]) {
+  return {
+    name,
+    available: true,
+    resolvedTools,
+    toolCount: resolvedTools.length,
+    description: `Fixture ${name}`,
+    requirements: [],
+    directTools: resolvedTools,
+    includes: [],
+    isComposite: false,
+  };
+}
+
+function snapshot(toolsets) {
+  const toolCatalog = toolsets.flatMap(item => item.resolvedTools.map(name => ({
+    name,
+    toolset: item.name,
+    available: true,
+  })));
+  return {
+    available: true,
+    count: toolsets.length,
+    toolCount: toolCatalog.length,
+    toolsets,
+    availableToolsets: toolsets,
+    toolCatalog,
+    resolvedTools: toolCatalog.map(item => item.name),
+  };
+}
+
+const store = {
+  tools: snapshot([group('terminal'), group('file'), group('skills', ['list', 'view', 'manage'])]),
+  storedToken: 'fixture',
+};
+const h = await routeHarness('ToolsRoute', store, () => {
+  throw Error('Tools search must not fetch');
+});
+const groupNames = () => [...document.querySelectorAll('[data-toolset]')]
+  .map(item => item.getAttribute('data-toolset'));
+
+try {
+  const search = h.find('input[type="search"][aria-label="tools.search"]');
+  assert.deepEqual(groupNames(), ['terminal', 'file', 'skills']);
+  assert.ok(!document.querySelector('[data-tool-catalog]'),
+    'Do not repeat the synthetic backend catalog as a separate card');
+  assert.ok(!document.querySelector('[aria-expanded]'));
+  assert.ok(!document.body.textContent.includes('tools.requirements'));
+  assert.ok(!document.body.textContent.includes('tools.unavailable'));
+
+  await h.change(search, ' TERMINAL ');
+  assert.deepEqual(groupNames(), ['terminal']);
+  await h.change(search, 'MANAGE');
+  assert.deepEqual(groupNames(), ['skills']);
+  assert.ok(h.find('[data-toolset="skills"]').textContent.includes('manage'));
+
+  await h.change(search, 'no-such-tool');
+  assert.deepEqual(groupNames(), []);
+  assert.ok(document.body.textContent.includes('tools.noMatch'));
+  await h.click('tools.resetSearch');
+  assert.equal(search.value, '');
+  assert.deepEqual(groupNames(), ['terminal', 'file', 'skills']);
+
+  await h.change(search, 'new-tool');
+  store.tools = snapshot([group('new-tool')]);
+  await h.emit();
+  assert.deepEqual(groupNames(), ['new-tool']);
+
+  store.tools = snapshot([]);
+  await h.emit();
+  assert.ok(document.body.textContent.includes('tools.notFound'));
+  assert.equal(h.calls.length, 0);
+  console.log('Tools search passed: production-shaped data, case/whitespace, tool names, reset, empty/update states.');
+} finally {
+  await h.close();
+}

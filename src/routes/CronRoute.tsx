@@ -37,7 +37,7 @@ import {
 } from '../lib/hermes-api';
 import { loadBotProfiles, loadBotModelOptions, type BotProfileSummary, type BotModelProviderOption } from '../lib/bot-gateway';
 import { cronModelOptions, cronProviderOptions, isCronModelPairValid, modelSelectionPayload } from '../lib/cron-model-selection';
-import { cronScheduleInput } from '../lib/cron-form';
+import { cronScheduleExpired, cronScheduleInput } from '../lib/cron-form';
 import { filterCronJobs, isCronPaused, type CronStatusFilter } from '../lib/cron-status-filter';
 
 function formatDate(value: string | null | undefined): string {
@@ -193,14 +193,10 @@ function CronFormModal({
     if (job) return formFromJob(job);
     if (!duplicateSource) return { ...emptyForm };
     const copied = formFromJob(duplicateSource);
-    const runAt = Date.parse(duplicateSource.scheduleRunAt || '');
-    const expired = duplicateSource.scheduleKind === 'once' &&
-      (!Number.isFinite(runAt) || runAt <= Date.now());
+    const expired = cronScheduleExpired(duplicateSource.scheduleKind, duplicateSource.scheduleRunAt);
     return { ...copied, name: '', schedule: expired ? '' : copied.schedule };
   });
-  const duplicateExpired = duplicateSource?.scheduleKind === 'once' &&
-    (!Number.isFinite(Date.parse(duplicateSource.scheduleRunAt || '')) ||
-      Date.parse(duplicateSource.scheduleRunAt || '') <= Date.now());
+  const duplicateExpired = cronScheduleExpired(duplicateSource?.scheduleKind, duplicateSource?.scheduleRunAt);
   const submitBusyRef = useRef(false);
   const close = () => { if (!submitBusyRef.current) onClose(); };
   const [profiles, setProfiles] = useState<BotProfileSummary[]>([]);
