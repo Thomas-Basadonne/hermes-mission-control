@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import { browserToolsets, matchingTools, toolsetMatches } from '../src/lib/tools-browser.ts';
+import type { MissionControlToolsetItem, MissionControlToolsSnapshot } from '../src/lib/hermes-api.ts';
+const group=(name:string, available:boolean):MissionControlToolsetItem=>({name,available,description:'',requirements:[],directTools:[],includes:[],resolvedTools:Array.from({length:12},(_,i)=>`handler_${i+1}`),toolCount:12,isComposite:false});
+const blocked=group('blocked',false), ready=group('ready',true), legacy=group('legacy',true);
+const tools:MissionControlToolsSnapshot={available:true,count:3,toolCount:12,toolsets:[blocked,ready],availableToolsets:[ready,legacy],toolCatalog:[],resolvedTools:[]};
+const original=structuredClone(tools);
+assert.deepEqual(browserToolsets(tools),[blocked,ready,legacy]);
+assert.deepEqual(matchingTools(ready.resolvedTools,' HANDLER_12 '),['handler_12']);
+assert.deepEqual(matchingTools(['x','x','y'],' '),['x','y']);
+assert.deepEqual(matchingTools(['x'],'missing'),[]);
+assert.equal(toolsetMatches(ready,'READY'),true);
+assert.equal(toolsetMatches(ready,'handler_12'),true);
+assert.equal(toolsetMatches(ready,'missing'),false);
+assert.equal(toolsetMatches(ready,''),true);
+assert.deepEqual(tools,original);
+console.log('Tools browser helpers passed.');

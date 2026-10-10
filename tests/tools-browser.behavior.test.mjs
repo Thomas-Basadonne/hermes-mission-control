@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import {routeHarness} from './helpers/route-dom-harness.mjs';
+const names=Array.from({length:12},(_,i)=>`handler_${i+1}`);
+const group=(name,available,resolvedTools=names)=>({name,available,resolvedTools,toolCount:resolvedTools.length,description:'fixture',requirements:available?[]:['SYNTHETIC_KEY'],directTools:[],includes:[],isComposite:false});
+const ready=group('Ready',true),blocked=group('Blocked',false,['blocked_tool']);
+const catalog=names.map(name=>({name,toolset:'Ready',available:true}));catalog.push({name:'catalog_only',toolset:'Orphan',available:false}, {...catalog[0]});
+const store={tools:{available:true,toolsets:[blocked,ready],availableToolsets:[ready,group('Legacy',true,[])],toolCatalog:catalog},storedToken:'fixture'};
+const h=await routeHarness('ToolsRoute',store,()=>{throw Error('Tools browsing must not fetch');});
+const readyList=()=>h.find('[data-toolset="Ready"] [data-tool-list]');
+try{
+  const search=h.find('input[type="search"][aria-label="tools.search"]');
+  assert.ok(h.find('[data-toolset="Blocked"]').textContent.includes('SYNTHETIC_KEY'));
+  assert.ok(h.find('[data-toolset="Legacy"]'));
+  assert.equal(readyList().children.length,8);
+  const expand=h.find('[data-toolset="Ready"] button');assert.equal(expand.getAttribute('aria-expanded'),'false');
+  await h.flush(()=>expand.click());assert.equal(readyList().children.length,12);assert.equal(expand.getAttribute('aria-expanded'),'true');
+  await h.flush(()=>expand.click());assert.equal(readyList().children.length,8);
+  await h.change(search,'HANDLER_12');assert.equal(readyList().children.length,1);assert.equal(readyList().textContent,'handler_12');
+  assert.equal(document.querySelectorAll('[data-tool-catalog] li').length,1);
+  await h.change(search,'Ready');assert.equal(document.querySelectorAll('[data-toolset]').length,1);
+  await h.change(search,'');assert.equal(readyList().children.length,8);
+  assert.equal(document.querySelectorAll('[data-tool-catalog] li').length,8);
+  await h.flush(()=>h.find('[data-tool-catalog] button').click());assert.equal(document.querySelectorAll('[data-tool-catalog] li').length,13);
+  const ids=[...document.querySelectorAll('[data-tool-catalog] li')].map(e=>e.textContent);assert.equal(new Set(ids).size,13);
+  await h.change(search,'catalog_only');assert.equal(document.querySelectorAll('[data-toolset]').length,0);assert.equal(document.querySelectorAll('[data-tool-catalog] li').length,1);
+  assert.ok(document.body.textContent.includes('tools.unavailable'));
+  await h.change(search,'no-such-tool');assert.ok(document.body.textContent.includes('tools.noMatch'));
+  await h.change(search,'new-tool');store.tools={...store.tools,toolCatalog:[{name:'new-tool',toolset:'New',available:true}]};await h.emit();assert.equal(document.querySelectorAll('[data-tool-catalog] li').length,1);
+  store.tools={available:true,toolsets:[],availableToolsets:[],toolCatalog:[]};await h.emit();assert.ok(document.body.textContent.includes('tools.notFound'));assert.equal(h.calls.length,0);
+  console.log('Tools browser behavior passed: union, full exploration, search, requirements, catalog and empty/update states.');
+}finally{await h.close();}
