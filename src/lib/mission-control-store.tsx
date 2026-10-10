@@ -63,6 +63,8 @@ type MissionControlContextValue = {
   tokenDraft: string;
   setTokenDraft: (value: string) => void;
   refreshAll: (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean }) => Promise<void>;
+  /** Reload only the Tools catalog (pull-to-refresh). Resolves with the outcome; never rejects. */
+  refreshTools: () => Promise<{ ok: boolean; error: string | null }>;
   unlock: (token: string) => Promise<void>;
   logout: () => void;
   actionResult: MissionControlActionResult | null;
@@ -149,6 +151,9 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
   const refreshSequence = useRef(0);
   const sourceSequences = useRef<Partial<Record<MissionControlSourceName, number>>>({});
   const referenceSequence = useRef(0);
+  // Shared by refreshReferenceData and refreshTools so an older poll cannot
+  // overwrite a newer targeted Tools refresh (and vice versa).
+  const toolsSequence = useRef(0);
   const [theme, setThemeState] = useState<ThemeMode>(initialTheme);
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>('dark');
 
@@ -207,6 +212,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
   const refreshReferenceData = useCallback(async (token?: string) => {
     const requestId = ++referenceSequence.current;
+    const toolsRequestId = ++toolsSequence.current;
     const attemptedAt = new Date().toISOString();
     setSources((previous) => ({
       ...previous,
@@ -220,6 +226,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
     const recordReference = (name: 'tools' | 'skills', result: PromiseSettledResult<MissionControlToolsSnapshot | MissionControlSkillsSnapshot>) => {
       if (referenceSequence.current !== requestId) return;
+      if (name === 'tools' && toolsSequence.current !== toolsRequestId) return;
       const completedAt = new Date().toISOString();
       setSources((previous) => {
         const old = previous[name];
@@ -240,7 +247,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
     if (toolsRes.status === 'fulfilled') {
       const nextTools = toolsRes.value;
-      if (nextTools.dataSource !== 'fallback' && referenceSequence.current === requestId) setTools(nextTools);
+      if (nextTools.dataSource !== 'fallback' && referenceSequence.current === requestId && toolsSequence.current === toolsRequestId) setTools(nextTools);
     }
 
     if (skillsRes.status === 'fulfilled') {
@@ -248,6 +255,41 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       if (nextSkills.dataSource !== 'fallback' && referenceSequence.current === requestId) setSkills(nextSkills);
     }
   }, []);
+
+  const refreshTools = useCallback(async (): Promise<{ ok: boolean; error: string | null }> => {
+    const requestId = ++toolsSequence.current;
+    const attemptedAt = new Date().toISOString();
+    setSources((previous) => ({
+      ...previous,
+      tools: { state: 'loading', source: previous.tools?.source ?? null, lastAttemptAt: attemptedAt, lastSuccessAt: previous.tools?.lastSuccessAt ?? null, error: null },
+    }));
+    let next: MissionControlToolsSnapshot | null = null;
+    let error: string | null = null;
+    try {
+      next = await loadMissionControlTools(storedToken || undefined);
+      error = next.dataError ?? null;
+    } catch (failure) {
+      error = failure instanceof MissionControlAuthError
+        ? 'Authentication required.'
+        : failure instanceof Error ? failure.message : 'Request failed';
+    }
+    if (toolsSequence.current !== requestId) return { ok: error === null, error };
+    const fallback = next?.dataSource === 'fallback';
+    const completedAt = new Date().toISOString();
+    setSources((previous) => ({
+      ...previous,
+      tools: {
+        state: error ? 'error' : fallback ? 'fallback' : 'live',
+        source: next?.dataSource ?? null,
+        lastAttemptAt: attemptedAt,
+        lastSuccessAt: !error && !fallback ? completedAt : previous.tools?.lastSuccessAt ?? null,
+        error,
+      },
+    }));
+    // Same rule as the reference poll: never replace live data with fallback.
+    if (next && !fallback && !error) setTools(next);
+    return { ok: error === null, error };
+  }, [storedToken]);
 
   const refreshAll = useCallback(async (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean }) => {
     const silent = options?.silent ?? false;
@@ -593,6 +635,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     tokenDraft,
     setTokenDraft,
     refreshAll,
+    refreshTools,
     unlock,
     logout,
     actionResult,
@@ -620,6 +663,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     loading,
     logout,
     refreshAll,
+    refreshTools,
     reloadConfig,
     resolvedTheme,
     runGatewayAction,

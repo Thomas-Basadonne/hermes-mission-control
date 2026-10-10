@@ -1,5 +1,5 @@
 import { useI18n } from '../lib/i18n';
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { Blocks, CheckCircle2, Hammer, KeyRound } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
@@ -37,13 +37,17 @@ function MetricCard({
 
 export function ToolsRoute() {
   const { t } = useI18n();
-  const { tools } = useMissionControl();
+  const { tools, refreshTools } = useMissionControl();
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
+  // The hook keeps the spinner until this settles and ignores gestures while
+  // it is pending, so one pull means exactly one Tools request.
   const { state: pullState } = usePullToReload({
     containerRef,
     onReload: async () => {
-      // Tools are refreshed by the store polling loop.
+      const result = await refreshTools();
+      setRefreshError(result.ok ? null : result.error);
     },
   });
 
@@ -54,6 +58,9 @@ export function ToolsRoute() {
   return (
     <div ref={containerRef} className="route-page-scroll flex h-full flex-col gap-5 overflow-y-auto sm:gap-6">
       <PullToReloadIndicator state={pullState} />
+      {refreshError ? (
+        <p role="status" className="text-xs text-warning">{t('tools.refreshFailed', { detail: refreshError })}</p>
+      ) : null}
 
       <Card padding="none" className="!border-0">
         <PageHeader

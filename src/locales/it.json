@@ -641,6 +641,7 @@
   "tools.available": "disponibile",
   "tools.needsKey": "richiede chiave",
   "tools.toolCount": "{count} strumenti",
+  "tools.refreshFailed": "Aggiornamento strumenti non riuscito: {detail}",
   "tools.composite": "composito",
   "tools.direct": "diretto",
   "tools.notFound": "Toolset non trovato.",

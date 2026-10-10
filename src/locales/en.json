@@ -641,6 +641,7 @@
   "tools.available": "available",
   "tools.needsKey": "needs key",
   "tools.toolCount": "{count} tools",
+  "tools.refreshFailed": "Tools refresh failed: {detail}",
   "tools.composite": "composite",
   "tools.direct": "direct",
   "tools.notFound": "Toolset not found.",
