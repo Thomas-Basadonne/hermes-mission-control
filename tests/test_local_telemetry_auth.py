@@ -118,6 +118,17 @@ class LocalTelemetryAuthTests(unittest.TestCase):
             self._request(f"/api/local/system?access_token={encoded}")
         self.assertEqual(exc.exception.code, 401)
 
+    def test_chat_sync_stream_rejects_query_token_and_accepts_bearer_header(self):
+        encoded = urllib.parse.quote("phase1-secret", safe="")
+        base = "/api/local/chat/sync/stream?session_id=s1&client_id=c1"
+        with self.assertRaises(urllib.error.HTTPError) as exc:
+            self._request(f"{base}&access_token={encoded}")
+        self.assertEqual(exc.exception.code, 401)
+        with self._request(base, token="phase1-secret") as response:
+            self.assertEqual(response.status, 200)
+            self.assertTrue(response.headers.get("Content-Type", "").startswith("text/event-stream"))
+            self.assertEqual(response.readline().decode("utf-8").strip(), "event: chat-sync-ready")
+
     def test_read_only_mode_rejects_all_mutating_methods(self):
         os.environ["MISSION_CONTROL_READ_ONLY"] = "1"
         for method, path in (

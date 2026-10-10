@@ -45,11 +45,12 @@ export function getChatSyncClientId(): string {
   return generated;
 }
 
-export function chatSyncStreamUrl(sessionId: string, accessToken: string, since?: number): string {
+// The bearer token is sent as an Authorization header by chat-sync-stream.ts;
+// it must never be part of this URL.
+export function chatSyncStreamUrl(sessionId: string, since?: number): string {
   const params = new URLSearchParams({
     session_id: sessionId,
     client_id: getChatSyncClientId(),
-    access_token: accessToken,
   });
   if (typeof since === 'number' && Number.isFinite(since) && since >= 0) params.set('since', String(Math.floor(since)));
   return `/api/local/chat/sync/stream?${params.toString()}`;

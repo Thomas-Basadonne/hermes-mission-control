@@ -77,7 +77,7 @@ assertExcludes(chatPersistence, 'slice(-200)', 'local persistence does not cap t
 assertIncludes(chatGateway, 'replay_epoch', 'chat gateway detects replay epoch changes after backend restart');
 assertIncludes(chatGateway, "parsed.event.type === 'todo.updated'", 'chat gateway consumes live TODO updates');
 assertIncludes(chatGateway, 'publishChatSync(storedToken, parsed.event.session_id, \'gateway_event\'', 'chat gateway mirrors core events into the sidecar relay');
-assertIncludes(chatGateway, 'new EventSource(chatSyncStreamUrl', 'chat gateway subscribes to sidecar fan-out');
+assertIncludes(chatGateway, 'createChatSyncRelay({', 'chat gateway subscribes to sidecar fan-out');
 assertIncludes(chatGateway, 'publishChatSync(storedToken, activeSessionId, \'user_message\'', 'chat gateway mirrors user messages into the sidecar relay');
 assertIncludes(chatGateway, 'publishChatSync(storedToken, activeSessionId, \'system_message\'', 'chat gateway mirrors steer acknowledgements into the sidecar relay');
 assertIncludes(chatSync, 'export type ChatSyncEnvelope', 'chat sync envelope supports control acknowledgements');

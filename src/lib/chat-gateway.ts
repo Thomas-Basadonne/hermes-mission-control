@@ -46,7 +46,8 @@ import { CHAT_PRESENCE_EVENT, getChatPresence, getChatReadState, publishChatPres
 import { createChatPersistenceScheduler, dropUnchangedCachedMessages, fetchServerLastChat, persistChat, persistChatTitle, readPersistedChat, selectCachedChatMessages, syncLastChatToServer } from './chat-persistence';
 import { canClaimLastChatPointer, createChatBootstrapGuard, serverPointerMatchesRequestedSession, shouldAdoptServerPointer, type LastChatClaimAction, type ServerLastChat } from './chat-bootstrap';
 import { clearPendingChatSubmit, persistPendingChatSubmit, readPendingChatSubmit, type PendingChatSubmit } from './chat-outbox';
-import { applySyncedAssistantMessage, applySyncedChatMessage, applySyncedUserMessage, chatSyncStreamUrl, eventRequiresCanonicalReconcile, fetchChatTranscript, publishChatSync, replaceWithCanonicalChatMessages, shouldApplySequencedEvent, type ChatSyncEnvelope } from './chat-sync';
+import { createChatSyncRelay } from './chat-sync-stream';
+import { applySyncedAssistantMessage, applySyncedChatMessage, applySyncedUserMessage, eventRequiresCanonicalReconcile, fetchChatTranscript, publishChatSync, replaceWithCanonicalChatMessages, shouldApplySequencedEvent, type ChatSyncEnvelope } from './chat-sync';
 import { getWebSocketUrl, MAX_RECONNECTS, mintWsCredential, nextReconnectDelay, RPC_TIMEOUT_MS } from './chat-transport';
 import { commandOutput, executeReasoningSlashCommand, resultText } from './chat-commands';
 import { setSessionReasoning } from './chat-status-runtime';
@@ -288,8 +289,7 @@ export function useGatewayChat(
   const eventReplayInFlightRef = useRef(false);
   const snapshotSyncInFlightRef = useRef(false);
   const snapshotReconcileTimerRef = useRef<number | null>(null);
-  const chatSyncSourceRef = useRef<EventSource | null>(null);
-  const chatSyncReconnectTimerRef = useRef<number | null>(null);
+  const chatSyncSourceRef = useRef<{ close(): void } | null>(null);
   const chatSyncRelaySeqRef = useRef(new Map<string, number>());
   const pointerRef = useRef<ServerLastChat | null>(initial.sessionId && initial.revision ? {
     sessionId: initial.sessionId,
@@ -763,18 +763,13 @@ export function useGatewayChat(
     if (!open || previewMode || connectionState !== 'connected' || !activeSessionId || !storedToken.trim()) {
       chatSyncSourceRef.current?.close();
       chatSyncSourceRef.current = null;
-      if (chatSyncReconnectTimerRef.current !== null) window.clearTimeout(chatSyncReconnectTimerRef.current);
-      chatSyncReconnectTimerRef.current = null;
       return;
     }
 
-    let disposed = false;
-    let source: EventSource | null = null;
-
-    const handleEnvelope = (raw: Event) => {
+    const handleEnvelope = (data: string) => {
       let value: unknown;
       try {
-        value = JSON.parse((raw as MessageEvent<string>).data) as unknown;
+        value = JSON.parse(data) as unknown;
       } catch {
         return;
       }
@@ -820,15 +815,20 @@ export function useGatewayChat(
       }
     };
 
-    const connectRelay = () => {
-      if (disposed) return;
-      const since = chatSyncRelaySeqRef.current.get(activeSessionId);
-      const nextSource = new EventSource(chatSyncStreamUrl(activeSessionId, storedToken, since));
-      source = nextSource;
-      chatSyncSourceRef.current = nextSource;
-      nextSource.addEventListener('chat-sync-ready', (event) => {
+    // fetch-based stream with `Authorization: Bearer`; reconnects after 1s
+    // with `since` = latest applied relay_seq, like the former EventSource.
+    const relay = createChatSyncRelay({
+      sessionId: activeSessionId,
+      accessToken: storedToken,
+      getSince: () => chatSyncRelaySeqRef.current.get(activeSessionId),
+      onEvent: (name, data, since) => {
+        if (name === 'chat-sync') {
+          handleEnvelope(data);
+          return;
+        }
+        if (name !== 'chat-sync-ready') return;
         try {
-          const ready = JSON.parse((event as MessageEvent<string>).data) as { latest_seq?: unknown };
+          const ready = JSON.parse(data) as { latest_seq?: unknown };
           // A fresh Mission Control client must replay the existing relay buffer:
           // it contains MC-only user/assistant projections that are not in Hermes
           // SessionDB. The message/event IDs and relay watermark dedupe repeats.
@@ -838,22 +838,12 @@ export function useGatewayChat(
         } catch {
           // A malformed readiness event must not disable the direct gateway.
         }
-      });
-      nextSource.addEventListener('chat-sync', handleEnvelope);
-      nextSource.onerror = () => {
-        nextSource.close();
-        if (disposed) return;
-        chatSyncReconnectTimerRef.current = window.setTimeout(connectRelay, 1000);
-      };
-    };
-
-    connectRelay();
+      },
+    });
+    chatSyncSourceRef.current = relay;
     return () => {
-      disposed = true;
-      source?.close();
-      if (chatSyncSourceRef.current === source) chatSyncSourceRef.current = null;
-      if (chatSyncReconnectTimerRef.current !== null) window.clearTimeout(chatSyncReconnectTimerRef.current);
-      chatSyncReconnectTimerRef.current = null;
+      relay.close();
+      if (chatSyncSourceRef.current === relay) chatSyncSourceRef.current = null;
     };
   }, [connectionState, open, previewMode, queueSnapshotReconcile, sessionId, storedToken]);
 

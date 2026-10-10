@@ -131,7 +131,7 @@ list in [kanban.md](kanban.md#architecture).
 |--------|------|---------|
 | GET | `/api/local/chat/transcript`, `/api/local/chat/canonical` | Stored transcript for a session (`profile`, `session_id`, `session_key`) |
 | GET | `/api/local/chat/timestamps`, `/api/local/chat/message-timestamps` | Per-message timestamps for a session |
-| GET | `/api/local/chat/sync/stream` | Cross-device chat sync, Server-Sent Events (`client_id`, `session_id`, `since`) |
+| GET | `/api/local/chat/sync/stream` | Cross-device chat sync, Server-Sent Events (`client_id`, `session_id`, `since`). Bearer header only: `?access_token=` is rejected; the browser reads it with streaming `fetch`, not `EventSource` |
 | GET | `/api/local/chat/sync/stats` | Sync relay counters |
 | POST | `/api/local/chat/sync/publish` | Publish a sync envelope to other devices |
 | GET, POST | `/api/local/chat/presence` | Runtime presence per session |

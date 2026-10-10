@@ -2087,7 +2087,9 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
         if parsed.path == "/api/local/chat/sync/stream":
-            if not _is_authorized(self, allow_query_token=True):
+            # Bearer header only: the client streams over fetch, so the token
+            # never needs to travel in the URL (MC-FIX-4).
+            if not _is_authorized(self):
                 self._unauthorized()
                 return
             session_id = str((params.get("session_id") or [""])[0]).strip()
