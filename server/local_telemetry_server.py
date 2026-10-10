@@ -1664,12 +1664,19 @@ def _collect_skill_files_recursive(skill_name: str) -> Dict[str, Any]:
         parts = rel.parts
         if any(part.startswith(".") or part == "node_modules" for part in parts):
             continue
+        # Boundary: a symlink may point anywhere the sidecar user can read.
+        # Only files whose resolved target stays inside this skill are served.
         try:
-            content = p.read_text(encoding="utf-8", errors="replace")[:_SKILL_FILE_READ_LIMIT]
+            target = p.resolve(strict=True)
+            target.relative_to(base)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        try:
+            content = target.read_text(encoding="utf-8", errors="replace")[:_SKILL_FILE_READ_LIMIT]
         except Exception:
             content = ""
         try:
-            size = p.stat().st_size
+            size = target.stat().st_size
         except OSError:
             size = 0
         files.append({
