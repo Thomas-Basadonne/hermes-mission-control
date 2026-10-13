@@ -131,10 +131,18 @@ export function OverviewDashboard() {
   const sourceStatuses = Object.entries(sources).filter((entry): entry is [string, MissionControlSourceStatus] => Boolean(entry[1]));
   const freshness = summarizeFreshness(sourceStatuses, loading);
   const sessionIsLive = sources.sessions?.state === 'live';
-  const refreshView = async () => {
+  const refreshOverview = async () => {
     await refreshAll(storedToken || undefined, { silent: false, includeReference: true, includeSnapshot: true });
   };
-  useRegisterCurrentViewRefresh('overview', refreshView);
+  const refreshCurrentView = async () => {
+    await refreshAll(storedToken || undefined, {
+      silent: false,
+      includeReference: true,
+      includeSnapshot: true,
+      rethrowRefreshFailure: true,
+    });
+  };
+  useRegisterCurrentViewRefresh('overview', refreshCurrentView);
 
   const widgets: DashboardWidget[] = [
     {
@@ -172,7 +180,7 @@ export function OverviewDashboard() {
         <DataFreshnessPanel
           sources={sourceStatuses}
           loading={loading}
-          onRetry={refreshView}
+          onRetry={refreshOverview}
         />
       ),
     },
@@ -313,7 +321,7 @@ export function OverviewDashboard() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const { state: pullState } = usePullToReload({
     containerRef,
-    onReload: refreshView,
+    onReload: refreshOverview,
   });
 
   return (

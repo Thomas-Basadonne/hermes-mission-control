@@ -139,6 +139,84 @@ try {
     }
   });
 
+  await test('manual refresh rejects when a transient source request fails', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const originalFetch = globalThis.fetch;
+    const originalWindowFetch = browser.window.fetch;
+    const originalMatchMedia = browser.window.matchMedia;
+    let context;
+    const onReady = (value) => { context = value; };
+    let mode = 'unauthorized';
+    const fetchCalls = [];
+    const fixtureFetch = async (input) => {
+      fetchCalls.push(String(input));
+      if (mode === 'transient') {
+        return new Response('{"detail":"temporarily unavailable"}', {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('{"detail":"unauthorized"}', {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    globalThis.fetch = fixtureFetch;
+    browser.window.fetch = fixtureFetch;
+    browser.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    browser.window.localStorage.clear();
+    try {
+      await act(async () => {
+        root.render(React.createElement(MissionControlProvider, null, React.createElement(StoreProbe, { onReady })));
+        for (let i = 0; i < 40 && !context?.authRequired; i++) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      });
+      assert.equal(context?.authRequired, true, 'initial 401 responses should put the real store in auth-required state');
+
+      mode = 'transient';
+      let failure;
+      await act(async () => {
+        try {
+          await context.refreshAll('fixture-token', { rethrowRefreshFailure: true });
+        } catch (error) {
+          failure = error;
+        }
+      });
+      assert.ok(failure, `expected transient refresh failure to reach the user action; fetched ${JSON.stringify(fetchCalls)}`);
+      assert.match(failure.message, /Tools endpoint returned 503\./, 'the failed reference source should be part of the explicit refresh outcome');
+      assert.notEqual(failure?.name, 'MissionControlAuthError');
+      assert.equal(context.authRequired, false, 'a transient failure must not relock the store');
+
+      let actionFailure;
+      const refreshAction = context.gatewayActions.find((action) => action.id === 'refresh');
+      await act(async () => {
+        try {
+          await context.runGatewayAction(refreshAction);
+        } catch (error) {
+          actionFailure = error;
+        }
+      });
+      assert.match(actionFailure.message, /Tools endpoint returned 503\./, 'Quick Actions refresh must not resolve as success on a transient source failure');
+      assert.equal(context.actionLoading, null, 'the action lock must be released after a transient refresh failure');
+
+      await act(async () => {
+        await assert.doesNotReject(
+          context.refreshAll('fixture-token', { silent: true, rethrowRefreshFailure: false }),
+          'background refreshes must continue to tolerate transient failures',
+        );
+      });
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      globalThis.fetch = originalFetch;
+      browser.window.fetch = originalWindowFetch;
+      browser.window.matchMedia = originalMatchMedia;
+    }
+  });
+
   await test('refresh action preserves auth failures when a newer refresh supersedes it', async () => {
     const container = document.createElement('div');
     document.body.append(container);

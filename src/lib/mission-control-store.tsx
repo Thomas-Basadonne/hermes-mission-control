@@ -98,7 +98,7 @@ type MissionControlContextValue = {
   storedToken: string;
   tokenDraft: string;
   setTokenDraft: (value: string) => void;
-  refreshAll: (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean; rethrowAuthFailure?: boolean }) => Promise<void>;
+  refreshAll: (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean; rethrowAuthFailure?: boolean; rethrowRefreshFailure?: boolean }) => Promise<void>;
   /** Reload only the Tools catalog (pull-to-refresh). Resolves with the outcome; never rejects. */
   refreshTools: () => Promise<{ ok: boolean; error: string | null }>;
   unlock: (token: string) => Promise<void>;
@@ -277,7 +277,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     return updated;
   }, []);
 
-  const refreshReferenceData = useCallback(async (token?: string) => {
+  const refreshReferenceData = useCallback(async (token?: string, options?: { rethrowFailure?: boolean }) => {
     const requestId = ++referenceSequence.current;
     const toolsRequestId = ++toolsSequence.current;
     const attemptedAt = new Date().toISOString();
@@ -321,6 +321,24 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       const nextSkills = skillsRes.value;
       if (nextSkills.dataSource !== 'fallback' && referenceSequence.current === requestId) setSkills(nextSkills);
     }
+
+    if (options?.rethrowFailure && referenceSequence.current === requestId && toolsSequence.current === toolsRequestId) {
+      const getFailure = (
+        name: string,
+        result: PromiseSettledResult<MissionControlToolsSnapshot | MissionControlSkillsSnapshot>,
+      ) => {
+        if (result.status === 'rejected') {
+          return result.reason instanceof Error ? result.reason : new Error(`${name} refresh failed.`);
+        }
+        if (result.value.dataError) return new Error(result.value.dataError);
+        if ((result.value.dataSource ?? 'fallback') === 'fallback') {
+          return new Error(`Refresh returned fallback for ${name}.`);
+        }
+        return undefined;
+      };
+      const failure = getFailure('Tools', toolsRes) ?? getFailure('Skills', skillsRes);
+      if (failure) throw failure;
+    }
   }, []);
 
   const refreshTools = useCallback(async (): Promise<{ ok: boolean; error: string | null }> => {
@@ -358,7 +376,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     return { ok: error === null, error };
   }, [storedToken]);
 
-  const refreshAll = useCallback(async (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean; rethrowAuthFailure?: boolean }) => {
+  const refreshAll = useCallback(async (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean; rethrowAuthFailure?: boolean; rethrowRefreshFailure?: boolean }) => {
     const silent = options?.silent ?? false;
     const includeReference = options?.includeReference ?? true;
     const includeSnapshot = options?.includeSnapshot ?? !silent;
@@ -403,17 +421,28 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         } };
       });
     };
+    const sourceFailure = (source: string | null, detail?: string | null) => {
+      if (detail) return new Error(detail);
+      if (source === 'fallback' || source === 'gateway-status-fallback') {
+        return new Error(`Refresh returned ${source}.`);
+      }
+      return undefined;
+    };
     if (!silent) {
       setLoading(true);
     }
 
-    if (includeReference) {
-      void refreshReferenceData(token);
-    }
+    const updateReference = includeReference
+      ? refreshReferenceData(token, { rethrowFailure: options?.rethrowRefreshFailure })
+      : null;
+    if (updateReference && !options?.rethrowRefreshFailure) void updateReference;
 
     try {
       const updateMachine = loadMissionControlMachineStatus(token).then((machine) => {
-        finishSource('machine', machine.source ?? 'fallback');
+        const source = machine.source ?? 'fallback';
+        const failure = options?.rethrowRefreshFailure ? sourceFailure(source) : undefined;
+        finishSource('machine', source);
+        if (options?.rethrowRefreshFailure && failure) throw failure;
         if (!isCurrentSourceRequest('machine') || machine.source === 'fallback') return;
         setSnapshot((previous) => {
           const nextMachine = machine as MissionControlSnapshot['machine'];
@@ -423,7 +452,12 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
       const updateSessions = includeSessions
         ? loadMissionControlSessions(token).then((sessions) => {
-            finishSource('sessions', sessions.dataSource ?? 'fallback', sessions.dataError ? new Error(sessions.dataError) : undefined);
+            const source = sessions.dataSource ?? 'fallback';
+            const failure = options?.rethrowRefreshFailure
+              ? sourceFailure(source, sessions.dataError)
+              : sessions.dataError ? new Error(sessions.dataError) : undefined;
+            finishSource('sessions', source, sessions.dataError ? new Error(sessions.dataError) : undefined);
+            if (options?.rethrowRefreshFailure && failure) throw failure;
             if (!isCurrentSourceRequest('sessions') || sessions.dataSource === 'fallback' || sessions.dataSource === 'gateway-status-fallback') return;
             setSnapshot((previous) => {
               const nextSessions = sessions as MissionControlSnapshot['sessions'];
@@ -439,7 +473,12 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
       const updateCron = includeCron
         ? loadMissionControlCron(token).then((cron) => {
-            finishSource('cron', cron.dataSource ?? 'fallback', cron.dataError ? new Error(cron.dataError) : undefined);
+            const source = cron.dataSource ?? 'fallback';
+            const failure = options?.rethrowRefreshFailure
+              ? sourceFailure(source, cron.dataError)
+              : cron.dataError ? new Error(cron.dataError) : undefined;
+            finishSource('cron', source, cron.dataError ? new Error(cron.dataError) : undefined);
+            if (options?.rethrowRefreshFailure && failure) throw failure;
             if (!isCurrentSourceRequest('cron') || cron.dataSource === 'fallback') return;
             setSnapshot((previous) => {
               const nextCron = cron as MissionControlSnapshot['cron'];
@@ -454,7 +493,12 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         : Promise.resolve();
 
       const updateAlerts = loadMissionControlAlerts(token).then((alerts) => {
-        finishSource('alerts', alerts.dataSource ?? 'fallback', alerts.dataError ? new Error(alerts.dataError) : undefined);
+        const source = alerts.dataSource ?? 'fallback';
+        const failure = options?.rethrowRefreshFailure
+          ? sourceFailure(source, alerts.dataError)
+          : alerts.dataError ? new Error(alerts.dataError) : undefined;
+        finishSource('alerts', source, alerts.dataError ? new Error(alerts.dataError) : undefined);
+        if (options?.rethrowRefreshFailure && failure) throw failure;
         if (!isCurrentSourceRequest('alerts') || alerts.dataSource === 'fallback') return;
         setSnapshot((previous) => {
           const nextAlerts = alerts as MissionControlSnapshot['alerts'];
@@ -462,18 +506,35 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         });
       }).catch((error) => { finishSource('alerts', null, error); throw error; });
 
-      const liveResults = await Promise.allSettled([updateMachine, updateSessions, updateCron, updateAlerts]);
+      const liveResults = await Promise.allSettled([
+        ...(options?.rethrowRefreshFailure && updateReference ? [updateReference] : []),
+        updateMachine,
+        updateSessions,
+        updateCron,
+        updateAlerts,
+      ]);
       const authFailure = liveResults.find(
         (result): result is PromiseRejectedResult => result.status === 'rejected' && result.reason instanceof MissionControlAuthError,
       );
       if (authFailure) {
         throw authFailure.reason;
       }
+      const transientFailure = liveResults.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      if (options?.rethrowRefreshFailure && transientFailure) {
+        throw transientFailure.reason;
+      }
 
       if (includeSnapshot) {
         try {
           const dashboard = await loadMissionControlSnapshot(token);
-          finishSource('snapshot', dashboard.dataSource ?? 'fallback', dashboard.dataError ? new Error(dashboard.dataError) : undefined);
+          const source = dashboard.dataSource ?? 'fallback';
+          const failure = options?.rethrowRefreshFailure
+            ? sourceFailure(source, dashboard.dataError)
+            : dashboard.dataError ? new Error(dashboard.dataError) : undefined;
+          finishSource('snapshot', source, dashboard.dataError ? new Error(dashboard.dataError) : undefined);
+          if (options?.rethrowRefreshFailure && failure) throw failure;
           if (isCurrentSourceRequest('snapshot') && dashboard.dataSource !== 'fallback' && !dashboard.dataError) setSnapshot((previous) => ({
             ...previous,
             backendHealth: dashboard.backendHealth,
@@ -490,7 +551,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           }));
         } catch (error) {
           finishSource('snapshot', null, error);
-          if (error instanceof MissionControlAuthError) {
+          if (error instanceof MissionControlAuthError || (options?.rethrowRefreshFailure && isCurrentSourceRequest('snapshot'))) {
             throw error;
           }
         }
@@ -503,7 +564,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       }
     } catch (error) {
       if (!isCurrentRefresh()) {
-        if (options?.rethrowAuthFailure && error instanceof MissionControlAuthError) throw error;
+        if ((options?.rethrowAuthFailure || options?.rethrowRefreshFailure) && error instanceof MissionControlAuthError) throw error;
         return;
       }
       if (error instanceof MissionControlAuthError) {
@@ -528,7 +589,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         setAuthRequired(false);
         setAuthError(null);
       }
-      if (options?.rethrowAuthFailure && error instanceof MissionControlAuthError) throw error;
+      if (options?.rethrowRefreshFailure || (options?.rethrowAuthFailure && error instanceof MissionControlAuthError)) throw error;
     } finally {
       if (!silent && isCurrentRefresh()) {
         setLoading(false);
@@ -631,7 +692,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
     try {
       if (action.id === 'refresh') {
-        await refreshAll(token || undefined, { rethrowAuthFailure: true });
+        await refreshAll(token || undefined, { rethrowAuthFailure: true, rethrowRefreshFailure: true });
         setActionResult({
           label: action.label,
           endpoint: action.endpoint,
