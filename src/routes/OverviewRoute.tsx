@@ -1,5 +1,7 @@
-import { Outlet } from 'react-router-dom';
+import { Outlet, useOutletContext } from 'react-router-dom';
+import type { CurrentViewActionContext } from '../lib/current-view-actions';
 
 export function OverviewLayout() {
-  return <Outlet />;
+  const context = useOutletContext<CurrentViewActionContext>();
+  return <Outlet context={context} />;
 }
