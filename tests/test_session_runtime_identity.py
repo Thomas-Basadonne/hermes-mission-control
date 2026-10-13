@@ -31,6 +31,14 @@ class ReadOnlySessionStore:
 
 
 class SessionRuntimeIdentityIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        # This fixture swaps the session store. Do not reuse metadata cached by
+        # another integration test, or leave this fixture's rows in that cache.
+        for name in ('_SESSION_CATALOG_CACHE', '_SESSION_CATALOG_INFLIGHT', '_SESSION_CATALOG_FAILURES'):
+            isolated = patch.object(mc, name, {})
+            isolated.start()
+            self.addCleanup(isolated.stop)
+
     def test_legacy_presence_is_one_conversation_before_filters_counts_and_pagination(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
             root = Path(directory)

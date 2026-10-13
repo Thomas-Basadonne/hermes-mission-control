@@ -445,9 +445,14 @@ export class MissionControlAuthError extends Error {
 }
 
 export class MissionControlSessionListError extends Error {
-  constructor(public readonly status: number, public readonly retryAfterMs: number | null) {
+  readonly status: number;
+  readonly retryAfterMs: number | null;
+
+  constructor(status: number, retryAfterMs: number | null) {
     super(`Mission Control sessions API returned ${status}`);
     this.name = 'MissionControlSessionListError';
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
