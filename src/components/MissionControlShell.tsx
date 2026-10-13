@@ -707,27 +707,26 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
                 <div className="navigation-palette-results" id="navigation-palette-results" role="listbox" ref={paletteListRef}>
                   {paletteItems.length ? paletteGroups.map((group) => (
                     <div key={group.id} role="group" aria-label={group.label} data-palette-group={group.id}>
-                      <p className="navigation-palette-group-label">{group.label}</p>
+                      <p aria-hidden="true" className="navigation-palette-group-label">{group.label}</p>
                       {group.items.map((item) => {
                         const index = paletteItems.indexOf(item);
                         const Icon = resolveIcon(item.icon) ?? ((props: any) => <span {...props} />);
                         return (
-                          <button
+                          <div
                             id={`navigation-palette-option-${index}`}
                             className={`navigation-palette-item${index === paletteIndex ? ' is-selected' : ''}`}
                             key={`${item.kind}:${item.to || item.action || item.label}`}
-                            type="button"
                             role="option"
                             aria-selected={index === paletteIndex}
                             aria-disabled={item.disabled || undefined}
+                            tabIndex={-1}
                             data-palette-action={item.action}
-                            disabled={item.disabled}
                             onClick={() => activatePaletteItem(item)}
                           >
                             <Icon size={17} aria-hidden="true" />
                             <span>{item.label}</span>
                             {item.kind === 'route' ? <kbd>{item.to}</kbd> : item.disabled ? <small>{t('palette.actionBusy')}</small> : null}
-                          </button>
+                          </div>
                         );
                       })}
                     </div>

@@ -139,6 +139,74 @@ try {
     }
   });
 
+  await test('refresh action preserves auth failures when a newer refresh supersedes it', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const originalFetch = globalThis.fetch;
+    const originalWindowFetch = browser.window.fetch;
+    const originalMatchMedia = browser.window.matchMedia;
+    let context;
+    const onReady = (value) => { context = value; };
+    let mode = 'initial';
+    const deferredResponses = [];
+    const unauthorizedFetch = async () => {
+      if (mode === 'defer') {
+        const response = deferred();
+        deferredResponses.push(response);
+        return response.promise;
+      }
+      return new Response('{"detail":"unauthorized"}', {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    globalThis.fetch = unauthorizedFetch;
+    browser.window.fetch = unauthorizedFetch;
+    browser.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    browser.window.localStorage.clear();
+    try {
+      await act(async () => {
+        root.render(React.createElement(MissionControlProvider, null, React.createElement(StoreProbe, { onReady })));
+        for (let i = 0; i < 40 && !context?.authRequired; i++) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      });
+      assert.equal(context?.authRequired, true, 'initial 401 responses should put the real store in auth-required state');
+
+      mode = 'defer';
+      const refreshAction = context.gatewayActions.find((action) => action.id === 'refresh');
+      let actionFailure;
+      let actionPromise;
+      await act(async () => {
+        actionPromise = context.runGatewayAction(refreshAction).catch((error) => { actionFailure = error; });
+        await new Promise((resolve) => setImmediate(resolve));
+      });
+      assert.ok(deferredResponses.length > 0, 'the manual refresh should have pending fetches before it is superseded');
+
+      mode = 'immediate';
+      await act(async () => {
+        await context.refreshAll(undefined, { silent: true, includeReference: false });
+      });
+      for (const response of deferredResponses) {
+        response.resolve(new Response('{"detail":"unauthorized"}', {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      await act(async () => { await actionPromise; });
+
+      assert.equal(actionFailure?.name, 'MissionControlAuthError', 'a superseded user-initiated auth failure must remain observable to its caller');
+      assert.equal(context.actionLoading, null, 'the refresh action lock must be released after the stale auth failure');
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      globalThis.fetch = originalFetch;
+      browser.window.fetch = originalWindowFetch;
+      browser.window.matchMedia = originalMatchMedia;
+    }
+  });
+
   await test('client sends one authenticated restart request and accepts only HTTP 202', async () => {
     const calls = [];
     await sendGatewayRestartRequest(

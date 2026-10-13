@@ -502,7 +502,10 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         setLastUpdatedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
       }
     } catch (error) {
-      if (!isCurrentRefresh()) return;
+      if (!isCurrentRefresh()) {
+        if (options?.rethrowAuthFailure && error instanceof MissionControlAuthError) throw error;
+        return;
+      }
       if (error instanceof MissionControlAuthError) {
         setAuthRequired(true);
         setAuthError('Access token required to enter the cockpit.');

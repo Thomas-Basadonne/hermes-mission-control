@@ -276,6 +276,25 @@ def main():
                 assert evaluate("document.querySelector('.navigation-palette').getAttribute('aria-modal')") == 'true'
                 assert evaluate("document.activeElement === document.querySelector('.navigation-palette-search input')"), 'opening must move focus into the search input'
                 assert active_selector().startswith('input'), active_selector()
+                expected_group_names = evaluate("[...document.querySelectorAll('[data-palette-group]')].map(group => group.getAttribute('aria-label'))")
+                ax_nodes = driver.call('Accessibility.getFullAXTree').get('nodes', [])
+                ax_groups = {
+                    node.get('name', {}).get('value'): node
+                    for node in ax_nodes
+                    if node.get('role', {}).get('value') == 'group'
+                }
+                for group_name in expected_group_names:
+                    ax_group = ax_groups.get(group_name)
+                    assert ax_group, f'palette group {group_name!r} must be exposed in the accessibility tree'
+                    child_roles = [
+                        node.get('role', {}).get('value')
+                        for node in ax_nodes
+                        if node.get('parentId') == ax_group.get('nodeId') and not node.get('ignored')
+                    ]
+                    assert child_roles and all(role == 'option' for role in child_roles), (
+                        f'listbox group {group_name!r} may expose only option children; got {child_roles}'
+                    )
+                check('palette listbox exposes named groups containing only options in the accessibility tree')
                 press_escape()
                 wait("!document.querySelector('.navigation-palette')", 'Escape did not close the palette')
                 check('keyboard open (Cmd+K) moves focus into the search input; Escape closes')
@@ -333,7 +352,7 @@ def main():
                 wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen during refresh')
                 type_search('refresh current view')
                 wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'refresh action disappeared while running')
-                assert evaluate("document.querySelector('.navigation-palette-item').disabled"), 'refresh must be disabled while its handler is pending'
+                assert evaluate("document.querySelector('.navigation-palette-item')?.getAttribute('aria-disabled') === 'true'"), 'refresh option must expose its busy state as aria-disabled'
                 press_escape()
                 wait("!document.querySelector('.navigation-palette')", 'palette did not close during refresh')
                 wait("!!document.querySelector('[data-toast-viewport] [data-toast-item][data-toast-tone=info]')?.textContent.includes('Refresh handler finished')", 'refresh completion toast missing')
@@ -465,7 +484,7 @@ def main():
                 wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen during gateway restart')
                 type_search('restart gateway')
                 wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'restart action disappeared while running')
-                assert evaluate("document.querySelector('.navigation-palette-item').disabled"), 'restart must be disabled while its handler is pending'
+                assert evaluate("document.querySelector('.navigation-palette-item')?.getAttribute('aria-disabled') === 'true'"), 'restart option must expose its busy state as aria-disabled'
                 press_escape()
                 wait("!document.querySelector('.navigation-palette')", 'palette did not close while restart was pending')
                 wait("window.__mcActionCalls.length === 1 && window.__mcRestartObservedToasts.length === 1", 'restart action produced no single toast')
