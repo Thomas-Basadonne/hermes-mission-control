@@ -34,6 +34,42 @@ export type MissionControlGatewayAction = {
   method: 'GET' | 'POST';
 };
 
+export class GatewayActionOutcomeUnknownError extends Error {
+  constructor() {
+    super('The gateway restart request outcome is unknown. Check gateway status before retrying.');
+    this.name = 'GatewayActionOutcomeUnknownError';
+  }
+}
+
+export const GATEWAY_RESTART_REQUEST_TIMEOUT_MS = 15_000;
+
+export async function withGatewayActionDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = GATEWAY_RESTART_REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const error = new GatewayActionOutcomeUnknownError();
+      reject(error);
+      controller.abort(error);
+    }, timeoutMs);
+  });
+  const request = Promise.resolve().then(() => operation(controller.signal)).catch((error: unknown) => {
+    if (error instanceof TypeError || (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name))) {
+      throw new GatewayActionOutcomeUnknownError();
+    }
+    throw error;
+  });
+
+  try {
+    return await Promise.race([request, deadline]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
 type MissionControlActionResult = {
   label: string;
   endpoint: string;
@@ -62,7 +98,7 @@ type MissionControlContextValue = {
   storedToken: string;
   tokenDraft: string;
   setTokenDraft: (value: string) => void;
-  refreshAll: (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean }) => Promise<void>;
+  refreshAll: (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean; rethrowAuthFailure?: boolean; rethrowRefreshFailure?: boolean }) => Promise<void>;
   /** Reload only the Tools catalog (pull-to-refresh). Resolves with the outcome; never rejects. */
   refreshTools: () => Promise<{ ok: boolean; error: string | null }>;
   unlock: (token: string) => Promise<void>;
@@ -115,6 +151,37 @@ function buildHeaders(token?: string) {
     headers.Authorization = `Bearer ${token.trim()}`;
   }
   return headers;
+}
+
+export async function sendGatewayRestartRequest(
+  action: MissionControlGatewayAction,
+  token: string,
+  fetcher: typeof fetch = fetch,
+  baseUrl = getApiBaseUrl(),
+): Promise<void> {
+  const normalizedBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+  const url = `${normalizedBase}${action.endpoint}`;
+  const response = await withGatewayActionDeadline((signal) => fetcher(url, {
+    method: action.method,
+    headers: buildHeaders(token || undefined),
+    signal,
+  }));
+
+  if (response.status === 401) throw new MissionControlAuthError();
+
+  if (response.status === 500 && (response.headers.get('content-type') ?? '').includes('application/json')) {
+    let payload: unknown;
+    try { payload = await response.json(); } catch { /* An unparseable error response is ambiguous. */ }
+    if (payload && typeof payload === 'object' && 'success' in payload && payload.success === false
+      && 'manual' in payload && payload.manual === true) {
+      const detail = 'detail' in payload && typeof payload.detail === 'string' ? payload.detail : 'Gateway restart could not be started.';
+      throw new Error(detail);
+    }
+  }
+
+  if (response.status >= 500) throw new GatewayActionOutcomeUnknownError();
+  if (!response.ok) throw new Error(`${action.endpoint} returned ${response.status}`);
+  if (response.status !== 202) throw new GatewayActionOutcomeUnknownError();
 }
 
 function resolveTheme(theme: ThemeMode, systemTheme: ResolvedTheme): ResolvedTheme {
@@ -210,7 +277,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     return updated;
   }, []);
 
-  const refreshReferenceData = useCallback(async (token?: string) => {
+  const refreshReferenceData = useCallback(async (token?: string, options?: { rethrowFailure?: boolean }) => {
     const requestId = ++referenceSequence.current;
     const toolsRequestId = ++toolsSequence.current;
     const attemptedAt = new Date().toISOString();
@@ -254,6 +321,25 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       const nextSkills = skillsRes.value;
       if (nextSkills.dataSource !== 'fallback' && referenceSequence.current === requestId) setSkills(nextSkills);
     }
+
+    // Request ownership fences state writes, not the caller's operation outcome.
+    if (options?.rethrowFailure) {
+      const getFailure = (
+        name: string,
+        result: PromiseSettledResult<MissionControlToolsSnapshot | MissionControlSkillsSnapshot>,
+      ) => {
+        if (result.status === 'rejected') {
+          return result.reason instanceof Error ? result.reason : new Error(`${name} refresh failed.`);
+        }
+        if (result.value.dataError) return new Error(result.value.dataError);
+        if ((result.value.dataSource ?? 'fallback') === 'fallback') {
+          return new Error(`Refresh returned fallback for ${name}.`);
+        }
+        return undefined;
+      };
+      const failure = getFailure('Tools', toolsRes) ?? getFailure('Skills', skillsRes);
+      if (failure) throw failure;
+    }
   }, []);
 
   const refreshTools = useCallback(async (): Promise<{ ok: boolean; error: string | null }> => {
@@ -291,7 +377,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     return { ok: error === null, error };
   }, [storedToken]);
 
-  const refreshAll = useCallback(async (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean }) => {
+  const refreshAll = useCallback(async (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean; rethrowAuthFailure?: boolean; rethrowRefreshFailure?: boolean }) => {
     const silent = options?.silent ?? false;
     const includeReference = options?.includeReference ?? true;
     const includeSnapshot = options?.includeSnapshot ?? !silent;
@@ -336,17 +422,28 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         } };
       });
     };
+    const sourceFailure = (source: string | null, detail?: string | null) => {
+      if (detail) return new Error(detail);
+      if (source === 'fallback' || source === 'gateway-status-fallback') {
+        return new Error(`Refresh returned ${source}.`);
+      }
+      return undefined;
+    };
     if (!silent) {
       setLoading(true);
     }
 
-    if (includeReference) {
-      void refreshReferenceData(token);
-    }
+    const updateReference = includeReference
+      ? refreshReferenceData(token, { rethrowFailure: options?.rethrowRefreshFailure })
+      : null;
+    if (updateReference && !options?.rethrowRefreshFailure) void updateReference;
 
     try {
       const updateMachine = loadMissionControlMachineStatus(token).then((machine) => {
-        finishSource('machine', machine.source ?? 'fallback');
+        const source = machine.source ?? 'fallback';
+        const failure = options?.rethrowRefreshFailure ? sourceFailure(source) : undefined;
+        finishSource('machine', source);
+        if (options?.rethrowRefreshFailure && failure) throw failure;
         if (!isCurrentSourceRequest('machine') || machine.source === 'fallback') return;
         setSnapshot((previous) => {
           const nextMachine = machine as MissionControlSnapshot['machine'];
@@ -356,7 +453,12 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
       const updateSessions = includeSessions
         ? loadMissionControlSessions(token).then((sessions) => {
-            finishSource('sessions', sessions.dataSource ?? 'fallback', sessions.dataError ? new Error(sessions.dataError) : undefined);
+            const source = sessions.dataSource ?? 'fallback';
+            const failure = options?.rethrowRefreshFailure
+              ? sourceFailure(source, sessions.dataError)
+              : sessions.dataError ? new Error(sessions.dataError) : undefined;
+            finishSource('sessions', source, sessions.dataError ? new Error(sessions.dataError) : undefined);
+            if (options?.rethrowRefreshFailure && failure) throw failure;
             if (!isCurrentSourceRequest('sessions') || sessions.dataSource === 'fallback' || sessions.dataSource === 'gateway-status-fallback') return;
             setSnapshot((previous) => {
               const nextSessions = sessions as MissionControlSnapshot['sessions'];
@@ -372,7 +474,12 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
       const updateCron = includeCron
         ? loadMissionControlCron(token).then((cron) => {
-            finishSource('cron', cron.dataSource ?? 'fallback', cron.dataError ? new Error(cron.dataError) : undefined);
+            const source = cron.dataSource ?? 'fallback';
+            const failure = options?.rethrowRefreshFailure
+              ? sourceFailure(source, cron.dataError)
+              : cron.dataError ? new Error(cron.dataError) : undefined;
+            finishSource('cron', source, cron.dataError ? new Error(cron.dataError) : undefined);
+            if (options?.rethrowRefreshFailure && failure) throw failure;
             if (!isCurrentSourceRequest('cron') || cron.dataSource === 'fallback') return;
             setSnapshot((previous) => {
               const nextCron = cron as MissionControlSnapshot['cron'];
@@ -387,7 +494,12 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         : Promise.resolve();
 
       const updateAlerts = loadMissionControlAlerts(token).then((alerts) => {
-        finishSource('alerts', alerts.dataSource ?? 'fallback', alerts.dataError ? new Error(alerts.dataError) : undefined);
+        const source = alerts.dataSource ?? 'fallback';
+        const failure = options?.rethrowRefreshFailure
+          ? sourceFailure(source, alerts.dataError)
+          : alerts.dataError ? new Error(alerts.dataError) : undefined;
+        finishSource('alerts', source, alerts.dataError ? new Error(alerts.dataError) : undefined);
+        if (options?.rethrowRefreshFailure && failure) throw failure;
         if (!isCurrentSourceRequest('alerts') || alerts.dataSource === 'fallback') return;
         setSnapshot((previous) => {
           const nextAlerts = alerts as MissionControlSnapshot['alerts'];
@@ -395,18 +507,35 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         });
       }).catch((error) => { finishSource('alerts', null, error); throw error; });
 
-      const liveResults = await Promise.allSettled([updateMachine, updateSessions, updateCron, updateAlerts]);
+      const liveResults = await Promise.allSettled([
+        ...(options?.rethrowRefreshFailure && updateReference ? [updateReference] : []),
+        updateMachine,
+        updateSessions,
+        updateCron,
+        updateAlerts,
+      ]);
       const authFailure = liveResults.find(
         (result): result is PromiseRejectedResult => result.status === 'rejected' && result.reason instanceof MissionControlAuthError,
       );
       if (authFailure) {
         throw authFailure.reason;
       }
+      const transientFailure = liveResults.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      if (options?.rethrowRefreshFailure && transientFailure) {
+        throw transientFailure.reason;
+      }
 
       if (includeSnapshot) {
         try {
           const dashboard = await loadMissionControlSnapshot(token);
-          finishSource('snapshot', dashboard.dataSource ?? 'fallback', dashboard.dataError ? new Error(dashboard.dataError) : undefined);
+          const source = dashboard.dataSource ?? 'fallback';
+          const failure = options?.rethrowRefreshFailure
+            ? sourceFailure(source, dashboard.dataError)
+            : dashboard.dataError ? new Error(dashboard.dataError) : undefined;
+          finishSource('snapshot', source, dashboard.dataError ? new Error(dashboard.dataError) : undefined);
+          if (options?.rethrowRefreshFailure && failure) throw failure;
           if (isCurrentSourceRequest('snapshot') && dashboard.dataSource !== 'fallback' && !dashboard.dataError) setSnapshot((previous) => ({
             ...previous,
             backendHealth: dashboard.backendHealth,
@@ -423,7 +552,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           }));
         } catch (error) {
           finishSource('snapshot', null, error);
-          if (error instanceof MissionControlAuthError) {
+          if (error instanceof MissionControlAuthError || options?.rethrowRefreshFailure) {
             throw error;
           }
         }
@@ -435,7 +564,10 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         setLastUpdatedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
       }
     } catch (error) {
-      if (!isCurrentRefresh()) return;
+      if (!isCurrentRefresh()) {
+        if (options?.rethrowRefreshFailure || (options?.rethrowAuthFailure && error instanceof MissionControlAuthError)) throw error;
+        return;
+      }
       if (error instanceof MissionControlAuthError) {
         setAuthRequired(true);
         setAuthError('Access token required to enter the cockpit.');
@@ -458,6 +590,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         setAuthRequired(false);
         setAuthError(null);
       }
+      if (options?.rethrowRefreshFailure || (options?.rethrowAuthFailure && error instanceof MissionControlAuthError)) throw error;
     } finally {
       if (!silent && isCurrentRefresh()) {
         setLoading(false);
@@ -560,7 +693,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
     try {
       if (action.id === 'refresh') {
-        await refreshAll(token || undefined);
+        await refreshAll(token || undefined, { rethrowAuthFailure: true, rethrowRefreshFailure: true });
         setActionResult({
           label: action.label,
           endpoint: action.endpoint,
@@ -575,6 +708,16 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           label: action.label,
           endpoint: action.endpoint,
           payload: `Reloaded config.yaml (${updated.path}).`,
+        });
+        return;
+      }
+
+      if (action.id === 'restart-gateway') {
+        await sendGatewayRestartRequest(action, token);
+        setActionResult({
+          label: action.label,
+          endpoint: action.endpoint,
+          payload: 'Gateway restart request accepted; completion is not verified.',
         });
         return;
       }
@@ -613,9 +756,9 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         setAuthError('Access token required to keep using Mission Control.');
       }
 
-      // QuickActions owns restart-specific success/error feedback. Preserve the
-      // rejection so a failed restart cannot be reported as completed.
-      if (action.id === 'restart-gateway') {
+      // QuickActions owns transient feedback for operations it initiates. Keep
+      // their rejections observable so the UI cannot announce false success.
+      if (action.id === 'refresh' || action.id === 'restart-gateway') {
         throw error;
       }
     } finally {

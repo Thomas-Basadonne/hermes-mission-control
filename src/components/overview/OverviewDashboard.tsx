@@ -3,6 +3,7 @@ import { useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Activity, ArrowRight, Clock3, List, MessageSquare, Rocket } from 'lucide-react';
 import { useMissionControl, type MissionControlSourceStatus } from '../../lib/mission-control-store';
+import { useRegisterCurrentViewRefresh } from '../../lib/current-view-actions';
 import { getPluginRegistry } from '../../core/plugin-registry';
 import type { MCPluginAttentionContributor, MCPluginOverviewContributor } from '../../core/plugins/types';
 import { Card } from '../ui/Card';
@@ -109,6 +110,7 @@ export function OverviewDashboard() {
   const attentionContributors: MCPluginAttentionContributor[] = getPluginRegistry().getAttentionContributors();
   const overviewContributors: MCPluginOverviewContributor[] = getPluginRegistry().getOverviewContributors();
   const {
+    authRequired,
     snapshot,
     loading,
     sources,
@@ -129,6 +131,18 @@ export function OverviewDashboard() {
   const sourceStatuses = Object.entries(sources).filter((entry): entry is [string, MissionControlSourceStatus] => Boolean(entry[1]));
   const freshness = summarizeFreshness(sourceStatuses, loading);
   const sessionIsLive = sources.sessions?.state === 'live';
+  const refreshOverview = async () => {
+    await refreshAll(storedToken || undefined, { silent: false, includeReference: true, includeSnapshot: true });
+  };
+  const refreshCurrentView = async () => {
+    await refreshAll(storedToken || undefined, {
+      silent: false,
+      includeReference: true,
+      includeSnapshot: true,
+      rethrowRefreshFailure: true,
+    });
+  };
+  useRegisterCurrentViewRefresh('overview', refreshCurrentView);
 
   const widgets: DashboardWidget[] = [
     {
@@ -166,11 +180,7 @@ export function OverviewDashboard() {
         <DataFreshnessPanel
           sources={sourceStatuses}
           loading={loading}
-          onRetry={() => refreshAll(storedToken || undefined, {
-            silent: false,
-            includeReference: true,
-            includeSnapshot: true,
-          })}
+          onRetry={refreshOverview}
         />
       ),
     },
@@ -255,6 +265,7 @@ export function OverviewDashboard() {
           gatewayActions={gatewayActions}
           runGatewayAction={runGatewayAction}
           actionLoading={actionLoading}
+          restartAvailable={Boolean(storedToken.trim()) && !authRequired}
         />
       ),
     },
@@ -310,9 +321,7 @@ export function OverviewDashboard() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const { state: pullState } = usePullToReload({
     containerRef,
-    onReload: async () => {
-      await refreshAll(storedToken || undefined, { silent: false, includeReference: true, includeSnapshot: true });
-    },
+    onReload: refreshOverview,
   });
 
   return (

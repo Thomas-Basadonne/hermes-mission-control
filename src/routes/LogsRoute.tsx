@@ -11,6 +11,7 @@ import {
   type MissionControlLogsSnapshot,
 } from '../lib/hermes-api';
 import { useMissionControl } from '../lib/mission-control-store';
+import { useRegisterCurrentViewRefresh } from '../lib/current-view-actions';
 import { usePullToReload } from '../hooks/usePullToReload';
 import { PullToReloadIndicator } from '../components/PullToReloadIndicator';
 
@@ -108,24 +109,21 @@ export function LogsRoute() {
     return () => container.removeEventListener('scroll', updateScrollTopVisibility);
   }, []);
 
+  const refreshView = async () => {
+    try {
+      const payload = await loadMissionControlLogs(storedToken || undefined, { maxFiles: 10, maxLines: 160 });
+      setLogs(payload);
+      setError(null);
+    } catch (err) {
+      if (err instanceof MissionControlAuthError) setError(t('logs.authRequired'));
+      else setError(err instanceof Error ? err.message : t('logs.failedLoad'));
+      throw err;
+    }
+  };
+  useRegisterCurrentViewRefresh('logs', refreshView);
   const { state: pullState } = usePullToReload({
     containerRef,
-    onReload: async () => {
-      try {
-        const payload = await loadMissionControlLogs(storedToken || undefined, {
-          maxFiles: 10,
-          maxLines: 160,
-        });
-        setLogs(payload);
-        setError(null);
-      } catch (err) {
-        if (err instanceof MissionControlAuthError) {
-          setError(t('logs.authRequired'));
-        } else {
-          setError(err instanceof Error ? err.message : t('logs.failedLoad'));
-        }
-      }
-    },
+    onReload: async () => { await refreshView().catch(() => {}); },
   });
 
   useEffect(() => {

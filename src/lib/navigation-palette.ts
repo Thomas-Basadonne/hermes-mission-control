@@ -1,14 +1,18 @@
 export type NavigationPaletteItem = {
-  kind: 'route' | 'chat';
+  kind: 'route' | 'chat' | 'action';
   label: string;
   to: string;
   icon: string;
+  searchTerms?: string[];
+  action?: 'refresh-current-view' | 'restart-gateway';
+  disabled?: boolean;
 };
 
 export function filterNavigationPaletteItems<T extends NavigationPaletteItem>(items: T[], queryText: string): T[] {
   const query = queryText.trim().toLocaleLowerCase();
   if (!query) return items;
-  return items.filter((item) => item.label.toLocaleLowerCase().includes(query) || item.to.toLocaleLowerCase().includes(query));
+  return items.filter((item) => [item.label, item.to, ...(item.searchTerms ?? [])]
+    .some((value) => value.toLocaleLowerCase().includes(query)));
 }
 
 export function isNavigationPaletteTextTarget(target: EventTarget | null): boolean {

@@ -48,9 +48,12 @@ const vite = await createServer({
       if (id === entryId) return `
         import React from 'react';
         import { createRoot } from 'react-dom/client';
-        import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+        import { MemoryRouter, Route, Routes, useLocation, useOutletContext } from 'react-router-dom';
+        import { useEffect } from 'react';
         import { I18nProvider } from ${JSON.stringify(resolve(root, 'src/lib/i18n.tsx'))};
+        import { ToastProvider } from ${JSON.stringify(resolve(root, 'src/components/ui/ToastProvider.tsx'))};
         import { MissionControlShell } from ${JSON.stringify(resolve(root, 'src/components/MissionControlShell.tsx'))};
+        import { QuickActions } from ${JSON.stringify(resolve(root, 'src/components/overview/QuickActions.tsx'))};
         import ${JSON.stringify(resolve(root, 'src/styles.css'))};
 
         function LocationProbe() {
@@ -58,7 +61,37 @@ const vite = await createServer({
           return React.createElement('div', { 'data-testid': 'location', hidden: true }, location.pathname + location.search);
         }
         function Page({ name }) {
-          return React.createElement('div', { 'data-testid': 'page' }, name);
+          const { registerCurrentViewRefresh } = useOutletContext();
+          useEffect(() => {
+            if (!['/', '/cron'].includes(name)) return;
+            const unregisterPrimary = registerCurrentViewRefresh('fixture-' + name, () => {
+              window.__mcRefreshCalls.push(name);
+              if (window.__mcSyncRefreshFailure) throw new Error('fixture synchronous refresh failure');
+              return new Promise(resolve => setTimeout(resolve, 220)).then(() => {
+                if (window.__mcRefreshFailure) throw new Error('fixture refresh failure');
+              });
+            });
+            window.__mcRegisterExtraRefresh = () => {
+              window.__mcUnregisterExtraRefresh?.();
+              window.__mcUnregisterExtraRefresh = registerCurrentViewRefresh('fixture-extra', async () => {
+                window.__mcRefreshCalls.push('extra');
+              });
+            };
+            return () => {
+              unregisterPrimary();
+              window.__mcUnregisterExtraRefresh?.();
+              delete window.__mcRegisterExtraRefresh;
+              delete window.__mcUnregisterExtraRefresh;
+            };
+          }, [name, registerCurrentViewRefresh]);
+          return React.createElement('div', { 'data-testid': 'page' }, name,
+            name === '/' ? React.createElement('section', { className: 'widget-quick-actions' },
+              React.createElement(QuickActions, {
+                gatewayActions: window.__mcFixtureStore.gatewayActions,
+                runGatewayAction: window.__mcFixtureStore.runGatewayAction,
+                actionLoading: window.__mcFixtureStore.actionLoading,
+                restartAvailable: true,
+              })) : null);
         }
 
         let tree = null;
@@ -69,11 +102,13 @@ const vite = await createServer({
             .concat(pluginItems.map((item) => ({ path: item.to.replace(/^\\//, ''), name: item.to })));
           return React.createElement(MemoryRouter, { initialEntries: ['/'] },
             React.createElement(I18nProvider, null,
-              React.createElement(LocationProbe),
-              React.createElement(Routes, null,
-                React.createElement(Route, { element: React.createElement(MissionControlShell, { registry, navItems: pluginItems }) },
-                  React.createElement(Route, { index: true, element: React.createElement(Page, { name: '/' }) }),
-                  routes.map((route) => React.createElement(Route, { key: route.path, path: route.path, element: React.createElement(Page, { name: route.name }) })),
+              React.createElement(ToastProvider, null,
+                React.createElement(LocationProbe),
+                React.createElement(Routes, null,
+                  React.createElement(Route, { element: React.createElement(MissionControlShell, { registry, navItems: pluginItems }) },
+                    React.createElement(Route, { index: true, element: React.createElement(Page, { name: '/' }) }),
+                    routes.map((route) => React.createElement(Route, { key: route.path, path: route.path, element: React.createElement(Page, { name: route.name }) })),
+                  ),
                 ),
               ),
             ),
@@ -91,18 +126,33 @@ const vite = await createServer({
       `;
     },
   }, react()],
-  server: { middlewareMode: true, hmr: false, cors: false, fs: { allow: [root, process.cwd()] } },
+  server: { middlewareMode: true, hmr: false, ws: { host: '127.0.0.1' }, cors: false, fs: { allow: [root, process.cwd()] } },
 });
 
 const injection = `
   window.failures = []; window.requests = []; window.consoleErrors = [];
+  window.__mcActionCalls = []; window.__mcRefreshCalls = [];
+  window.__mcRestartFailureMode = null; window.__mcRestartFailure = false;
+  window.__mcRefreshFailure = false; window.__mcSyncRefreshFailure = false;
+  window.__mcActionFailure = false;
   window.__mcFixtureStore = {
     authRequired: false, authError: null, loading: false, storedToken: 'fixture-only',
     snapshot: { alerts: { items: [] }, sessions: { items: [], totalSessions: 0, activeAgents: 0 }, cron: { items: [], queuedJobs: 0 }, machine: { source: 'fixture' } },
     tools: { available: false }, skills: { available: false }, config: { available: false },
     tokenDraft: '', setTokenDraft: () => {}, unlock: async () => {}, logout: () => {},
     refreshAll: async () => {}, reloadConfig: async () => ({}), saveConfig: async () => ({}),
-    runGatewayAction: async () => {}, gatewayActions: [], actionResult: null, actionLoading: null,
+    runGatewayAction: async (action) => {
+      window.__mcActionCalls.push(action.id);
+      await new Promise(resolve => setTimeout(resolve, 220));
+      if (window.__mcActionFailure && action.id === 'refresh') throw Object.assign(new Error('fixture refresh authentication failure'), { name: 'MissionControlAuthError' });
+      if (window.__mcRestartFailureMode === 'disconnect') throw new TypeError('fixture network disconnect');
+      if (window.__mcRestartFailureMode === 'timeout') throw Object.assign(new Error('fixture request timeout'), { name: 'TimeoutError' });
+      if (window.__mcRestartFailure) throw new Error('fixture restart failure');
+    },
+    gatewayActions: [
+      { id: 'refresh', label: 'Refresh', endpoint: '/api/local/refresh', method: 'POST' },
+      { id: 'restart-gateway', label: 'Restart gateway', endpoint: '/api/local/gateway/restart', method: 'POST' },
+    ], actionResult: null, actionLoading: null,
     linkStatus: null, setLinkStatus: () => {}, lastUpdatedAt: null,
     theme: 'dark', setTheme: () => {}, resolvedTheme: 'dark',
   };

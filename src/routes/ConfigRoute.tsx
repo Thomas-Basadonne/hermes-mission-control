@@ -10,6 +10,7 @@ import { useMissionControl } from '../lib/mission-control-store';
 import { usePullToReload } from '../hooks/usePullToReload';
 import { PullToReloadIndicator } from '../components/PullToReloadIndicator';
 import { HonchoSettingsPanel } from '../components/HonchoSettingsPanel';
+import { useRegisterCurrentViewRefresh } from '../lib/current-view-actions';
 
 type PathSegment = string | number;
 type PendingEdit = { path: PathSegment[]; value: unknown };
@@ -285,8 +286,8 @@ export function ConfigRoute() {
   };
 
   const handleReload = async () => {
-    if (operationBusyRef.current) return;
-    if (dirty && !window.confirm(t('config.confirmDiscard'))) return;
+    if (operationBusyRef.current) return false;
+    if (dirty && !window.confirm(t('config.confirmDiscard'))) return false;
     operationBusyRef.current = true;
     setSaving(true);
     setStatus(null);
@@ -295,8 +296,10 @@ export function ConfigRoute() {
       if (!updated.available) throw new Error(t('config.failedReload'));
       acceptConfig(updated);
       setStatus(t('config.reloaded', { path: updated.path }));
+      return true;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : t('config.failedReload'));
+      return false;
     } finally {
       operationBusyRef.current = false;
       setSaving(false);
@@ -308,9 +311,10 @@ export function ConfigRoute() {
     setStatus(t('config.resetNote'));
   };
 
+  useRegisterCurrentViewRefresh('config', handleReload);
   const { state: pullState } = usePullToReload({
     containerRef,
-    onReload: handleReload,
+    onReload: async () => { await handleReload(); },
     disabled: saving,
   });
 
