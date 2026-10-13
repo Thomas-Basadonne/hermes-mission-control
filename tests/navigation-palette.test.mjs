@@ -22,6 +22,12 @@ try {
   assert.deepEqual(filterNavigationPaletteItems(items, '/plugin'), [items[1]], 'search matches route paths');
   assert.deepEqual(filterNavigationPaletteItems(items, 'chat'), [items[2]], 'chat is searchable like a route');
   assert.deepEqual(filterNavigationPaletteItems(items, 'missing'), [], 'unmatched search is empty');
+  const actionItems = [
+    { kind: 'action', action: 'refresh-current-view', label: 'Refresh current view', to: '', icon: 'RefreshCw', searchTerms: ['aggiorna vista corrente', 'refresh'] },
+    { kind: 'action', action: 'restart-gateway', label: 'Restart gateway', to: '', icon: 'Rocket', searchTerms: ['riavvia gateway'] },
+  ];
+  assert.deepEqual(filterNavigationPaletteItems(actionItems, 'refresh'), [actionItems[0]], 'action aliases are searchable');
+  assert.deepEqual(filterNavigationPaletteItems(actionItems, 'riavvia'), [actionItems[1]], 'localized action aliases are searchable');
 
   assert.equal(isNavigationPaletteTextTarget(new FakeElement()), false, 'non-editable drawer/background targets may use the global shortcut');
   assert.equal(isNavigationPaletteTextTarget(new FakeElement({ editable: true })), true, 'contenteditable targets retain their own shortcut');
@@ -99,6 +105,14 @@ try {
   assert.ok(breakpoint, `mobile query must carry a px breakpoint: ${NAVIGATION_PALETTE_MOBILE_QUERY}`);
   assert.match(styles, new RegExp(`@media \\(max-width: ${breakpoint[1]}px\\)[\\s\\S]*?\\.palette-open-button\\s*\\{[^}]*display:\\s*none`), 'mobile stylesheet must hide the header trigger');
   assert.match(styles, new RegExp(`@media \\(max-width: ${breakpoint[1]}px\\)[\\s\\S]*?\\.navigation-palette-backdrop\\s*\\{[^}]*display:\\s*none`), 'mobile stylesheet must hide the palette overlay');
+
+  const en = JSON.parse(readFileSync(new URL('../src/locales/en.json', import.meta.url), 'utf8'));
+  const it = JSON.parse(readFileSync(new URL('../src/locales/it.json', import.meta.url), 'utf8'));
+  for (const key of ['palette.title', 'palette.navigationGroup', 'palette.actionsGroup', 'palette.refreshData', 'palette.restartGateway', 'palette.refreshFinished', 'palette.restartAccepted', 'palette.restartUnknown', 'palette.actionFailed']) {
+    assert.equal(typeof en[key], 'string', `English translation missing: ${key}`);
+    assert.equal(typeof it[key], 'string', `Italian translation missing: ${key}`);
+    assert.notEqual(en[key], it[key], `English and Italian translations must be distinct: ${key}`);
+  }
 } finally {
   if (previousHTMLElement === undefined) delete globalThis.HTMLElement;
   else globalThis.HTMLElement = previousHTMLElement;

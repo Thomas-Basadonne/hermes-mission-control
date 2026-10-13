@@ -28,10 +28,12 @@ const vite = await createServer({
   plugins: [react()],
   server: { middlewareMode: true, hmr: false },
 });
-const [{ QuickActions }, { I18nProvider }] = await Promise.all([
+const [{ QuickActions }, { I18nProvider }, missionControlStore] = await Promise.all([
   vite.ssrLoadModule('/src/components/overview/QuickActions.tsx'),
   vite.ssrLoadModule('/src/lib/i18n.tsx'),
+  vite.ssrLoadModule('/src/lib/mission-control-store.tsx'),
 ]);
+const { withGatewayActionDeadline, sendGatewayRestartRequest } = missionControlStore;
 
 const deferred = () => {
   let resolve;
@@ -40,7 +42,7 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
-async function mount(runGatewayAction) {
+async function mount(runGatewayAction, restartAvailable = true) {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -51,6 +53,7 @@ async function mount(runGatewayAction) {
           gatewayActions: [{ id: 'restart-gateway' }],
           runGatewayAction,
           actionLoading: null,
+          restartAvailable,
         }))));
   });
   return {
@@ -69,12 +72,71 @@ const confirmationButton = (container) => [...container.querySelector('[role="al
   .find((button) => button.textContent.trim() === 'Restart gateway');
 
 try {
+  await test('restart action is unavailable when authentication is missing', async () => {
+    const ui = await mount(async () => {}, false);
+    try {
+      assert.equal(buttonNamed(ui.container, 'Restart gateway'), undefined);
+    } finally { await ui.unmount(); }
+  });
+
+  await test('client sends one authenticated restart request and accepts only HTTP 202', async () => {
+    const calls = [];
+    await sendGatewayRestartRequest(
+      { id: 'restart-gateway', label: 'Restart gateway', hint: '', endpoint: '/api/local/gateway/restart', method: 'POST' },
+      'fixture-token',
+      async (url, options) => {
+        calls.push({ url, options });
+        return new Response(JSON.stringify({ success: true }), { status: 202, headers: { 'content-type': 'application/json' } });
+      },
+      'http://fixture',
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'http://fixture/api/local/gateway/restart');
+    assert.equal(calls[0].options.method, 'POST');
+    assert.equal(calls[0].options.headers.Authorization, 'Bearer fixture-token');
+    assert.ok(calls[0].options.signal instanceof AbortSignal);
+  });
+
+  await test('401 is an auth error and never reported as restart acceptance', async () => {
+    await assert.rejects(
+      sendGatewayRestartRequest(
+        { id: 'restart-gateway', label: 'Restart gateway', hint: '', endpoint: '/api/local/gateway/restart', method: 'POST' },
+        'bad-token',
+        async () => new Response('{}', { status: 401 }),
+        'http://fixture',
+      ),
+      (error) => error?.name === 'MissionControlAuthError',
+    );
+  });
+
+  await test('gateway-style 502 is an unknown outcome, while the explicit local spawn failure is definite', async () => {
+    const action = { id: 'restart-gateway', label: 'Restart gateway', hint: '', endpoint: '/api/local/gateway/restart', method: 'POST' };
+    await assert.rejects(
+      sendGatewayRestartRequest(action, 'fixture-token', async () => new Response('{}', { status: 502 }), 'http://fixture'),
+      (error) => error?.name === 'GatewayActionOutcomeUnknownError',
+    );
+    await assert.rejects(
+      sendGatewayRestartRequest(action, 'fixture-token', async () => new Response('{"success":false}', { status: 500, headers: { 'content-type': 'application/json' } }), 'http://fixture'),
+      (error) => error?.name === 'GatewayActionOutcomeUnknownError',
+    );
+    await assert.rejects(
+      sendGatewayRestartRequest(action, 'fixture-token', async () => new Response('{"success":true}', { status: 200, headers: { 'content-type': 'application/json' } }), 'http://fixture'),
+      (error) => error?.name === 'GatewayActionOutcomeUnknownError',
+    );
+    await assert.rejects(
+      sendGatewayRestartRequest(action, 'fixture-token', async () => new Response(JSON.stringify({ success: false, manual: true, detail: 'gateway binary missing' }), { status: 500, headers: { 'content-type': 'application/json' } }), 'http://fixture'),
+      (error) => error?.name === 'Error' && error?.message === 'gateway binary missing',
+    );
+  });
+
   await test('cancelling confirmation sends no restart request', async () => {
     let calls = 0;
     const ui = await mount(async () => { calls += 1; });
     try {
       await ui.click(buttonNamed(ui.container, 'Restart gateway'));
-      assert.match(ui.container.querySelector('[role="alertdialog"]').textContent, /interrupt its current connections/);
+      const confirmation = ui.container.querySelector('[role="alertdialog"]').textContent;
+      assert.match(confirmation, /configured Gateway service/i);
+      assert.match(confirmation, /other clients/i);
       await ui.click(buttonNamed(ui.container, 'Cancel'));
       assert.equal(ui.container.querySelector('[role="alertdialog"]'), null);
       assert.equal(calls, 0);
@@ -94,7 +156,7 @@ try {
       assert.equal(calls[0].id, 'restart-gateway');
       action.resolve();
       await act(async () => { await action.promise; });
-      assert.match(ui.container.querySelector('[role="status"]').textContent, /restart initiated/i);
+      assert.match(ui.container.querySelector('[role="status"]').textContent, /restart request accepted/i);
     } finally {
       await ui.unmount();
     }
@@ -131,6 +193,55 @@ try {
       await ui.unmount();
     }
   });
+  await test('unknown transport outcome is reported as uncertain, not failed or accepted', async () => {
+    const ui = await mount(async () => { throw new TypeError('Failed to fetch'); });
+    try {
+      await ui.click(buttonNamed(ui.container, 'Restart gateway'));
+      await ui.click(confirmationButton(ui.container));
+      for (let i = 0; i < 5 && !ui.container.querySelector('[role="alert"]'); i++) {
+        await act(async () => { await new Promise((resolve) => setImmediate(resolve)); });
+      }
+      assert.match(ui.container.querySelector('[role="alert"]')?.textContent ?? '', /check gateway status before retrying/i);
+    } finally { await ui.unmount(); }
+  });
+
+  await test('timeout outcome is reported as uncertain, not failed or accepted', async () => {
+    const timeout = Object.assign(new Error('request timed out'), { name: 'TimeoutError' });
+    const ui = await mount(async () => { throw timeout; });
+    try {
+      await ui.click(buttonNamed(ui.container, 'Restart gateway'));
+      await ui.click(confirmationButton(ui.container));
+      for (let i = 0; i < 5 && !ui.container.querySelector('[role="alert"]'); i++) {
+        await act(async () => { await new Promise((resolve) => setImmediate(resolve)); });
+      }
+      assert.match(ui.container.querySelector('[role="alert"]')?.textContent ?? '', /check gateway status before retrying/i);
+    } finally { await ui.unmount(); }
+  });
+
+  await test('gateway request deadline aborts once and reports an unknown outcome', async () => {
+    let calls = 0;
+    let signal;
+    await assert.rejects(
+      withGatewayActionDeadline((requestSignal) => {
+        calls += 1;
+        signal = requestSignal;
+        return new Promise(() => {});
+      }, 20),
+      (error) => error?.name === 'GatewayActionOutcomeUnknownError',
+    );
+    assert.equal(calls, 1, 'timeout must not retry the request');
+    assert.equal(signal.aborted, true, 'the stalled fetch must be aborted at the deadline');
+  });
+
+  await test('connection loss is uncertain and is not retried', async () => {
+    let calls = 0;
+    await assert.rejects(
+      withGatewayActionDeadline(async () => { calls += 1; throw new TypeError('Failed to fetch'); }, 100),
+      (error) => error?.name === 'GatewayActionOutcomeUnknownError',
+    );
+    assert.equal(calls, 1, 'disconnect must not retry the request');
+  });
+
 } finally {
   await vite.close();
   browser.window.close();

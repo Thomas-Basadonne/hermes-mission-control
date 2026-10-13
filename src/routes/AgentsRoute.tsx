@@ -18,6 +18,7 @@ import {
   type MissionControlCapabilities,
 } from '../lib/hermes-api';
 import { useMissionControl } from '../lib/mission-control-store';
+import { useRegisterCurrentViewRefresh } from '../lib/current-view-actions';
 import { loadAllPersistedBotHandoffs } from '../lib/bot-handoff-persistence';
 import { buildBotLineageRows, type BotLineageRecord } from '../lib/bot-lineage';
 import { usePullToReload } from '../hooks/usePullToReload';
@@ -275,6 +276,7 @@ export function AgentsRoute() {
     }
   };
 
+  useRegisterCurrentViewRefresh('agents', refreshPage);
   const { state: pullState } = usePullToReload({
     containerRef,
     onReload: refreshPage,

@@ -22,6 +22,7 @@ import { Button } from '../components/ui/Button';
 import { Modal } from '../components/Modal';
 import { formatRelativeTime, formatTimestamp } from '../lib/format';
 import { useMissionControl } from '../lib/mission-control-store';
+import { useRegisterCurrentViewRefresh } from '../lib/current-view-actions';
 import { loadBotProfiles, type BotProfileSummary } from '../lib/bot-gateway';
 import { usePullToReload } from '../hooks/usePullToReload';
 import { PullToReloadIndicator } from '../components/PullToReloadIndicator';
@@ -452,7 +453,9 @@ export function SessionsRoute() {
     }
   }, [filters, sessionProfile, storedToken, tab]);
 
-  const { state: pullState } = usePullToReload({ containerRef, onReload: async () => { await loadSessions(); } });
+  const refreshView = async () => { await loadSessions(); };
+  useRegisterCurrentViewRefresh('sessions', refreshView);
+  const { state: pullState } = usePullToReload({ containerRef, onReload: refreshView });
 
   useEffect(() => {
     void loadSessions();

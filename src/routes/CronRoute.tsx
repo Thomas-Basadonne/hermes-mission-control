@@ -23,6 +23,7 @@ import { Dropdown } from '../components/ui/Dropdown';
 import { usePullToReload } from '../hooks/usePullToReload';
 import { useI18n } from '../lib/i18n';
 import { useMissionControl } from '../lib/mission-control-store';
+import { useRegisterCurrentViewRefresh } from '../lib/current-view-actions';
 import { recordReloadDiagnostic } from '../lib/reload-diagnostics';
 import {
   createMissionControlCronJob,
@@ -486,7 +487,9 @@ export function CronRoute() {
     return () => window.clearInterval(timer);
   }, [refresh]);
 
-  const { state: pullState } = usePullToReload({ containerRef, onReload: () => refresh() });
+  const refreshView = () => refresh();
+  useRegisterCurrentViewRefresh('cron', refreshView);
+  const { state: pullState } = usePullToReload({ containerRef, onReload: refreshView });
 
   const counters = useMemo(() => ({
     enabled: jobs.filter((job) => job.enabled && job.state !== 'paused').length,

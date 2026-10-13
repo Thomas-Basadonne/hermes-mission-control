@@ -21,6 +21,7 @@ import {
   type MissionControlSkillFile,
 } from '../lib/hermes-api';
 import { useMissionControl } from '../lib/mission-control-store';
+import { useRegisterCurrentViewRefresh } from '../lib/current-view-actions';
 import { filterInstalledSkills, type InstalledSkillStatus } from '../lib/installed-skills-filter';
 import { usePullToReload } from '../hooks/usePullToReload';
 import { PullToReloadIndicator } from '../components/PullToReloadIndicator';
@@ -223,12 +224,14 @@ export function SkillsRoute() {
   const disabled = skills.skills.length - enabled;
   const installedNames = useMemo(() => new Set(skills.skills.map((skill) => skill.name.toLowerCase())), [skills.skills]);
 
+  const refreshView = async () => {
+    await refreshAll(storedToken || undefined, { silent: true, includeReference: true });
+    await refreshCatalog();
+  };
+  useRegisterCurrentViewRefresh('skills', refreshView);
   const { state: pullState } = usePullToReload({
     containerRef,
-    onReload: async () => {
-      await refreshAll(storedToken || undefined, { silent: true, includeReference: true });
-      await refreshCatalog();
-    },
+    onReload: refreshView,
   });
 
   const handleToggle = useCallback(async (skillName: string, currentlyEnabled: boolean) => {

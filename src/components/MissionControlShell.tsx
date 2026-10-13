@@ -33,8 +33,11 @@ import { Button } from './ui/Button';
 import packageJson from '../../package.json';
 import { PluginRegistry } from '../core/plugins/registry';
 import { NavStatusIndicator } from './NavStatusIndicator';
+import { GatewayRestartConfirmationDialog, useGatewayRestartAction } from './overview/QuickActions';
 import type { MCPluginNavItem } from '../core/plugins/types';
 import { resolveIcon } from '../lib/icons';
+import type { CurrentViewActionContext } from '../lib/current-view-actions';
+import type { NavigationPaletteItem } from '../lib/navigation-palette';
 import { filterNavigationPaletteItems, isNavigationPaletteTextTarget, mergeNavigationItems, NAVIGATION_PALETTE_MOBILE_QUERY, paletteSelectionIndexAfterChange, resolveNavigationPaletteIndex, stepNavigationPaletteIndex } from '../lib/navigation-palette';
 
 const APP_VERSION = packageJson.version;
@@ -71,6 +74,9 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
     setTokenDraft,
     unlock,
     logout,
+    gatewayActions,
+    runGatewayAction,
+    actionLoading,
   } = useMissionControl();
 
   // Default nav items (hardcoded)
@@ -100,6 +106,24 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState('');
   const [paletteIndex, setPaletteIndex] = useState(-1);
+  const [refreshPending, setRefreshPending] = useState(false);
+  const [paletteActionFeedback, setPaletteActionFeedback] = useState<'refresh' | 'restart' | 'error' | 'unknown' | null>(null);
+  const handleRestartResult = useCallback((result: 'success' | 'error' | 'unknown') => {
+    setPaletteActionFeedback(result === 'success' ? 'restart' : result);
+  }, []);
+  const restartFlow = useGatewayRestartAction(gatewayActions, runGatewayAction, actionLoading, handleRestartResult);
+  const [currentViewRefreshAvailable, setCurrentViewRefreshAvailable] = useState(false);
+  const currentViewRefreshHandlersRef = useRef(new Map<string, () => Promise<unknown>>());
+  const refreshInFlightRef = useRef(false);
+  const registerCurrentViewRefresh = useCallback<CurrentViewActionContext['registerCurrentViewRefresh']>((id, refresh) => {
+    currentViewRefreshHandlersRef.current.set(id, refresh);
+    setCurrentViewRefreshAvailable(currentViewRefreshHandlersRef.current.size === 1);
+    return () => {
+      if (currentViewRefreshHandlersRef.current.get(id) !== refresh) return;
+      currentViewRefreshHandlersRef.current.delete(id);
+      setCurrentViewRefreshAvailable(currentViewRefreshHandlersRef.current.size === 1);
+    };
+  }, []);
   const [paletteMobile, setPaletteMobile] = useState(() =>
     typeof window !== 'undefined' && window.matchMedia(NAVIGATION_PALETTE_MOBILE_QUERY).matches);
   const paletteRef = useRef<HTMLElement | null>(null);
@@ -135,9 +159,10 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
     setPaletteIndex(-1);
     setPaletteOpen(true);
   }, []);
-  const closePalette = useCallback(() => {
+  const closePalette = useCallback((options?: { restoreFocus?: boolean }) => {
     setPaletteOpen(false);
     setPaletteIndex(-1);
+    if (options?.restoreFocus === false) return;
     requestAnimationFrame(() => paletteReturnFocusRef.current?.focus());
   }, []);
 
@@ -155,19 +180,47 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
     return () => query.removeEventListener('change', sync);
   }, []);
 
-  const paletteItems = filterNavigationPaletteItems([
+  const restartAction = restartFlow.action;
+  const paletteCatalog: NavigationPaletteItem[] = [
     ...navItems.map((item) => ({ kind: 'route' as const, label: item.label.includes('.') ? t(item.label) : item.label, to: item.to, icon: item.icon })),
-    { kind: 'chat' as const, label: t('chat.button'), to: '', icon: 'MessageSquare' },
-  ], paletteQuery);
+    { kind: 'chat', label: t('chat.button'), to: '', icon: 'MessageSquare' },
+    ...(currentViewRefreshAvailable ? [{ kind: 'action' as const, action: 'refresh-current-view' as const, label: t('palette.refreshData'), to: '', icon: 'RefreshCw', searchTerms: [t('palette.refreshCurrentView'), 'refresh', 'update'], disabled: refreshPending || restartFlow.pending || Boolean(actionLoading) }] : []),
+    ...(restartAction && storedToken.trim() && !authRequired ? [{ kind: 'action' as const, action: 'restart-gateway' as const, label: t('palette.restartGateway'), to: '', icon: 'Rocket', searchTerms: ['restart', 'gateway'], disabled: restartFlow.pending || refreshPending || Boolean(actionLoading) }] : []),
+  ];
+  const paletteItems = filterNavigationPaletteItems(paletteCatalog, paletteQuery);
 
   // Enter, click and arrow selection all funnel through here: one navigation
   // path for keyboard and pointer.
   const activatePaletteItem = useCallback((item: (typeof paletteItems)[number] | undefined) => {
     if (!item) return;
+    if (item.kind === 'action') {
+      if (item.disabled) return;
+      if (item.action === 'refresh-current-view') {
+        if (refreshInFlightRef.current || restartFlow.pending || actionLoading) return;
+        if (currentViewRefreshHandlersRef.current.size !== 1) return;
+        const refresh = currentViewRefreshHandlersRef.current.values().next().value;
+        if (!refresh) return;
+        refreshInFlightRef.current = true;
+        setRefreshPending(true);
+        setPaletteActionFeedback(null);
+        closePalette();
+        void Promise.resolve().then(refresh).then((result) => { if (result !== false) setPaletteActionFeedback('refresh'); }).catch(() => setPaletteActionFeedback('error')).finally(() => { refreshInFlightRef.current = false; setRefreshPending(false); });
+      } else if (item.action === 'restart-gateway' && restartAction && !restartFlow.pending && !refreshInFlightRef.current && !refreshPending && !actionLoading) {
+        setPaletteActionFeedback(null);
+        restartFlow.request();
+        closePalette({ restoreFocus: false });
+      }
+      return;
+    }
     if (item.kind === 'chat') setChatOpen(true);
     else navigate(item.to);
     closePalette();
-  }, [closePalette, navigate, setChatOpen]);
+  }, [actionLoading, closePalette, navigate, paletteItems, refreshPending, restartAction, restartFlow, setChatOpen]);
+
+  const paletteGroups = [
+    { id: 'navigation', label: t('palette.navigationGroup'), items: paletteItems.filter((item) => item.kind !== 'action') },
+    { id: 'actions', label: t('palette.actionsGroup'), items: paletteItems.filter((item) => item.kind === 'action') },
+  ].filter((group) => group.items.length > 0);
 
   // Keep the highlighted option valid for the list it belongs to. The selection
   // is positional, so a query change must clear it: the same index can point at a
@@ -208,14 +261,16 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
       // toggle it closed, or Cmd/Ctrl+K is dead exactly while the user is in it.
       const insideOpenPalette = paletteOpen && event.target instanceof Node && paletteRef.current?.contains(event.target);
       if (!insideOpenPalette && isNavigationPaletteTextTarget(event.target)) return;
-      if (authRequired || sideOpen) return;
+      const otherModalOpen = document.querySelector('[role="alertdialog"][aria-modal="true"]');
+      if (otherModalOpen && !paletteRef.current?.contains(otherModalOpen)) return;
+      if (authRequired || sideOpen || restartFlow.confirmationOpen) return;
       event.preventDefault();
       if (paletteOpen) closePalette();
       else openPalette();
     };
     window.addEventListener('keydown', onShortcut);
     return () => window.removeEventListener('keydown', onShortcut);
-  }, [authRequired, chatOpen, closePalette, openPalette, paletteMobile, paletteOpen, sideOpen]);
+  }, [authRequired, chatOpen, closePalette, openPalette, paletteMobile, paletteOpen, restartFlow.confirmationOpen, sideOpen]);
 
   useEffect(() => {
     if (!paletteOpen) return;
@@ -636,35 +691,56 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
                     aria-controls="navigation-palette-results"
                     aria-activedescendant={paletteIndex >= 0 ? `navigation-palette-option-${paletteIndex}` : undefined}
                   />
-                  <button type="button" onClick={closePalette} aria-label={t('palette.close')}>Esc</button>
+                  <button type="button" onClick={() => closePalette()} aria-label={t('palette.close')}>Esc</button>
                 </div>
                 <div className="navigation-palette-results" id="navigation-palette-results" role="listbox" ref={paletteListRef}>
-                  {paletteItems.length ? paletteItems.map((item, index) => {
-                    const Icon = resolveIcon(item.icon) ?? ((props: any) => <span {...props} />);
-                    return (
-                      <button
-                        id={`navigation-palette-option-${index}`}
-                        className={`navigation-palette-item${index === paletteIndex ? ' is-selected' : ''}`}
-                        key={`${item.kind}:${item.to || item.label}`}
-                        type="button"
-                        role="option"
-                        aria-selected={index === paletteIndex}
-                        onClick={() => activatePaletteItem(item)}
-                      >
-                        <Icon size={17} aria-hidden="true" />
-                        <span>{item.label}</span>
-                        {item.kind === 'route' ? <kbd>{item.to}</kbd> : null}
-                      </button>
-                    );
-                  }) : <p className="navigation-palette-empty">{t('palette.noResults')}</p>}
+                  {paletteItems.length ? paletteGroups.map((group) => (
+                    <div key={group.id} role="group" aria-label={group.label} data-palette-group={group.id}>
+                      <p className="navigation-palette-group-label">{group.label}</p>
+                      {group.items.map((item) => {
+                        const index = paletteItems.indexOf(item);
+                        const Icon = resolveIcon(item.icon) ?? ((props: any) => <span {...props} />);
+                        return (
+                          <button
+                            id={`navigation-palette-option-${index}`}
+                            className={`navigation-palette-item${index === paletteIndex ? ' is-selected' : ''}`}
+                            key={`${item.kind}:${item.to || item.action || item.label}`}
+                            type="button"
+                            role="option"
+                            aria-selected={index === paletteIndex}
+                            aria-disabled={item.disabled || undefined}
+                            data-palette-action={item.action}
+                            disabled={item.disabled}
+                            onClick={() => activatePaletteItem(item)}
+                          >
+                            <Icon size={17} aria-hidden="true" />
+                            <span>{item.label}</span>
+                            {item.kind === 'route' ? <kbd>{item.to}</kbd> : item.disabled ? <small>{t('palette.actionBusy')}</small> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )) : <p className="navigation-palette-empty">{t('palette.noResults')}</p>}
                 </div>
               </section>
             </div>
           ) : null}
 
+          {paletteActionFeedback ? (
+            <p className="px-4 py-2 text-sm" role={paletteActionFeedback === 'error' || paletteActionFeedback === 'unknown' ? 'alert' : 'status'}>
+              {paletteActionFeedback === 'refresh' ? t('palette.refreshFinished') : paletteActionFeedback === 'restart' ? t('palette.restartAccepted') : paletteActionFeedback === 'unknown' ? t('palette.restartUnknown') : t('palette.actionFailed')}
+            </p>
+          ) : null}
+          <GatewayRestartConfirmationDialog
+            open={restartFlow.confirmationOpen}
+            onCancel={restartFlow.cancel}
+            onConfirm={() => void restartFlow.confirm()}
+            returnFocusTarget={paletteReturnFocusRef.current}
+          />
+
           <section className={`route-stage ${isOverviewRoute ? 'is-overview' : ''}`}>
             <Suspense fallback={<div className="route-loading" role="status">Loading page…</div>}>
-              <Outlet />
+              <Outlet context={{ registerCurrentViewRefresh } satisfies CurrentViewActionContext} />
             </Suspense>
           </section>
 

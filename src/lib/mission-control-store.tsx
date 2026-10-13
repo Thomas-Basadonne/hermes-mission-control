@@ -34,6 +34,42 @@ export type MissionControlGatewayAction = {
   method: 'GET' | 'POST';
 };
 
+export class GatewayActionOutcomeUnknownError extends Error {
+  constructor() {
+    super('The gateway restart request outcome is unknown. Check gateway status before retrying.');
+    this.name = 'GatewayActionOutcomeUnknownError';
+  }
+}
+
+export const GATEWAY_RESTART_REQUEST_TIMEOUT_MS = 15_000;
+
+export async function withGatewayActionDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = GATEWAY_RESTART_REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const error = new GatewayActionOutcomeUnknownError();
+      reject(error);
+      controller.abort(error);
+    }, timeoutMs);
+  });
+  const request = Promise.resolve().then(() => operation(controller.signal)).catch((error: unknown) => {
+    if (error instanceof TypeError || (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name))) {
+      throw new GatewayActionOutcomeUnknownError();
+    }
+    throw error;
+  });
+
+  try {
+    return await Promise.race([request, deadline]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
 type MissionControlActionResult = {
   label: string;
   endpoint: string;
@@ -115,6 +151,37 @@ function buildHeaders(token?: string) {
     headers.Authorization = `Bearer ${token.trim()}`;
   }
   return headers;
+}
+
+export async function sendGatewayRestartRequest(
+  action: MissionControlGatewayAction,
+  token: string,
+  fetcher: typeof fetch = fetch,
+  baseUrl = getApiBaseUrl(),
+): Promise<void> {
+  const normalizedBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+  const url = `${normalizedBase}${action.endpoint}`;
+  const response = await withGatewayActionDeadline((signal) => fetcher(url, {
+    method: action.method,
+    headers: buildHeaders(token || undefined),
+    signal,
+  }));
+
+  if (response.status === 401) throw new MissionControlAuthError();
+
+  if (response.status === 500 && (response.headers.get('content-type') ?? '').includes('application/json')) {
+    let payload: unknown;
+    try { payload = await response.json(); } catch { /* An unparseable error response is ambiguous. */ }
+    if (payload && typeof payload === 'object' && 'success' in payload && payload.success === false
+      && 'manual' in payload && payload.manual === true) {
+      const detail = 'detail' in payload && typeof payload.detail === 'string' ? payload.detail : 'Gateway restart could not be started.';
+      throw new Error(detail);
+    }
+  }
+
+  if (response.status >= 500) throw new GatewayActionOutcomeUnknownError();
+  if (!response.ok) throw new Error(`${action.endpoint} returned ${response.status}`);
+  if (response.status !== 202) throw new GatewayActionOutcomeUnknownError();
 }
 
 function resolveTheme(theme: ThemeMode, systemTheme: ResolvedTheme): ResolvedTheme {
@@ -575,6 +642,16 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           label: action.label,
           endpoint: action.endpoint,
           payload: `Reloaded config.yaml (${updated.path}).`,
+        });
+        return;
+      }
+
+      if (action.id === 'restart-gateway') {
+        await sendGatewayRestartRequest(action, token);
+        setActionResult({
+          label: action.label,
+          endpoint: action.endpoint,
+          payload: 'Gateway restart request accepted; completion is not verified.',
         });
         return;
       }

@@ -6,6 +6,7 @@ import { Button } from '../components/ui/Button';
 import { PageHeader } from '../components/PageHeader';
 import { loadSessionsUsage, type MissionControlSessionsUsageSnapshot } from '../lib/hermes-api';
 import { useMissionControl } from '../lib/mission-control-store';
+import { useRegisterCurrentViewRefresh } from '../lib/current-view-actions';
 import { usePullToReload } from '../hooks/usePullToReload';
 import { PullToReloadIndicator } from '../components/PullToReloadIndicator';
 
@@ -142,6 +143,7 @@ export function UsageRoute() {
     }
   };
 
+  useRegisterCurrentViewRefresh('usage', fetchUsage);
   const { state: pullState } = usePullToReload({
     containerRef,
     onReload: fetchUsage,

@@ -208,6 +208,24 @@ def main():
                 wait("!!document.querySelector('.workspace-bar')", 'Shell failed to mount')
                 wait("!!document.querySelector('.palette-open-button')", 'Palette opener missing')
 
+                # Cmd+K must not put the palette above the independent Overview restart dialog.
+                wait("!!document.querySelector('.widget-quick-actions button')", 'Quick Actions widget did not render on Overview')
+                evaluate("""(() => {
+                    const button = [...document.querySelectorAll('.widget-quick-actions button')]
+                      .find((item) => item.textContent.trim() === 'Restart gateway');
+                    if (!button) throw new Error('Quick Actions restart trigger missing');
+                    button.click(); return true;
+                })()""")
+                wait("!!document.querySelector('[role=alertdialog]')", 'Quick Actions restart confirmation did not open')
+                press_shortcut(4)
+                time.sleep(0.1)
+                assert not is_open(), 'Cmd+K must not open the palette over another modal dialog'
+                assert evaluate("document.querySelector('[role=alertdialog]')?.contains(document.activeElement)"), 'the Quick Actions dialog must retain keyboard focus'
+                assert evaluate('window.__mcActionCalls.length') == 0, 'opening a shortcut during confirmation must not invoke restart'
+                click_selector('[role=alertdialog] button:first-of-type')
+                wait("!document.querySelector('[role=alertdialog]')", 'Quick Actions dialog did not cancel')
+                check('Cmd+K is suppressed while the independent Quick Actions restart dialog is open')
+
                 # --- 1. keyboard open, focus entry, close, focus restoration ---
                 assert not is_open()
                 press_shortcut(4)
@@ -239,8 +257,186 @@ def main():
                 press_shortcut(4)
                 wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not reopen the palette')
                 full = labels()
+                assert evaluate("!!document.querySelector('[data-palette-group=actions]')"), 'the palette must expose a distinct actions group'
+                assert 'Refresh current view' in full, f'current-view refresh action missing: {full}'
+                assert 'Restart gateway' in full, f'gateway restart action missing: {full}'
                 for expected in ('Overview', 'Sessions', 'Kanban', 'Cron', 'Config', 'Chat'):
                     assert expected in full, f'{expected} missing from the palette catalog: {full}'
+
+                # Locale labels are part of the real shell, not a mock translation.
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", 'palette did not close before changing locale')
+                click_selector('.lang-toggle-option:not(.is-active)')
+                wait("document.querySelector('.lang-toggle-option.is-active')?.textContent.includes('Italiano')", 'Italian locale did not activate')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen in Italian')
+                assert evaluate("document.querySelector('.navigation-palette')?.getAttribute('aria-label')") == 'Tavolozza dei comandi'
+                assert 'Aggiorna vista corrente' in labels() and 'Riavvia gateway' in labels(), labels()
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", 'Italian palette did not close')
+                click_selector('.lang-toggle-option:not(.is-active)')
+                wait("document.querySelector('.lang-toggle-option.is-active')?.textContent.includes('English')", 'English locale restore failed')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen in English')
+
+                # Current-view refresh uses the registered page handler only.
+                type_search('refresh current view')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'refresh action search failed')
+                assert evaluate("document.querySelector('.navigation-palette-item')?.dataset.paletteAction") == 'refresh-current-view'
+                driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                wait("window.__mcRefreshCalls.length === 1", 'refresh action did not call the current page handler')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen during refresh')
+                type_search('refresh current view')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'refresh action disappeared while running')
+                assert evaluate("document.querySelector('.navigation-palette-item').disabled"), 'refresh must be disabled while its handler is pending'
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", 'palette did not close during refresh')
+                wait("!!document.querySelector('[role=status]')?.textContent.includes('Refresh handler finished')", 'refresh completion feedback missing')
+                check('refresh action is searchable, keyboard-activatable, and runs the current page handler once')
+
+                evaluate('window.__mcRegisterExtraRefresh()')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'palette did not open for ambiguous refresh registrations')
+                assert not evaluate("[...document.querySelectorAll('.navigation-palette-item')].some(el => el.dataset.paletteAction === 'refresh-current-view')"), 'refresh must fail closed when multiple current-view handlers are registered'
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", 'palette did not close after ambiguous handler check')
+                evaluate('window.__mcUnregisterExtraRefresh()')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen after resolving refresh handler ambiguity')
+                assert evaluate("[...document.querySelectorAll('.navigation-palette-item')].some(el => el.dataset.paletteAction === 'refresh-current-view')"), 'refresh should return when exactly one handler remains'
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", 'palette did not close after single-handler restoration')
+                check('current-view refresh fails closed for multiple registrations and returns when one handler remains')
+
+                evaluate('window.__mcRefreshFailure = true')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen for refresh error test')
+                type_search('refresh current view')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'refresh action search failed for error test')
+                driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                wait("!!document.querySelector('[role=alert]')?.textContent.includes('Action failed')", 'refresh failure feedback missing')
+                assert evaluate('window.__mcRefreshCalls.length') == 2, 'refresh should run once per explicit invocation'
+                evaluate('window.__mcRefreshFailure = false')
+                check('refresh failure is surfaced and does not trigger a retry')
+
+                # A registered handler can throw before it returns a Promise; this must not wedge the refresh lock.
+                evaluate('window.__mcSyncRefreshFailure = true')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen for synchronous refresh failure')
+                type_search('refresh current view')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'refresh action search failed for synchronous failure')
+                driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                wait("!!document.querySelector('[role=alert]')?.textContent.includes('Action failed')", 'synchronous refresh failure feedback missing')
+                assert evaluate('window.__mcRefreshCalls.length') == 3, 'synchronous refresh should be attempted exactly once'
+                evaluate('window.__mcSyncRefreshFailure = false')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'refresh failure should leave the palette usable')
+                type_search('refresh current view')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1 && !document.querySelector('.navigation-palette-item').disabled", 'refresh lock stayed stuck after synchronous failure')
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", 'palette did not close after synchronous refresh error')
+                check('synchronous refresh errors are surfaced and release the in-flight lock')
+
+                # Restart cancellation must not invoke the existing gateway handler.
+                click_selector('.palette-open-button')
+                wait("!!document.querySelector('.navigation-palette')", 'palette trigger did not reopen palette for restart')
+                type_search('restart gateway')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'restart action search failed')
+                driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                wait("!!document.querySelector('[role=alertdialog]')", 'restart action did not request confirmation')
+                time.sleep(0.15)  # include the shell's deferred palette focus restoration
+                focus_checks = evaluate("""(() => {
+                    const dialog = document.querySelector('[role=alertdialog]');
+                    const [cancel, confirm] = dialog.querySelectorAll('button');
+                    const initial = document.activeElement === cancel;
+                    confirm.focus();
+                    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+                    const tabWrap = document.activeElement === cancel;
+                    cancel.focus();
+                    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+                    const shiftTabWrap = document.activeElement === confirm;
+                    document.querySelector('.palette-open-button').focus();
+                    const outsideFocusTrapped = dialog.contains(document.activeElement);
+                    return { initial, tabWrap, shiftTabWrap, outsideFocusTrapped };
+                })()""")
+                assert focus_checks == {'initial': True, 'tabWrap': True, 'shiftTabWrap': True, 'outsideFocusTrapped': True}, focus_checks
+                click_selector('[role=alertdialog] button:first-of-type')
+                wait("!document.querySelector('[role=alertdialog]')", 'restart cancellation did not close confirmation')
+                wait("document.activeElement === document.querySelector('.palette-open-button')", 'cancel must restore focus to the palette opener')
+                assert evaluate('window.__mcActionCalls.length') == 0, 'cancel must not call the gateway handler'
+                check('restart dialog traps focus, wraps Tab, restores focus on cancel, and performs no action')
+
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not reopen palette for Escape cancellation')
+                type_search('restart gateway')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'restart action search failed for Escape cancellation')
+                driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                wait("!!document.querySelector('[role=alertdialog]')", 'restart confirmation did not open for Escape cancellation')
+                press_escape()
+                wait("!document.querySelector('[role=alertdialog]')", 'Escape did not cancel restart confirmation')
+                assert evaluate('window.__mcActionCalls.length') == 0, 'Escape cancellation must not call the gateway handler'
+                check('Escape cancels restart confirmation without invoking the gateway handler')
+
+                # Confirm twice during a pending request: the handler runs once.
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not reopen palette after cancel')
+                type_search('restart gateway')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'restart action search failed after cancel')
+                driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                wait("!!document.querySelector('[role=alertdialog]')", 'restart confirmation did not reopen')
+                evaluate("(() => { const b=document.querySelector('[role=alertdialog] button:last-of-type'); b.click(); b.click(); return true; })()")
+                time.sleep(0.04)
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen during gateway restart')
+                type_search('restart gateway')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'restart action disappeared while running')
+                assert evaluate("document.querySelector('.navigation-palette-item').disabled"), 'restart must be disabled while its handler is pending'
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", 'palette did not close while restart was pending')
+                wait("window.__mcActionCalls.length === 1 && !!document.querySelector('[role=status]')?.textContent.includes('accepted')", 'restart was not reported as accepted exactly once')
+                assert evaluate("document.querySelector('[role=status]').textContent.toLowerCase().includes('completion has not been verified')"), 'feedback must not claim completion'
+                check('restart confirmation invokes the existing handler once and reports accepted, not completed')
+
+                # Failure is visible and never retried automatically.
+                evaluate('window.__mcRestartFailure = true')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not reopen palette for restart error test')
+                type_search('restart gateway')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'restart action search failed for error test')
+                driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                wait("!!document.querySelector('[role=alertdialog]')", 'restart confirmation missing on error test')
+                click_selector('[role=alertdialog] button:last-of-type')
+                wait("!!document.querySelector('[role=alert]')?.textContent.includes('Action failed')", 'restart failure feedback missing')
+                assert evaluate('window.__mcActionCalls.length') == 2, 'uncertain/failed restart must not be retried automatically'
+                evaluate('window.__mcRestartFailure = false')
+                check('restart failure is surfaced without an automatic retry')
+
+                for mode, expected_calls in [('disconnect', 3), ('timeout', 4)]:
+                    evaluate(f"window.__mcRestartFailureMode = '{mode}'")
+                    press_shortcut(4)
+                    wait("!!document.querySelector('.navigation-palette')", f'palette did not reopen for {mode} case')
+                    type_search('restart gateway')
+                    wait("document.querySelectorAll('.navigation-palette-item').length === 1", f'restart search failed for {mode} case')
+                    driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                    driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                    wait("!!document.querySelector('[role=alertdialog]')", f'confirmation missing for {mode} case')
+                    click_selector('[role=alertdialog] button:last-of-type')
+                    wait("!!document.querySelector('[role=alert]')?.textContent.includes('Check gateway status before retrying')", f'{mode} must be reported as uncertain, not failed or accepted')
+                    assert evaluate('window.__mcActionCalls.length') == expected_calls, f'{mode} must not automatically retry'
+                    evaluate('window.__mcRestartFailureMode = null')
+                    check(f'restart {mode} outcome is reported as uncertain without retrying')
+
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not reopen palette after restart failure')
+
                 type_search('crOn')
                 wait("document.querySelectorAll('.navigation-palette-item').length === 1", f'case-insensitive search did not filter: {labels()}')
                 assert labels() == ['Cron'], labels()
@@ -255,6 +451,14 @@ def main():
                 click_item('Cron')
                 wait("!document.querySelector('.navigation-palette')", 'selecting a route did not close the palette')
                 wait("document.querySelector('[data-testid=location]')?.textContent === '/cron'", f'route item did not navigate: {evaluate("document.querySelector(\"[data-testid=location]\").textContent")}')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'palette did not open on Cron')
+                type_search('refresh current view')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'refresh was not available on the registered Cron view')
+                driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
+                wait("window.__mcRefreshCalls.length === 4 && window.__mcRefreshCalls.at(-1) === '/cron'", 'refresh did not invoke the newly active Cron handler')
+                check('route change replaces the current-view refresh handler')
                 check('search filters case-insensitively and by route path; selecting a route navigates and closes')
 
                 # --- 3. chat entry from the palette ---
@@ -340,7 +544,21 @@ def main():
                 click_item('Plugin reports')
                 wait("!document.querySelector('.navigation-palette')", 'selecting a plugin route did not close the palette')
                 wait("document.querySelector('[data-testid=location]')?.textContent === '/reports'", 'plugin route item did not navigate')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'palette did not open on an unsupported plugin route')
+                assert not evaluate("[...document.querySelectorAll('.navigation-palette-item')].some(el => el.dataset.paletteAction === 'refresh-current-view')"), 'refresh must be excluded when the current view has no handler'
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", 'palette did not close on plugin route')
                 check('plugin-present and plugin-absent catalogs: plugin nav items appear, are searchable and navigate; absent when not registered')
+
+                evaluate("window.__mcFixtureStore.storedToken = ''")
+                remount(plugin_items)
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'palette did not open without a gateway token')
+                assert not evaluate("[...document.querySelectorAll('.navigation-palette-item')].some(el => el.dataset.paletteAction === 'restart-gateway')"), 'restart must be excluded without an authorization token'
+                press_escape()
+                evaluate("window.__mcFixtureStore.storedToken = 'fixture-only'")
+                remount(plugin_items)
 
                 # --- 7. keyboard navigation: arrows cycle, Enter activates ---
                 driver.call('Emulation.setDeviceMetricsOverride', width=1280, height=1000, deviceScaleFactor=1, mobile=False)
@@ -441,8 +659,9 @@ def main():
                 # Narrow the query to a set that is still longer than the stale index,
                 # so a length-only guard would keep it while a query-aware guard clears
                 # it. The third entry of the narrowed list is a different destination.
+                # The refresh action also matches its searchable alias "current".
                 type_search('c')
-                wait("document.querySelectorAll('.navigation-palette-item').length === 3", f'expected three matches, got: {labels()}')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 4", f'expected four matches, got: {labels()}')
                 assert selected_index() == -1, f'editing the query must clear the stale selection, kept index {selected_index()}'
                 assert stale_route != '/cron', f'the stale entry must differ from the first match (stale was {stale_route})'
                 press_key('Enter', 'Enter', 13)

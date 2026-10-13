@@ -6,6 +6,7 @@ import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { PageHeader } from '../components/PageHeader';
 import { useMissionControl } from '../lib/mission-control-store';
+import { useRegisterCurrentViewRefresh } from '../lib/current-view-actions';
 import { toolsetMatches, visibleToolNames } from '../lib/tools-browser';
 import { usePullToReload } from '../hooks/usePullToReload';
 import { PullToReloadIndicator } from '../components/PullToReloadIndicator';
@@ -43,15 +44,17 @@ export function ToolsRoute() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const refreshView = async () => {
+    const result = await refreshTools();
+    setRefreshError(result.ok ? null : result.error);
+  };
+  useRegisterCurrentViewRefresh('tools', refreshView);
 
   // The hook keeps the spinner until this settles and ignores gestures while
   // it is pending, so one pull means exactly one Tools request.
   const { state: pullState } = usePullToReload({
     containerRef,
-    onReload: async () => {
-      const result = await refreshTools();
-      setRefreshError(result.ok ? null : result.error);
-    },
+    onReload: refreshView,
   });
 
   const toolsets = tools.availableToolsets;
