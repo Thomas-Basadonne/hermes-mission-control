@@ -322,7 +322,8 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       if (nextSkills.dataSource !== 'fallback' && referenceSequence.current === requestId) setSkills(nextSkills);
     }
 
-    if (options?.rethrowFailure && referenceSequence.current === requestId && toolsSequence.current === toolsRequestId) {
+    // Request ownership fences state writes, not the caller's operation outcome.
+    if (options?.rethrowFailure) {
       const getFailure = (
         name: string,
         result: PromiseSettledResult<MissionControlToolsSnapshot | MissionControlSkillsSnapshot>,
@@ -551,7 +552,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
           }));
         } catch (error) {
           finishSource('snapshot', null, error);
-          if (error instanceof MissionControlAuthError || (options?.rethrowRefreshFailure && isCurrentSourceRequest('snapshot'))) {
+          if (error instanceof MissionControlAuthError || options?.rethrowRefreshFailure) {
             throw error;
           }
         }
@@ -564,7 +565,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
       }
     } catch (error) {
       if (!isCurrentRefresh()) {
-        if ((options?.rethrowAuthFailure || options?.rethrowRefreshFailure) && error instanceof MissionControlAuthError) throw error;
+        if (options?.rethrowRefreshFailure || (options?.rethrowAuthFailure && error instanceof MissionControlAuthError)) throw error;
         return;
       }
       if (error instanceof MissionControlAuthError) {

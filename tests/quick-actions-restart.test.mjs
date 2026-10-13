@@ -285,6 +285,88 @@ try {
     }
   });
 
+  for (const [failureStatus, phase] of [[401, 'reference'], [503, 'reference'], [503, 'live'], [503, 'snapshot']]) {
+    await test(`explicit refresh preserves ${failureStatus} ${phase} failures when a newer refresh supersedes it`, async () => {
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      const originalFetch = globalThis.fetch;
+      const originalWindowFetch = browser.window.fetch;
+      const originalMatchMedia = browser.window.matchMedia;
+      let context;
+      const onReady = (value) => { context = value; };
+      let mode = 'initial';
+      const deferredResponses = [];
+      let systemCalls = 0;
+      const unauthorizedFetch = async (input) => {
+        if (mode === 'defer' && phase === 'snapshot' && String(input).endsWith('/system')) systemCalls += 1;
+        if (mode === 'defer' && (phase !== 'snapshot' || (String(input).endsWith('/system') && systemCalls === 3))) {
+          const response = deferred();
+          deferredResponses.push(response);
+          return response.promise;
+        }
+        if (mode === 'defer') return new Response('{"jobs":[]}', { status: 200, headers: { 'content-type': 'application/json' } });
+        return new Response('{"detail":"unauthorized"}', {
+          status: mode === 'transient' ? 503 : 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      };
+      globalThis.fetch = unauthorizedFetch;
+      browser.window.fetch = unauthorizedFetch;
+      browser.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+      browser.window.localStorage.clear();
+      try {
+        await act(async () => {
+          root.render(React.createElement(MissionControlProvider, null, React.createElement(StoreProbe, { onReady })));
+          for (let i = 0; i < 40 && !context?.authRequired; i++) {
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+        });
+        assert.equal(context?.authRequired, true, 'initial 401 responses should put the real store in auth-required state');
+
+        mode = 'defer';
+        let actionFailure;
+        let actionPromise;
+        await act(async () => {
+          actionPromise = context.refreshAll('fixture-token', { rethrowRefreshFailure: true, includeReference: phase === 'reference', includeSessions: false, includeCron: false }).catch((error) => { actionFailure = error; });
+          for (let i = 0; i < 40 && deferredResponses.length === 0; i++) await new Promise((resolve) => setImmediate(resolve));
+        });
+        assert.ok(deferredResponses.length > 0, 'the manual refresh should have pending fetches before it is superseded');
+
+        mode = 'immediate';
+        await act(async () => {
+          await context.refreshAll('fixture-token', { silent: true, includeReference: true, includeSessions: true, includeCron: true, includeSnapshot: true });
+        });
+        const newerSources = context.sources;
+        const newerSnapshot = context.snapshot;
+        mode = failureStatus === 503 ? 'transient' : 'immediate';
+        for (const response of deferredResponses) {
+          response.resolve(new Response('{"detail":"older request failed"}', {
+            status: failureStatus,
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+        await act(async () => { await actionPromise; });
+
+        if (failureStatus === 401) {
+          assert.equal(actionFailure?.name, 'MissionControlAuthError', 'a superseded user-initiated auth failure must remain observable to its caller');
+        } else {
+          const expected = phase === 'reference' ? /Tools endpoint returned 503\./ : phase === 'snapshot' ? /snapshot dependencies are unavailable/ : /Refresh returned fallback/;
+          assert.match(actionFailure?.message ?? '', expected, 'a superseded transient failure must remain observable to its caller');
+        }
+        assert.equal(context.authRequired, true, 'the stale failure must not clear the newer auth state');
+        assert.equal(context.sources, newerSources, 'stale completions must not overwrite newer source statuses');
+        assert.equal(context.snapshot, newerSnapshot, 'stale completions must not overwrite newer data');
+      } finally {
+        await act(async () => root.unmount());
+        container.remove();
+        globalThis.fetch = originalFetch;
+        browser.window.fetch = originalWindowFetch;
+        browser.window.matchMedia = originalMatchMedia;
+      }
+    });
+  }
+
   await test('client sends one authenticated restart request and accepts only HTTP 202', async () => {
     const calls = [];
     await sendGatewayRestartRequest(
