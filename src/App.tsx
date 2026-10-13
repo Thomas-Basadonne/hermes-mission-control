@@ -1,8 +1,9 @@
-import { lazy, useEffect, useState } from 'react';
+import { lazy, useEffect, useState, type ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { MissionControlProvider } from './lib/mission-control-store';
-import { I18nProvider } from './lib/i18n';
+import { I18nProvider, useI18n } from './lib/i18n';
 import { MissionControlShell } from './components/MissionControlShell';
+import { ToastProvider } from './components/ui/ToastProvider';
 import { OverviewLayout } from './routes/OverviewRoute';
 import { OverviewDashboard } from './components/overview/OverviewDashboard';
 import { PluginRegistry } from './core/plugins/registry';
@@ -20,6 +21,11 @@ const ConfigRoute = lazy(() => import('./routes/ConfigRoute').then((m) => ({ def
 const LogsRoute = lazy(() => import('./routes/LogsRoute').then((m) => ({ default: m.LogsRoute })));
 const KanbanRoute = lazy(() => import('./routes/KanbanRoute').then((m) => ({ default: m.KanbanRoute })));
 const BotsRoute = lazy(() => import('./routes/BotsRoute').then((m) => ({ default: m.BotsRoute })));
+
+function LocalizedToastProvider({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
+  return <ToastProvider dismissLabel={t('common.dismiss')}>{children}</ToastProvider>;
+}
 
 // Default routes (hardcoded, non-plugin)
 const defaultRoutes = [
@@ -64,20 +70,22 @@ function App() {
   return (
     <I18nProvider>
       <MissionControlProvider>
-        <BrowserRouter>
-          <Routes>
-            <Route element={<MissionControlShell registry={registry} navItems={pluginNavItems} />}>
-              <Route element={<OverviewLayout />}>
-                <Route index element={<OverviewDashboard />} />
+        <LocalizedToastProvider>
+          <BrowserRouter>
+            <Routes>
+              <Route element={<MissionControlShell registry={registry} navItems={pluginNavItems} />}>
+                <Route element={<OverviewLayout />}>
+                  <Route index element={<OverviewDashboard />} />
+                </Route>
+                {defaultRoutes.map((r) => (
+                  <Route key={r.path} path={r.path} element={r.element} />
+                ))}
+                {pluginRoutes}
+                <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
-              {defaultRoutes.map((r) => (
-                <Route key={r.path} path={r.path} element={r.element} />
-              ))}
-              {pluginRoutes}
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Route>
-          </Routes>
-        </BrowserRouter>
+            </Routes>
+          </BrowserRouter>
+        </LocalizedToastProvider>
       </MissionControlProvider>
     </I18nProvider>
   );

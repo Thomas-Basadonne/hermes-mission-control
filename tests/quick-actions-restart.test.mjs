@@ -28,12 +28,13 @@ const vite = await createServer({
   plugins: [react()],
   server: { middlewareMode: true, hmr: false },
 });
-const [{ QuickActions }, { I18nProvider }, missionControlStore] = await Promise.all([
+const [{ QuickActions }, { I18nProvider }, missionControlStore, { ToastProvider }] = await Promise.all([
   vite.ssrLoadModule('/src/components/overview/QuickActions.tsx'),
   vite.ssrLoadModule('/src/lib/i18n.tsx'),
   vite.ssrLoadModule('/src/lib/mission-control-store.tsx'),
+  vite.ssrLoadModule('/src/components/ui/ToastProvider.tsx'),
 ]);
-const { withGatewayActionDeadline, sendGatewayRestartRequest } = missionControlStore;
+const { withGatewayActionDeadline, sendGatewayRestartRequest, MissionControlProvider, useMissionControl } = missionControlStore;
 
 const deferred = () => {
   let resolve;
@@ -42,6 +43,12 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
+function StoreProbe({ onReady }) {
+  const context = useMissionControl();
+  React.useEffect(() => onReady(context), [context, onReady]);
+  return null;
+}
+
 async function mount(runGatewayAction, restartAvailable = true) {
   const container = document.createElement('div');
   document.body.append(container);
@@ -49,12 +56,13 @@ async function mount(runGatewayAction, restartAvailable = true) {
   await act(async () => {
     root.render(React.createElement(MemoryRouter, null,
       React.createElement(I18nProvider, null,
-        React.createElement(QuickActions, {
-          gatewayActions: [{ id: 'restart-gateway' }],
-          runGatewayAction,
-          actionLoading: null,
-          restartAvailable,
-        }))));
+        React.createElement(ToastProvider, null,
+          React.createElement(QuickActions, {
+            gatewayActions: [{ id: 'restart-gateway' }],
+            runGatewayAction,
+            actionLoading: null,
+            restartAvailable,
+          })))));
   });
   return {
     container,
@@ -77,6 +85,58 @@ try {
     try {
       assert.equal(buttonNamed(ui.container, 'Restart gateway'), undefined);
     } finally { await ui.unmount(); }
+  });
+
+  await test('refresh action preserves auth failures so Quick Actions can report them', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const originalFetch = globalThis.fetch;
+    const originalWindowFetch = browser.window.fetch;
+    const originalMatchMedia = browser.window.matchMedia;
+    let context;
+    const onReady = (value) => { context = value; };
+    const fetchCalls = [];
+    const unauthorizedFetch = async (input) => {
+      fetchCalls.push(String(input));
+      return new Response('{"detail":"unauthorized"}', {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    globalThis.fetch = unauthorizedFetch;
+    browser.window.fetch = unauthorizedFetch;
+    browser.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    browser.window.localStorage.clear();
+    try {
+      await act(async () => {
+        root.render(React.createElement(MissionControlProvider,
+          null,
+          React.createElement(StoreProbe, { onReady }),
+        ));
+        for (let i = 0; i < 40 && !context?.authRequired; i++) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      });
+      assert.equal(context?.authRequired, true, 'fixture 401 responses should put the real store in auth-required state');
+      const refreshAction = context.gatewayActions.find((action) => action.id === 'refresh');
+      let failure;
+      await act(async () => {
+        try {
+          await context.runGatewayAction(refreshAction);
+        } catch (error) {
+          failure = error;
+        }
+      });
+      assert.equal(failure?.name, 'MissionControlAuthError', `expected the real refresh action to reject; fetched ${JSON.stringify(fetchCalls)}`);
+      assert.equal(context.actionLoading, null, 'the refresh action lock must be released after the auth failure');
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      globalThis.fetch = originalFetch;
+      browser.window.fetch = originalWindowFetch;
+      browser.window.matchMedia = originalMatchMedia;
+    }
   });
 
   await test('client sends one authenticated restart request and accepts only HTTP 202', async () => {
@@ -156,7 +216,7 @@ try {
       assert.equal(calls[0].id, 'restart-gateway');
       action.resolve();
       await act(async () => { await action.promise; });
-      assert.match(ui.container.querySelector('[role="status"]').textContent, /restart request accepted/i);
+      assert.match(ui.container.querySelector('[data-toast-tone="success"]')?.textContent ?? '', /restart request accepted/i);
     } finally {
       await ui.unmount();
     }
@@ -187,7 +247,7 @@ try {
       await ui.click(buttonNamed(ui.container, 'Restart gateway'));
       await ui.click(confirmationButton(ui.container));
       await act(async () => { action.reject(new Error('mock restart failure')); });
-      assert.match(ui.container.querySelector('[role="alert"]').textContent, /restart failed/i);
+      assert.match(ui.container.querySelector('[data-toast-tone="error"]')?.textContent ?? '', /restart failed/i);
       assert.equal(buttonNamed(ui.container, 'Restart gateway').disabled, false);
     } finally {
       await ui.unmount();
@@ -198,10 +258,10 @@ try {
     try {
       await ui.click(buttonNamed(ui.container, 'Restart gateway'));
       await ui.click(confirmationButton(ui.container));
-      for (let i = 0; i < 5 && !ui.container.querySelector('[role="alert"]'); i++) {
+      for (let i = 0; i < 5 && !ui.container.querySelector('[data-toast-tone="warning"]'); i++) {
         await act(async () => { await new Promise((resolve) => setImmediate(resolve)); });
       }
-      assert.match(ui.container.querySelector('[role="alert"]')?.textContent ?? '', /check gateway status before retrying/i);
+      assert.match(ui.container.querySelector('[data-toast-tone="warning"]')?.textContent ?? '', /check gateway status before retrying/i);
     } finally { await ui.unmount(); }
   });
 
@@ -211,10 +271,10 @@ try {
     try {
       await ui.click(buttonNamed(ui.container, 'Restart gateway'));
       await ui.click(confirmationButton(ui.container));
-      for (let i = 0; i < 5 && !ui.container.querySelector('[role="alert"]'); i++) {
+      for (let i = 0; i < 5 && !ui.container.querySelector('[data-toast-tone="warning"]'); i++) {
         await act(async () => { await new Promise((resolve) => setImmediate(resolve)); });
       }
-      assert.match(ui.container.querySelector('[role="alert"]')?.textContent ?? '', /check gateway status before retrying/i);
+      assert.match(ui.container.querySelector('[data-toast-tone="warning"]')?.textContent ?? '', /check gateway status before retrying/i);
     } finally { await ui.unmount(); }
   });
 

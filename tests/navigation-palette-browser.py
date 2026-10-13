@@ -130,6 +130,10 @@ def main():
                     driver.screenshot(str(evidence / 'failure.png'))
                     raise AssertionError(message)
 
+                def dismiss_toasts(tone):
+                    evaluate(f"document.querySelectorAll('[data-toast-item][data-toast-tone={tone}] button[aria-label^=Dismiss]').forEach(button => button.click())")
+                    wait(f"document.querySelectorAll('[data-toast-item][data-toast-tone={tone}]').length === 0", f'{tone} toasts did not dismiss')
+
                 def press_shortcut(modifiers=4):
                     driver.call('Input.dispatchKeyEvent', type='keyDown', key='k', code='KeyK',
                                 modifiers=modifiers, windowsVirtualKeyCode=KEY_K, nativeVirtualKeyCode=KEY_K)
@@ -226,6 +230,44 @@ def main():
                 wait("!document.querySelector('[role=alertdialog]')", 'Quick Actions dialog did not cancel')
                 check('Cmd+K is suppressed while the independent Quick Actions restart dialog is open')
 
+                # Quick Actions uses the same transient toast surface as the palette.
+                evaluate("""(() => {
+                    const button = [...document.querySelectorAll('.widget-quick-actions button')]
+                      .find((item) => item.textContent.trim() === 'Refresh');
+                    if (!button) throw new Error('Quick Actions refresh trigger missing');
+                    button.click(); return true;
+                })()""")
+                wait("window.__mcActionCalls.length === 1", 'Quick Actions refresh did not invoke the existing action handler')
+                wait("[...document.querySelectorAll('[data-toast-item][data-toast-tone=info]')].some(item => item.textContent.includes('Refresh handler finished'))", 'Quick Actions refresh success toast missing')
+                assert evaluate("document.querySelectorAll('.widget-quick-actions [role=status], .widget-quick-actions [role=alert]').length") == 0, 'Quick Actions must not retain inline status feedback'
+                check('Quick Actions refresh reports success in the shared toast')
+
+                evaluate('window.__mcActionFailure = true')
+                evaluate("""(() => {
+                    const button = [...document.querySelectorAll('.widget-quick-actions button')]
+                      .find((item) => item.textContent.trim() === 'Refresh');
+                    button.click(); return true;
+                })()""")
+                wait("window.__mcActionCalls.length === 2", 'failed Quick Actions refresh did not invoke its handler exactly once')
+                wait("[...document.querySelectorAll('[data-toast-item][data-toast-tone=error]')].some(item => item.textContent.includes('Refresh action failed. No automatic retry was attempted.'))", 'Quick Actions refresh failure toast missing')
+                assert evaluate('window.__mcActionCalls.length') == 2, 'Quick Actions refresh must not retry automatically'
+                evaluate('window.__mcActionFailure = false; window.__mcActionCalls = []')
+                check('Quick Actions refresh reports failures in the shared toast without retrying')
+
+                evaluate("""(() => {
+                    const button = [...document.querySelectorAll('.widget-quick-actions button')]
+                      .find((item) => item.textContent.trim() === 'Restart gateway');
+                    if (!button) throw new Error('Quick Actions restart trigger missing');
+                    button.click(); return true;
+                })()""")
+                wait("!!document.querySelector('[role=alertdialog]')", 'Quick Actions restart confirmation did not reopen')
+                click_selector('[role=alertdialog] button:last-of-type')
+                wait("window.__mcActionCalls.length === 1", 'Quick Actions restart did not invoke its existing action handler')
+                wait("[...document.querySelectorAll('[data-toast-item][data-toast-tone=success]')].some(item => item.textContent.includes('Gateway restart request accepted; completion has not been verified.'))", 'Quick Actions restart acceptance toast missing')
+                assert evaluate("document.querySelectorAll('.widget-quick-actions [role=status], .widget-quick-actions [role=alert]').length") == 0, 'Quick Actions must not retain inline restart feedback'
+                evaluate('window.__mcActionCalls = []')
+                check('Quick Actions restart uses the shared toast and preserves accepted-not-completed wording')
+
                 # --- 1. keyboard open, focus entry, close, focus restoration ---
                 assert not is_open()
                 press_shortcut(4)
@@ -280,6 +322,7 @@ def main():
                 wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen in English')
 
                 # Current-view refresh uses the registered page handler only.
+                dismiss_toasts('info')
                 type_search('refresh current view')
                 wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'refresh action search failed')
                 assert evaluate("document.querySelector('.navigation-palette-item')?.dataset.paletteAction") == 'refresh-current-view'
@@ -293,7 +336,12 @@ def main():
                 assert evaluate("document.querySelector('.navigation-palette-item').disabled"), 'refresh must be disabled while its handler is pending'
                 press_escape()
                 wait("!document.querySelector('.navigation-palette')", 'palette did not close during refresh')
-                wait("!!document.querySelector('[role=status]')?.textContent.includes('Refresh handler finished')", 'refresh completion feedback missing')
+                wait("!!document.querySelector('[data-toast-viewport] [data-toast-item][data-toast-tone=info]')?.textContent.includes('Refresh handler finished')", 'refresh completion toast missing')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen over the refresh toast')
+                assert evaluate("Number(getComputedStyle(document.querySelector('[data-toast-viewport]')).zIndex) > Number(getComputedStyle(document.querySelector('.navigation-palette-backdrop')).zIndex)"), 'toast must remain above the palette backdrop'
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", 'palette did not close after toast layering check')
                 check('refresh action is searchable, keyboard-activatable, and runs the current page handler once')
 
                 evaluate('window.__mcRegisterExtraRefresh()')
@@ -310,27 +358,30 @@ def main():
                 wait("!document.querySelector('.navigation-palette')", 'palette did not close after single-handler restoration')
                 check('current-view refresh fails closed for multiple registrations and returns when one handler remains')
 
+                dismiss_toasts('error')
                 evaluate('window.__mcRefreshFailure = true')
                 press_shortcut(4)
                 wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen for refresh error test')
                 type_search('refresh current view')
-                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'refresh action search failed for error test')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1 && !document.querySelector('.navigation-palette-item').disabled", 'refresh action did not become available for error test')
                 driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
                 driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
-                wait("!!document.querySelector('[role=alert]')?.textContent.includes('Action failed')", 'refresh failure feedback missing')
-                assert evaluate('window.__mcRefreshCalls.length') == 2, 'refresh should run once per explicit invocation'
+                wait("[...document.querySelectorAll('[data-toast-viewport] [data-toast-item][data-toast-tone=error]')].some(item => item.textContent.trim().startsWith('Action failed.'))", 'refresh failure toast missing')
+                refresh_call_count = evaluate('window.__mcRefreshCalls.length')
+                assert refresh_call_count == 2, f'refresh should run once per explicit invocation; got {refresh_call_count}'
                 evaluate('window.__mcRefreshFailure = false')
                 check('refresh failure is surfaced and does not trigger a retry')
 
                 # A registered handler can throw before it returns a Promise; this must not wedge the refresh lock.
+                dismiss_toasts('error')
                 evaluate('window.__mcSyncRefreshFailure = true')
                 press_shortcut(4)
                 wait("!!document.querySelector('.navigation-palette')", 'palette did not reopen for synchronous refresh failure')
                 type_search('refresh current view')
-                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'refresh action search failed for synchronous failure')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1 && !document.querySelector('.navigation-palette-item').disabled", 'refresh action did not become available for synchronous failure')
                 driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
                 driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
-                wait("!!document.querySelector('[role=alert]')?.textContent.includes('Action failed')", 'synchronous refresh failure feedback missing')
+                wait("[...document.querySelectorAll('[data-toast-viewport] [data-toast-item][data-toast-tone=error]')].some(item => item.textContent.trim().startsWith('Action failed.'))", 'synchronous refresh failure toast missing')
                 assert evaluate('window.__mcRefreshCalls.length') == 3, 'synchronous refresh should be attempted exactly once'
                 evaluate('window.__mcSyncRefreshFailure = false')
                 press_shortcut(4)
@@ -388,6 +439,23 @@ def main():
                 wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not reopen palette after cancel')
                 type_search('restart gateway')
                 wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'restart action search failed after cancel')
+                evaluate("[...document.querySelectorAll('[data-toast-viewport] [data-toast-item][data-toast-tone=success]')].filter(item => item.textContent.includes('Gateway restart request accepted; completion has not been verified.')).forEach(item => item.querySelector('button[aria-label^=Dismiss]')?.click())")
+                wait("![...document.querySelectorAll('[data-toast-viewport] [data-toast-item][data-toast-tone=success]')].some(item => item.textContent.includes('Gateway restart request accepted; completion has not been verified.'))", 'stale Quick Actions restart toast did not dismiss')
+                evaluate("""(() => {
+                    window.__mcRestartObservedToasts = [];
+                    window.__mcToastObserver = new MutationObserver((records) => {
+                        for (const record of records) for (const node of record.addedNodes) {
+                            if (!(node instanceof HTMLElement)) continue;
+                            const toast = node.matches('[data-toast-item]') ? node : node.querySelector('[data-toast-item]');
+                            if (!toast) continue;
+                            window.__mcRestartObservedToasts.push({
+                                tone: toast.dataset.toastTone,
+                                message: toast.querySelector('[data-toast-message]')?.textContent || '',
+                            });
+                        }
+                    });
+                    window.__mcToastObserver.observe(document.querySelector('[data-toast-viewport]'), { childList: true, subtree: true });
+                })()""")
                 driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
                 driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
                 wait("!!document.querySelector('[role=alertdialog]')", 'restart confirmation did not reopen')
@@ -400,11 +468,16 @@ def main():
                 assert evaluate("document.querySelector('.navigation-palette-item').disabled"), 'restart must be disabled while its handler is pending'
                 press_escape()
                 wait("!document.querySelector('.navigation-palette')", 'palette did not close while restart was pending')
-                wait("window.__mcActionCalls.length === 1 && !!document.querySelector('[role=status]')?.textContent.includes('accepted')", 'restart was not reported as accepted exactly once')
-                assert evaluate("document.querySelector('[role=status]').textContent.toLowerCase().includes('completion has not been verified')"), 'feedback must not claim completion'
+                wait("window.__mcActionCalls.length === 1 && window.__mcRestartObservedToasts.length === 1", 'restart action produced no single toast')
+                restart_toast_tone = evaluate('window.__mcRestartObservedToasts[0].tone')
+                accepted_restart_message = evaluate('window.__mcRestartObservedToasts[0].message')
+                evaluate('window.__mcToastObserver.disconnect()')
+                assert restart_toast_tone == 'success', f'restart outcome was {restart_toast_tone}: {accepted_restart_message}'
+                assert 'completion has not been verified' in accepted_restart_message.lower(), accepted_restart_message
                 check('restart confirmation invokes the existing handler once and reports accepted, not completed')
 
                 # Failure is visible and never retried automatically.
+                dismiss_toasts('error')
                 evaluate('window.__mcRestartFailure = true')
                 press_shortcut(4)
                 wait("!!document.querySelector('.navigation-palette')", 'Cmd+K did not reopen palette for restart error test')
@@ -414,22 +487,23 @@ def main():
                 driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
                 wait("!!document.querySelector('[role=alertdialog]')", 'restart confirmation missing on error test')
                 click_selector('[role=alertdialog] button:last-of-type')
-                wait("!!document.querySelector('[role=alert]')?.textContent.includes('Action failed')", 'restart failure feedback missing')
+                wait("[...document.querySelectorAll('[data-toast-viewport] [data-toast-item][data-toast-tone=error]')].some(item => item.textContent.trim().startsWith('Action failed.'))", 'restart failure toast missing')
                 assert evaluate('window.__mcActionCalls.length') == 2, 'uncertain/failed restart must not be retried automatically'
                 evaluate('window.__mcRestartFailure = false')
                 check('restart failure is surfaced without an automatic retry')
 
                 for mode, expected_calls in [('disconnect', 3), ('timeout', 4)]:
+                    dismiss_toasts('warning')
                     evaluate(f"window.__mcRestartFailureMode = '{mode}'")
                     press_shortcut(4)
                     wait("!!document.querySelector('.navigation-palette')", f'palette did not reopen for {mode} case')
                     type_search('restart gateway')
-                    wait("document.querySelectorAll('.navigation-palette-item').length === 1", f'restart search failed for {mode} case')
+                    wait("document.querySelectorAll('.navigation-palette-item').length === 1 && !document.querySelector('.navigation-palette-item').disabled", f'restart search did not become actionable for {mode} case')
                     driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
                     driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
                     wait("!!document.querySelector('[role=alertdialog]')", f'confirmation missing for {mode} case')
                     click_selector('[role=alertdialog] button:last-of-type')
-                    wait("!!document.querySelector('[role=alert]')?.textContent.includes('Check gateway status before retrying')", f'{mode} must be reported as uncertain, not failed or accepted')
+                    wait("!!document.querySelector('[data-toast-viewport] [data-toast-item][data-toast-tone=warning]')?.textContent.includes('Check gateway status before retrying')", f'{mode} must be reported as uncertain, not failed or accepted')
                     assert evaluate('window.__mcActionCalls.length') == expected_calls, f'{mode} must not automatically retry'
                     evaluate('window.__mcRestartFailureMode = null')
                     check(f'restart {mode} outcome is reported as uncertain without retrying')
@@ -454,7 +528,7 @@ def main():
                 press_shortcut(4)
                 wait("!!document.querySelector('.navigation-palette')", 'palette did not open on Cron')
                 type_search('refresh current view')
-                wait("document.querySelectorAll('.navigation-palette-item').length === 1", 'refresh was not available on the registered Cron view')
+                wait("document.querySelectorAll('.navigation-palette-item').length === 1 && !document.querySelector('.navigation-palette-item').disabled", 'refresh did not become available on the registered Cron view')
                 driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', windowsVirtualKeyCode=13)
                 driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter', windowsVirtualKeyCode=13)
                 wait("window.__mcRefreshCalls.length === 4 && window.__mcRefreshCalls.at(-1) === '/cron'", 'refresh did not invoke the newly active Cron handler')

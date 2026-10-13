@@ -3,6 +3,7 @@ import { useI18n } from '../../lib/i18n';
 import { RefreshCw, Rocket, Settings } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import type { MissionControlGatewayAction } from '../../lib/mission-control-store';
+import { useToast } from '../ui/ToastProvider';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 
@@ -93,13 +94,11 @@ export function useGatewayRestartAction(
 ) {
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [pending, setPending] = useState(false);
-  const [result, setResult] = useState<'success' | 'error' | 'unknown' | null>(null);
   const inFlight = useRef(false);
   const action = available ? gatewayActions.find((candidate) => candidate.id === 'restart-gateway') : undefined;
 
   const request = useCallback(() => {
     if (!available || !action || actionLoading || inFlight.current) return;
-    setResult(null);
     setConfirmationOpen(true);
   }, [action, actionLoading, available]);
   const cancel = useCallback(() => {
@@ -110,16 +109,13 @@ export function useGatewayRestartAction(
     inFlight.current = true;
     setPending(true);
     setConfirmationOpen(false);
-    setResult(null);
     try {
       await runGatewayAction(action);
-      setResult('success');
       onResult?.('success');
     } catch (error) {
       const unknown = error instanceof Error
         && ['GatewayActionOutcomeUnknownError', 'TypeError', 'AbortError', 'TimeoutError'].includes(error.name);
       const outcome = unknown ? 'unknown' : 'error';
-      setResult(outcome);
       onResult?.(outcome);
     } finally {
       inFlight.current = false;
@@ -127,7 +123,7 @@ export function useGatewayRestartAction(
     }
   }, [action, actionLoading, onResult, runGatewayAction]);
 
-  return { action, confirmationOpen, pending, result, request, cancel, confirm };
+  return { action, confirmationOpen, pending, request, cancel, confirm };
 }
 
 export function QuickActions({
@@ -137,10 +133,28 @@ export function QuickActions({
   restartAvailable,
 }: QuickActionsProps) {
   const { t } = useI18n();
+  const { showToast } = useToast();
   const navigate = useNavigate();
-  const restart = useGatewayRestartAction(gatewayActions, runGatewayAction, actionLoading, undefined, restartAvailable);
+  const handleRestartResult = useCallback((result: 'success' | 'error' | 'unknown') => {
+    const message = result === 'success'
+      ? t('overview.restartSuccess')
+      : result === 'unknown'
+        ? t('overview.restartUnknown')
+        : t('overview.restartError');
+    showToast(message, { tone: result === 'success' ? 'success' : result === 'unknown' ? 'warning' : 'error' });
+  }, [showToast, t]);
+  const restart = useGatewayRestartAction(gatewayActions, runGatewayAction, actionLoading, handleRestartResult, restartAvailable);
   const refreshAction = gatewayActions.find((a) => a.id === 'refresh');
   const restartAction = restart.action;
+  const refresh = useCallback(async () => {
+    if (!refreshAction) return;
+    try {
+      await runGatewayAction(refreshAction);
+      showToast(t('overview.refreshFinished'), { tone: 'info' });
+    } catch {
+      showToast(t('overview.refreshError'), { tone: 'error' });
+    }
+  }, [refreshAction, runGatewayAction, showToast, t]);
 
   return (
     <Card padding="none">
@@ -158,7 +172,7 @@ export function QuickActions({
             size="sm"
             icon={<RefreshCw className="h-3.5 w-3.5" />}
             loading={actionLoading === 'refresh'}
-            onClick={() => void runGatewayAction(refreshAction)}
+            onClick={() => void refresh()}
           >
             Refresh
           </Button>
@@ -188,12 +202,6 @@ export function QuickActions({
           Settings
         </Button>
       </div>
-
-      {restart.result && (
-        <p className={`px-3 pb-3 text-xs ${restart.result === 'success' ? 'text-positive' : restart.result === 'unknown' ? 'text-warning' : 'text-negative'}`} role={restart.result === 'success' ? 'status' : 'alert'}>
-          {restart.result === 'success' ? t('overview.restartSuccess') : restart.result === 'unknown' ? t('overview.restartUnknown') : t('overview.restartError')}
-        </p>
-      )}
 
       <GatewayRestartConfirmationDialog
         open={restart.confirmationOpen}

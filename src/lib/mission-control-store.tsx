@@ -98,7 +98,7 @@ type MissionControlContextValue = {
   storedToken: string;
   tokenDraft: string;
   setTokenDraft: (value: string) => void;
-  refreshAll: (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean }) => Promise<void>;
+  refreshAll: (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean; rethrowAuthFailure?: boolean }) => Promise<void>;
   /** Reload only the Tools catalog (pull-to-refresh). Resolves with the outcome; never rejects. */
   refreshTools: () => Promise<{ ok: boolean; error: string | null }>;
   unlock: (token: string) => Promise<void>;
@@ -358,7 +358,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
     return { ok: error === null, error };
   }, [storedToken]);
 
-  const refreshAll = useCallback(async (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean }) => {
+  const refreshAll = useCallback(async (token?: string, options?: { silent?: boolean; includeReference?: boolean; includeSnapshot?: boolean; includeSessions?: boolean; includeCron?: boolean; rethrowAuthFailure?: boolean }) => {
     const silent = options?.silent ?? false;
     const includeReference = options?.includeReference ?? true;
     const includeSnapshot = options?.includeSnapshot ?? !silent;
@@ -525,6 +525,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         setAuthRequired(false);
         setAuthError(null);
       }
+      if (options?.rethrowAuthFailure && error instanceof MissionControlAuthError) throw error;
     } finally {
       if (!silent && isCurrentRefresh()) {
         setLoading(false);
@@ -627,7 +628,7 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
 
     try {
       if (action.id === 'refresh') {
-        await refreshAll(token || undefined);
+        await refreshAll(token || undefined, { rethrowAuthFailure: true });
         setActionResult({
           label: action.label,
           endpoint: action.endpoint,
@@ -690,9 +691,9 @@ export function MissionControlProvider({ children }: { children: ReactNode }) {
         setAuthError('Access token required to keep using Mission Control.');
       }
 
-      // QuickActions owns restart-specific success/error feedback. Preserve the
-      // rejection so a failed restart cannot be reported as completed.
-      if (action.id === 'restart-gateway') {
+      // QuickActions owns transient feedback for operations it initiates. Keep
+      // their rejections observable so the UI cannot announce false success.
+      if (action.id === 'refresh' || action.id === 'restart-gateway') {
         throw error;
       }
     } finally {

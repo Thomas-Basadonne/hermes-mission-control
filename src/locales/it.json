@@ -175,6 +175,8 @@
   "overview.restartSuccess": "Richiesta di riavvio del gateway accettata; il completamento non è stato verificato.",
   "overview.restartError": "Riavvio del gateway non riuscito. Riprova quando è sicuro.",
   "overview.restartUnknown": "Impossibile verificare se la richiesta di riavvio del gateway sia stata accettata. Controlla lo stato del gateway prima di riprovare.",
+  "overview.refreshFinished": "Handler di aggiornamento terminato. In caso di errore, fa fede l'indicatore di errore o freschezza della vista.",
+  "overview.refreshError": "Azione di aggiornamento non riuscita. Non è stato effettuato alcun nuovo tentativo automatico.",
   "overview.scheduledJobs": "Attività pianificate",
   "overview.refreshing": "Aggiornamento…",
   "overview.lastSynced": "Ultima sincronizzazione {time}",

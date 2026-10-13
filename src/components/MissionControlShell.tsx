@@ -21,6 +21,7 @@ import { LanguageSwitcher } from './LanguageSwitcher';
 import { PushToggle } from './PushToggle';
 import { useMissionControl } from '../lib/mission-control-store';
 import { useI18n } from '../lib/i18n';
+import { useToast } from './ui/ToastProvider';
 import { ChatDrawer } from './ChatDrawer';
 import { useChatPresence } from '../lib/chat-presence';
 import { useLastRoutePersistence } from '../lib/last-route';
@@ -50,6 +51,7 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
   useLastRoutePersistence();
   const presence = useChatPresence();
   const { t } = useI18n();
+  const { showToast } = useToast();
 
   useEffect(() => {
     recordReloadDiagnostic('mission-control-shell-mounted');
@@ -107,10 +109,14 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
   const [paletteQuery, setPaletteQuery] = useState('');
   const [paletteIndex, setPaletteIndex] = useState(-1);
   const [refreshPending, setRefreshPending] = useState(false);
-  const [paletteActionFeedback, setPaletteActionFeedback] = useState<'refresh' | 'restart' | 'error' | 'unknown' | null>(null);
   const handleRestartResult = useCallback((result: 'success' | 'error' | 'unknown') => {
-    setPaletteActionFeedback(result === 'success' ? 'restart' : result);
-  }, []);
+    const message = result === 'success'
+      ? t('palette.restartAccepted')
+      : result === 'unknown'
+        ? t('palette.restartUnknown')
+        : t('palette.actionFailed');
+    showToast(message, { tone: result === 'success' ? 'success' : result === 'unknown' ? 'warning' : 'error' });
+  }, [showToast, t]);
   const restartFlow = useGatewayRestartAction(gatewayActions, runGatewayAction, actionLoading, handleRestartResult);
   const [currentViewRefreshAvailable, setCurrentViewRefreshAvailable] = useState(false);
   const currentViewRefreshHandlersRef = useRef(new Map<string, () => Promise<unknown>>());
@@ -202,11 +208,16 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
         if (!refresh) return;
         refreshInFlightRef.current = true;
         setRefreshPending(true);
-        setPaletteActionFeedback(null);
         closePalette();
-        void Promise.resolve().then(refresh).then((result) => { if (result !== false) setPaletteActionFeedback('refresh'); }).catch(() => setPaletteActionFeedback('error')).finally(() => { refreshInFlightRef.current = false; setRefreshPending(false); });
+        void Promise.resolve().then(refresh).then((result) => {
+          if (result !== false) showToast(t('palette.refreshFinished'), { tone: 'info' });
+        }).catch(() => {
+          showToast(t('palette.actionFailed'), { tone: 'error' });
+        }).finally(() => {
+          refreshInFlightRef.current = false;
+          setRefreshPending(false);
+        });
       } else if (item.action === 'restart-gateway' && restartAction && !restartFlow.pending && !refreshInFlightRef.current && !refreshPending && !actionLoading) {
-        setPaletteActionFeedback(null);
         restartFlow.request();
         closePalette({ restoreFocus: false });
       }
@@ -215,7 +226,7 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
     if (item.kind === 'chat') setChatOpen(true);
     else navigate(item.to);
     closePalette();
-  }, [actionLoading, closePalette, navigate, paletteItems, refreshPending, restartAction, restartFlow, setChatOpen]);
+  }, [actionLoading, closePalette, navigate, paletteItems, refreshPending, restartAction, restartFlow, setChatOpen, showToast, t]);
 
   const paletteGroups = [
     { id: 'navigation', label: t('palette.navigationGroup'), items: paletteItems.filter((item) => item.kind !== 'action') },
@@ -726,11 +737,6 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
             </div>
           ) : null}
 
-          {paletteActionFeedback ? (
-            <p className="px-4 py-2 text-sm" role={paletteActionFeedback === 'error' || paletteActionFeedback === 'unknown' ? 'alert' : 'status'}>
-              {paletteActionFeedback === 'refresh' ? t('palette.refreshFinished') : paletteActionFeedback === 'restart' ? t('palette.restartAccepted') : paletteActionFeedback === 'unknown' ? t('palette.restartUnknown') : t('palette.actionFailed')}
-            </p>
-          ) : null}
           <GatewayRestartConfirmationDialog
             open={restartFlow.confirmationOpen}
             onCancel={restartFlow.cancel}

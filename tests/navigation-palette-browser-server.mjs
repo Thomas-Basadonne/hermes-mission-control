@@ -51,6 +51,7 @@ const vite = await createServer({
         import { MemoryRouter, Route, Routes, useLocation, useOutletContext } from 'react-router-dom';
         import { useEffect } from 'react';
         import { I18nProvider } from ${JSON.stringify(resolve(root, 'src/lib/i18n.tsx'))};
+        import { ToastProvider } from ${JSON.stringify(resolve(root, 'src/components/ui/ToastProvider.tsx'))};
         import { MissionControlShell } from ${JSON.stringify(resolve(root, 'src/components/MissionControlShell.tsx'))};
         import { QuickActions } from ${JSON.stringify(resolve(root, 'src/components/overview/QuickActions.tsx'))};
         import ${JSON.stringify(resolve(root, 'src/styles.css'))};
@@ -101,11 +102,13 @@ const vite = await createServer({
             .concat(pluginItems.map((item) => ({ path: item.to.replace(/^\\//, ''), name: item.to })));
           return React.createElement(MemoryRouter, { initialEntries: ['/'] },
             React.createElement(I18nProvider, null,
-              React.createElement(LocationProbe),
-              React.createElement(Routes, null,
-                React.createElement(Route, { element: React.createElement(MissionControlShell, { registry, navItems: pluginItems }) },
-                  React.createElement(Route, { index: true, element: React.createElement(Page, { name: '/' }) }),
-                  routes.map((route) => React.createElement(Route, { key: route.path, path: route.path, element: React.createElement(Page, { name: route.name }) })),
+              React.createElement(ToastProvider, null,
+                React.createElement(LocationProbe),
+                React.createElement(Routes, null,
+                  React.createElement(Route, { element: React.createElement(MissionControlShell, { registry, navItems: pluginItems }) },
+                    React.createElement(Route, { index: true, element: React.createElement(Page, { name: '/' }) }),
+                    routes.map((route) => React.createElement(Route, { key: route.path, path: route.path, element: React.createElement(Page, { name: route.name }) })),
+                  ),
                 ),
               ),
             ),
@@ -129,7 +132,9 @@ const vite = await createServer({
 const injection = `
   window.failures = []; window.requests = []; window.consoleErrors = [];
   window.__mcActionCalls = []; window.__mcRefreshCalls = [];
-  window.__mcRestartFailureMode = null;
+  window.__mcRestartFailureMode = null; window.__mcRestartFailure = false;
+  window.__mcRefreshFailure = false; window.__mcSyncRefreshFailure = false;
+  window.__mcActionFailure = false;
   window.__mcFixtureStore = {
     authRequired: false, authError: null, loading: false, storedToken: 'fixture-only',
     snapshot: { alerts: { items: [] }, sessions: { items: [], totalSessions: 0, activeAgents: 0 }, cron: { items: [], queuedJobs: 0 }, machine: { source: 'fixture' } },
@@ -139,11 +144,15 @@ const injection = `
     runGatewayAction: async (action) => {
       window.__mcActionCalls.push(action.id);
       await new Promise(resolve => setTimeout(resolve, 220));
+      if (window.__mcActionFailure && action.id === 'refresh') throw Object.assign(new Error('fixture refresh authentication failure'), { name: 'MissionControlAuthError' });
       if (window.__mcRestartFailureMode === 'disconnect') throw new TypeError('fixture network disconnect');
       if (window.__mcRestartFailureMode === 'timeout') throw Object.assign(new Error('fixture request timeout'), { name: 'TimeoutError' });
       if (window.__mcRestartFailure) throw new Error('fixture restart failure');
     },
-    gatewayActions: [{ id: 'restart-gateway', label: 'Restart gateway', endpoint: '/api/local/gateway/restart', method: 'POST' }], actionResult: null, actionLoading: null,
+    gatewayActions: [
+      { id: 'refresh', label: 'Refresh', endpoint: '/api/local/refresh', method: 'POST' },
+      { id: 'restart-gateway', label: 'Restart gateway', endpoint: '/api/local/gateway/restart', method: 'POST' },
+    ], actionResult: null, actionLoading: null,
     linkStatus: null, setLinkStatus: () => {}, lastUpdatedAt: null,
     theme: 'dark', setTheme: () => {}, resolvedTheme: 'dark',
   };

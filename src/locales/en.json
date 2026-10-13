@@ -175,6 +175,8 @@
   "overview.restartSuccess": "Gateway restart request accepted; completion has not been verified.",
   "overview.restartError": "Gateway restart failed. Try again when it is safe.",
   "overview.restartUnknown": "Could not confirm whether the Gateway restart was accepted. Check gateway status before retrying.",
+  "overview.refreshFinished": "Refresh handler finished. If it failed, this view's error or freshness indicator is authoritative.",
+  "overview.refreshError": "Refresh action failed. No automatic retry was attempted.",
   "overview.scheduledJobs": "Scheduled jobs",
   "overview.refreshing": "Refreshing…",
   "overview.lastSynced": "Last synced {time}",
