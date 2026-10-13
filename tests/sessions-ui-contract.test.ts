@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../src/routes/SessionsRoute.tsx', import.meta.url), 'utf8');
+const apiSource = readFileSync(new URL('../src/lib/hermes-api.ts', import.meta.url), 'utf8');
 
 test('session details use the shared modal instead of a desktop side panel', () => {
   assert.match(source, /<Modal[\s\S]*\bopen\b/);
@@ -51,6 +52,30 @@ test('session loading has a bounded failure state and a centered mobile refresh 
   assert.match(source, /justify-center/);
 });
 
+test('stale catalog freshness is normalized and rendered as a non-destructive notice', () => {
+  assert.match(apiSource, /catalogFreshness:\s*\{/);
+  assert.match(apiSource, /state: input\?\.catalogFreshness\?\.state === 'stale'/);
+  assert.match(apiSource, /refreshError: readNullableString\(input\?\.catalogFreshness\?\.refreshError\)/);
+  assert.match(source, /agentSessions\?\.catalogFreshness\.state === 'stale'/);
+  assert.match(source, /sessions\.updateFailed/);
+  assert.match(source, /sessions\.staleData/);
+});
+
+test('session pages skip eager transcripts and hydrate only the selected detail', () => {
+  assert.match(source, /loadMissionControlAgentSessions[\s\S]*includeRecentMessages: false/);
+  assert.match(source, /loadMissionControlSessionPreview/);
+  assert.match(source, /const inspectSession = useCallback/);
+  assert.match(source, /onInspect=\{inspectSession\}/);
+});
+
+test('stale session results reconcile silently without resetting displayed rows', () => {
+  assert.match(source, /createSessionFreshnessReconciler/);
+  assert.match(source, /loadSessions\(true\)/);
+  assert.match(source, /silentRefreshPendingRef/);
+  assert.match(source, /if \(!silent\) \{/);
+  assert.match(source, /catalogFreshness\.state === 'stale'/);
+});
+
 test('desktop search and dropdown controls share the same height contract', () => {
   assert.equal((source.match(/h-9/g) ?? []).length, 6);
   assert.equal((source.match(/py-0(?:\s|")/g) ?? []).length, 6);
@@ -94,7 +119,7 @@ test('bot selector is primary, URL-scoped and server-paginated by owning profile
   assert.match(source, /profile\.is_bot === true/);
   assert.match(source, /t\('sessions\.filterByBot'\)/);
   assert.match(source, /value=\{sessionProfile\} onChange=\{\(event\) => updateView\(\{ sessionProfile:/);
-  assert.match(source, /\{ \.\.\.filters, tab \}, sessionProfile \|\| undefined\)/);
+  assert.match(source, /\{ \.\.\.filters, tab \}, sessionProfile \|\| undefined, \{ includeRecentMessages: false \}\)/);
   assert.match(source, /profile: sessionProfile/);
   assert.match(source, /requestGeneration\.current/);
 });

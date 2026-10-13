@@ -27,8 +27,10 @@ import { loadBotProfiles, type BotProfileSummary } from '../lib/bot-gateway';
 import { usePullToReload } from '../hooks/usePullToReload';
 import { PullToReloadIndicator } from '../components/PullToReloadIndicator';
 import { PageHeader } from '../components/PageHeader';
+import { createSessionFreshnessReconciler } from '../lib/session-freshness-reconciler';
 import {
   loadMissionControlAgentSessions,
+  loadMissionControlSessionPreview,
   type MissionControlAgentSessionItem,
   type MissionControlAgentSessionStatus,
   type MissionControlAgentsSessionsSnapshot,
@@ -338,8 +340,10 @@ export function SessionsRoute() {
   const requestGeneration = useRef(0);
   const loadedCountRef = useRef(0);
   const loadingMoreRef = useRef(false);
+  const silentRefreshPendingRef = useRef(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<SessionCategory>>(new Set(['automation', 'system', 'unknown']));
   const [selectedSession, setSelectedSession] = useState<MissionControlAgentSessionItem | null>(null);
+  const selectedRequestGeneration = useRef(0);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const tab = parseSessionTab(searchParams.get('tab'));
   const sessionProfile = searchParams.get('sessionProfile')?.trim() ?? '';
@@ -415,7 +419,8 @@ export function SessionsRoute() {
   }), [filters, sessionProfile, tab]);
 
   const loadSessions = useCallback(async (silent = false) => {
-    if (silent && loadingMoreRef.current) return;
+    if (silent && (loadingMoreRef.current || silentRefreshPendingRef.current)) return true;
+    if (silent) silentRefreshPendingRef.current = true;
     const generation = silent ? requestGeneration.current : ++requestGeneration.current;
     if (!silent) {
       loadingMoreRef.current = false;
@@ -429,8 +434,8 @@ export function SessionsRoute() {
       setHasMore(false);
     }
     try {
-      const data = await withTimeout(loadMissionControlAgentSessions(storedToken ?? undefined, silent ? Math.max(PAGE_SIZE, loadedCountRef.current) : PAGE_SIZE, 0, { ...filters, tab }, sessionProfile || undefined), SESSION_LOAD_TIMEOUT_MS);
-      if (generation !== requestGeneration.current) return;
+      const data = await withTimeout(loadMissionControlAgentSessions(storedToken ?? undefined, silent ? Math.max(PAGE_SIZE, loadedCountRef.current) : PAGE_SIZE, 0, { ...filters, tab }, sessionProfile || undefined, { includeRecentMessages: false }), SESSION_LOAD_TIMEOUT_MS);
+      if (generation !== requestGeneration.current) return false;
       loadedCountRef.current = data.items?.length ?? 0;
       setAgentSessions(data);
       setLoadedItems(data.items ?? []);
@@ -438,8 +443,9 @@ export function SessionsRoute() {
       setHasMore(data.pagination.hasMore);
       setLoadError(null);
       setLastSyncedAt(Date.now());
+      return true;
     } catch (error) {
-      if (generation !== requestGeneration.current) return;
+      if (generation !== requestGeneration.current) return false;
       const message = error instanceof Error ? error.message : 'Unable to load sessions.';
       setLoadError(message);
       if (!silent) {
@@ -448,10 +454,28 @@ export function SessionsRoute() {
         setFilteredTotal(0);
         setHasMore(false);
       }
+      return false;
     } finally {
+      if (silent) silentRefreshPendingRef.current = false;
       if (!silent && generation === requestGeneration.current) setLoading(false);
     }
   }, [filters, sessionProfile, storedToken, tab]);
+
+  const freshnessReconciler = useMemo(() => createSessionFreshnessReconciler({
+    refresh: async () => {
+      if (!await loadSessions(true)) throw new Error('Session freshness reconciliation failed.');
+    },
+    isAllowed: () => document.visibilityState === 'visible',
+  }), [loadSessions]);
+
+  useEffect(() => () => freshnessReconciler.cancel(), [freshnessReconciler]);
+  useEffect(() => {
+    freshnessReconciler.observe({
+      stale: agentSessions?.catalogFreshness.state === 'stale',
+      refreshError: agentSessions?.catalogFreshness.refreshError ?? null,
+      scopeKey: JSON.stringify([storedToken, tab, sessionProfile, filters]),
+    });
+  }, [agentSessions?.catalogFreshness.refreshError, agentSessions?.catalogFreshness.state, filters, freshnessReconciler, sessionProfile, storedToken, tab]);
 
   const refreshView = async () => { await loadSessions(); };
   useRegisterCurrentViewRefresh('sessions', refreshView);
@@ -471,9 +495,10 @@ export function SessionsRoute() {
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
-      const next = await withTimeout(loadMissionControlAgentSessions(storedToken ?? undefined, PAGE_SIZE, loadedItems.length, { ...filters, tab }, sessionProfile || undefined), SESSION_LOAD_TIMEOUT_MS);
+      const next = await withTimeout(loadMissionControlAgentSessions(storedToken ?? undefined, PAGE_SIZE, loadedItems.length, { ...filters, tab }, sessionProfile || undefined, { includeRecentMessages: false }), SESSION_LOAD_TIMEOUT_MS);
       if (generation !== requestGeneration.current) return;
       const nextItems = next.items ?? [];
+      setAgentSessions((current) => current ? { ...current, catalogFreshness: next.catalogFreshness } : next);
       loadedCountRef.current = loadedItems.length + nextItems.length;
       setLoadedItems((current) => [...current, ...nextItems]);
       setFilteredTotal(next.pagination.total);
@@ -511,6 +536,16 @@ export function SessionsRoute() {
       return (b.lastActiveAt ?? b.startedAt ?? 0) - (a.lastActiveAt ?? a.startedAt ?? 0);
     });
   }, [effectiveFilters, loadedItems, sortKey]);
+
+  const inspectSession = useCallback((session: MissionControlAgentSessionItem) => {
+    const generation = ++selectedRequestGeneration.current;
+    setSelectedSession(session);
+    void loadMissionControlSessionPreview(storedToken ?? undefined, session.sessionId, session.profile).then((preview) => {
+      if (generation === selectedRequestGeneration.current && preview) setSelectedSession(preview);
+    }).catch(() => {
+      // Metadata remains usable when the optional bounded preview cannot load.
+    });
+  }, [storedToken]);
 
   useEffect(() => {
     if (selectedSession && !loadedItems.some((session) => session.sessionId === selectedSession.sessionId)) setSelectedSession(null);
@@ -619,22 +654,23 @@ export function SessionsRoute() {
           </div>
 
           {loadError ? <div className="px-4 py-8 text-center"><p className="text-sm font-medium text-text">{t('sessions.unableToLoad')}</p><p className="mt-1 text-xs text-text-muted">{loadError}</p><button type="button" onClick={() => void loadSessions()} className="mt-4 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white hover:bg-accent-hover">{t('sessions.retry')}</button></div> : null}
+          {agentSessions?.catalogFreshness.state === 'stale' ? <div className="bg-warning/10 px-4 py-3 text-sm text-warning" role="status">{t(agentSessions.catalogFreshness.refreshError ? 'sessions.updateFailed' : 'sessions.staleData')}</div> : null}
           {!loadError && loading && !loadingMore ? <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 bg-surface-sunken/35 px-4 py-3 text-sm text-text-muted"><RefreshCw size={14} className="animate-spin" />{t('sessions.loading')}</div> : null}
           {!loadError && !loading && filteredSessions.length === 0 ? <div className="px-4 py-12 text-center text-sm text-text-muted">{t('sessions.noMatches')}</div> : null}
           {liveSessions.length > 0 ? (
             <section>
               <div className="flex items-center gap-2 bg-positive/5 px-4 py-2.5"><span className="h-2 w-2 animate-pulse rounded-full bg-positive" /><span className="text-xs font-semibold uppercase tracking-[0.12em] text-positive">{t('sessions.liveNow')}</span><Badge variant="positive">{liveSessions.length}</Badge></div>
-              {liveSessions.map((session) => <SessionRow key={session.sessionId} session={session} selected={session.sessionId === selectedSession?.sessionId} onInspect={setSelectedSession} onCopy={copySessionId} />)}
+              {liveSessions.map((session) => <SessionRow key={session.sessionId} session={session} selected={session.sessionId === selectedSession?.sessionId} onInspect={inspectSession} onCopy={copySessionId} />)}
             </section>
           ) : null}
           {CATEGORY_ORDER.map((category) => {
             const sessions = groupedSessions.get(category) ?? [];
             if (!sessions.length) return null;
-            return <SessionSection key={category} category={category} sessions={sessions} collapsed={groupsForcedOpen ? false : collapsedGroups.has(category)} onToggle={groupsForcedOpen ? () => undefined : () => toggleGroup(category)} selectedId={selectedSession?.sessionId ?? null} onInspect={setSelectedSession} onCopy={copySessionId} />;
+            return <SessionSection key={category} category={category} sessions={sessions} collapsed={groupsForcedOpen ? false : collapsedGroups.has(category)} onToggle={groupsForcedOpen ? () => undefined : () => toggleGroup(category)} selectedId={selectedSession?.sessionId ?? null} onInspect={inspectSession} onCopy={copySessionId} />;
           })}
           {hasMore ? <div className="p-3"><button type="button" onClick={() => void loadMore()} disabled={loadingMore} className="w-full rounded-md py-2 text-xs font-medium text-accent hover:bg-surface-sunken disabled:opacity-50">{loadingMore ? t('sessions.loading') : t('sessions.loadMoreOf', { loaded: loadedItems.length, total: filteredTotal })}</button></div> : null}
         </Card>
-        {selectedSession ? <SessionDetails session={selectedSession} onClose={() => setSelectedSession(null)} onCopy={copySessionId} /> : null}
+        {selectedSession ? <SessionDetails session={selectedSession} onClose={() => { selectedRequestGeneration.current++; setSelectedSession(null); }} onCopy={copySessionId} /> : null}
       </div>
     </div>
   );

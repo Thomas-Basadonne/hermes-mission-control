@@ -409,6 +409,11 @@ export type MissionControlAgentsSessionsSnapshot = {
   success: boolean;
   schemaVersion: string;
   available: boolean;
+  catalogFreshness: {
+    state: 'fresh' | 'stale';
+    ageSeconds: number;
+    refreshError: string | null;
+  };
   items: MissionControlAgentSessionItem[];
   stats: {
     totalSessions: number;
@@ -436,6 +441,13 @@ export class MissionControlAuthError extends Error {
   constructor(message = 'Mission Control requires an access token.') {
     super(message);
     this.name = 'MissionControlAuthError';
+  }
+}
+
+export class MissionControlSessionListError extends Error {
+  constructor(public readonly status: number, public readonly retryAfterMs: number | null) {
+    super(`Mission Control sessions API returned ${status}`);
+    this.name = 'MissionControlSessionListError';
   }
 }
 
@@ -925,6 +937,11 @@ function normalizeAgentSessionsSnapshot(input: OfficialMissionControlAgentSessio
     success: input?.success ?? true,
     schemaVersion: readString(input?.schemaVersion, '1'),
     available: input?.available ?? true,
+    catalogFreshness: {
+      state: input?.catalogFreshness?.state === 'stale' ? 'stale' : 'fresh',
+      ageSeconds: Math.max(0, readNumber(input?.catalogFreshness?.ageSeconds, 0)),
+      refreshError: readNullableString(input?.catalogFreshness?.refreshError),
+    },
     items,
     stats: {
       totalSessions: readNumber(input?.stats?.totalSessions, items.length),
@@ -1284,6 +1301,11 @@ type OfficialMissionControlAgentSessionsPayload = {
   success?: boolean;
   schemaVersion?: string;
   available?: boolean;
+  catalogFreshness?: {
+    state?: unknown;
+    ageSeconds?: unknown;
+    refreshError?: unknown;
+  };
   items?: Array<Record<string, unknown>>;
   offset?: number;
   pagination?: {
@@ -1445,7 +1467,20 @@ async function fetchMissionControlAgentSessions(
   options?: SessionListRequestOptions,
 ): Promise<OfficialMissionControlAgentSessionsPayload | null> {
   const query = `/mission-control/sessions?${buildSessionListQuery({ limit, offset, sessionId, filters, profile, ...options })}`;
-  const { payload: local } = await maybeFetchLocalJson<OfficialMissionControlAgentSessionsPayload>(query, accessToken, options?.signal);
+  const { payload: local, response } = await maybeFetchLocalJson<OfficialMissionControlAgentSessionsPayload>(query, accessToken, options?.signal);
+  if (!local && response) {
+    const retryAfter = response.headers.get('Retry-After');
+    let retryAfterMs: number | null = null;
+    if (retryAfter !== null) {
+      const seconds = Number(retryAfter);
+      if (Number.isFinite(seconds)) retryAfterMs = Math.max(0, seconds * 1000);
+      else {
+        const date = Date.parse(retryAfter);
+        if (Number.isFinite(date)) retryAfterMs = Math.max(0, date - Date.now());
+      }
+    }
+    throw new MissionControlSessionListError(response.status, retryAfterMs);
+  }
   return local ?? null;
 }
 
@@ -2214,7 +2249,7 @@ export async function loadMissionControlSessionPreview(
   profile?: string | null,
 ): Promise<MissionControlAgentSessionItem | null> {
   if (!sessionId) return null;
-  const payload = await fetchMissionControlAgentSessions(accessToken, 1, 0, sessionId, undefined, profile);
+  const payload = await fetchMissionControlAgentSessions(accessToken, 1, 0, sessionId, undefined, profile, { includeRecentMessages: true });
   if (!payload?.items?.length) return null;
   const normalized = normalizeAgentSessionsSnapshot(payload);
   return normalized.items[0] ?? null;
@@ -2939,4 +2974,3 @@ export function deleteKanbanBoard(
 ): Promise<{ result: Record<string, unknown>; current: string }> {
   return kanbanPost(`/kanban/boards/${encodeURIComponent(slug)}/delete`, { hard }, accessToken);
 }
-

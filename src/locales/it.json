@@ -509,6 +509,8 @@
   "sessions.autoRefresh5": "Aggiornamento automatico ogni 5s",
   "sessions.autoRefresh10": "Aggiornamento automatico ogni 10s",
   "sessions.unableToLoad": "Impossibile caricare le sessioni",
+  "sessions.staleData": "Visualizzazione delle sessioni memorizzate mentre è in corso un aggiornamento.",
+  "sessions.updateFailed": "Visualizzazione delle sessioni memorizzate perché l'ultimo aggiornamento non è riuscito.",
   "sessions.noMatches": "Nessuna sessione corrisponde ai filtri.",
   "sessions.retry": "Riprova",
   "sessions.loadMoreOf": "Carica altre · {loaded} su {total}",

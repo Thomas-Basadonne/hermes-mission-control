@@ -17,6 +17,12 @@ SPEC.loader.exec_module(mission_control_agents)
 
 
 class MissionControlSessionOrderTests(unittest.TestCase):
+    def setUp(self):
+        with mission_control_agents._SESSION_SNAPSHOT_CACHE_LOCK:
+            mission_control_agents._SESSION_CATALOG_CACHE.clear()
+            mission_control_agents._SESSION_CATALOG_INFLIGHT.clear()
+            mission_control_agents._SESSION_CATALOG_FAILURES.clear()
+
     def test_agent_trace_extracts_reasoning_from_bot_reasoning_details(self):
         payload = mission_control_agents._build_trace_from_messages(
             {"sessionId": "bot-session", "status": "live"},
@@ -370,23 +376,22 @@ class MissionControlSessionOrderTests(unittest.TestCase):
 
         self.assertEqual([item["sessionId"] for item in items], ["gateway-live", "gateway-recent"])
 
-    def test_identical_concurrent_requests_share_inflight_work(self):
-        payload = {"success": True, "items": [], "pagination": {"total": 0}}
+    def test_concurrent_request_variants_share_catalog_scan(self):
         started = threading.Event()
         release = threading.Event()
         calls = []
 
-        def slow_load(**kwargs):
-            calls.append(kwargs)
+        def slow_scan(profile, live_window_seconds):
+            calls.append((profile, live_window_seconds))
             self.assertFalse(mission_control_agents._SESSION_SNAPSHOT_CACHE_LOCK.locked())
             started.set()
             self.assertTrue(release.wait(timeout=2))
-            return payload
+            return []
 
         results = []
-        with patch.object(mission_control_agents, "_load_agents_sessions_snapshot_uncached", side_effect=slow_load):
+        with patch.object(mission_control_agents, "_scan_sessions_metadata_catalog", side_effect=slow_scan):
             first = threading.Thread(target=lambda: results.append(mission_control_agents.load_agents_sessions_snapshot(limit=7)))
-            second = threading.Thread(target=lambda: results.append(mission_control_agents.load_agents_sessions_snapshot(limit=7)))
+            second = threading.Thread(target=lambda: results.append(mission_control_agents.load_agents_sessions_snapshot(limit=1, offset=4, filters={"status": "idle"})))
             first.start()
             self.assertTrue(started.wait(timeout=1))
             second.start()
@@ -397,9 +402,200 @@ class MissionControlSessionOrderTests(unittest.TestCase):
             second.join(timeout=2)
 
         self.assertEqual(len(results), 2)
-        self.assertIs(results[0], payload)
-        self.assertIs(results[1], payload)
+        self.assertEqual(results[0]["pagination"]["limit"], 7)
+        self.assertEqual(results[1]["pagination"]["limit"], 1)
         self.assertEqual(len(calls), 1)
+
+    def test_catalog_status_ages_without_rescan(self):
+        now = time.time()
+        row = {"sessionId": "aging", "profile": None, "lastActiveAt": now,
+               "endedAt": None, "status": "live", "category": "conversation",
+               "source": "tui", "model": "m", "agentId": "a"}
+        clock = [now]
+        with patch.object(mission_control_agents, "_scan_sessions_metadata_catalog", return_value=[row]) as scan, \
+             patch.object(mission_control_agents.time, "time", side_effect=lambda: clock[0]):
+            live = mission_control_agents.load_agents_sessions_snapshot(include_recent_messages=False)
+            clock[0] = now + 301
+            aged = mission_control_agents.load_agents_sessions_snapshot(include_recent_messages=False)
+        self.assertEqual(live["items"][0]["status"], "live")
+        self.assertEqual(aged["items"][0]["status"], "idle")
+        scan.assert_called_once()
+
+    def test_preview_hydration_is_bounded_to_selected_page_and_profile(self):
+        rows = [
+            {"sessionId": f"s-{index}", "profile": "research" if index == 1 else None,
+             "lastActiveAt": 10 - index, "endedAt": None, "status": "idle",
+             "category": "conversation", "source": "tui", "model": "m", "agentId": "a"}
+            for index in range(4)
+        ]
+        with patch.object(mission_control_agents, "_scan_sessions_metadata_catalog", return_value=rows), \
+             patch.object(mission_control_agents, "_try_get_session_db", return_value=None) as open_db, \
+             patch.object(mission_control_agents, "_session_preview_messages", return_value=[]) as messages:
+            payload = mission_control_agents.load_agents_sessions_snapshot(limit=1, offset=1, include_recent_messages=True)
+        self.assertEqual([item["sessionId"] for item in payload["items"]], ["s-1"])
+        self.assertEqual(messages.call_count, 1)
+        open_db.assert_called_once_with("research")
+
+    def test_large_metadata_catalog_uses_one_bounded_list_query_without_n_plus_one_hydration(self):
+        rows = [
+            {"id": f"session-{index}", "source": "tui", "model": "m",
+             "last_active": 10_000 - index, "message_count": index}
+            for index in range(2048)
+        ]
+
+        class FakeDb:
+            def __init__(self):
+                self.list_calls = []
+                self.row_calls = 0
+            def list_sessions_rich(self, **kwargs):
+                self.list_calls.append(kwargs)
+                return rows
+            def _get_session_rich_row(self, *_args, **_kwargs):
+                self.row_calls += 1
+                raise AssertionError("metadata catalog must not hydrate rows one at a time")
+            def close(self):
+                pass
+
+        db = FakeDb()
+        with patch.object(mission_control_agents, "_try_get_session_db", return_value=db), \
+             patch.object(mission_control_agents, "_read_gateway_sessions_index", return_value={}), \
+             patch.object(mission_control_agents, "_bot_profiles_by_session", return_value={}), \
+             patch.object(mission_control_agents, "_trace_mode_for_artifacts", return_value="native"), \
+             patch.object(mission_control_agents, "get_chat_title", return_value=None):
+            items = mission_control_agents._collect_agent_sessions(include_recent_messages=False)
+
+        self.assertEqual(len(items), 2048)
+        self.assertEqual(len(db.list_calls), 1)
+        self.assertGreaterEqual(db.list_calls[0]["limit"], 2048)
+        self.assertTrue(db.list_calls[0]["compact_rows"])
+        self.assertEqual(db.row_calls, 0)
+
+    def test_selected_preview_uses_bounded_latest_message_query(self):
+        calls = []
+
+        class FakeDb:
+            def get_messages(self, session_id, **kwargs):
+                calls.append((session_id, kwargs))
+                if kwargs.get("limit") is None or not kwargs.get("latest"):
+                    raise AssertionError("preview query must be bounded to the newest rows")
+                return []
+            def close(self):
+                pass
+
+        item = {"sessionId": "large-history", "profile": None}
+        with patch.object(mission_control_agents, "_try_get_session_db", return_value=FakeDb()), \
+             patch.object(mission_control_agents, "_read_session_jsonl", side_effect=AssertionError("full JSONL read is forbidden")):
+            hydrated = mission_control_agents._hydrate_session_previews([item])
+
+        self.assertEqual(len(calls), 1)
+        self.assertLessEqual(calls[0][1]["limit"], 200)
+        self.assertTrue(calls[0][1]["latest"])
+        self.assertEqual(hydrated[0]["recentMessages"], [])
+
+    def test_stale_catalog_survives_background_refresh_failure(self):
+        row = {"sessionId": "cached", "profile": None, "lastActiveAt": 1,
+               "endedAt": None, "status": "idle", "category": "conversation",
+               "source": "tui", "model": "m", "agentId": "a"}
+        key = (None, 300)
+        mission_control_agents._SESSION_CATALOG_CACHE[key] = (time.monotonic() - 4, [row], None)
+        finished = threading.Event()
+        def fail(*_args):
+            finished.set()
+            raise OSError("isolated failure")
+        with patch.object(mission_control_agents, "_scan_sessions_metadata_catalog", side_effect=fail) as scan:
+            payload = mission_control_agents.load_agents_sessions_snapshot(include_recent_messages=False)
+            self.assertTrue(finished.wait(timeout=1))
+            deadline = time.monotonic() + 1
+            while mission_control_agents._SESSION_CATALOG_CACHE[key][2] is None and time.monotonic() < deadline:
+                time.sleep(0.005)
+            again = mission_control_agents.load_agents_sessions_snapshot(include_recent_messages=False)
+        self.assertEqual(payload["items"][0]["sessionId"], "cached")
+        self.assertEqual(payload["catalogFreshness"]["state"], "stale")
+        self.assertEqual(again["catalogFreshness"]["refreshError"], "OSError")
+        self.assertEqual(scan.call_count, 1)
+        self.assertEqual(mission_control_agents._SESSION_CATALOG_CACHE[key][2], "OSError")
+
+    def test_catalog_older_than_thirty_seconds_revalidates_without_blocking_request(self):
+        row = {"sessionId": "stale-but-usable", "profile": None, "lastActiveAt": 1,
+               "endedAt": None, "status": "idle", "category": "conversation",
+               "source": "tui", "model": "m", "agentId": "a"}
+        key = (None, 300)
+        mission_control_agents._SESSION_CATALOG_CACHE[key] = (time.monotonic() - 31, [row], None)
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow(*_args):
+            started.set()
+            self.assertTrue(release.wait(timeout=1))
+            return [row]
+
+        with patch.object(mission_control_agents, "_scan_sessions_metadata_catalog", side_effect=slow):
+            before = time.monotonic()
+            payload = mission_control_agents.load_agents_sessions_snapshot(include_recent_messages=False)
+            elapsed = time.monotonic() - before
+            self.assertTrue(started.wait(timeout=1))
+            self.assertLess(elapsed, 0.1)
+            release.set()
+            deadline = time.monotonic() + 1
+            while key in mission_control_agents._SESSION_CATALOG_INFLIGHT and time.monotonic() < deadline:
+                time.sleep(0.005)
+        self.assertEqual(payload["catalogFreshness"]["state"], "stale")
+        self.assertEqual(payload["items"][0]["sessionId"], "stale-but-usable")
+
+    def test_expired_catalog_failure_is_shared_by_waiters_without_retry_loop(self):
+        key = (None, 300)
+        row = {"sessionId": "expired"}
+        mission_control_agents._SESSION_CATALOG_CACHE[key] = (
+            time.monotonic() - mission_control_agents._SESSION_CATALOG_MAX_STALE_SECONDS - 1,
+            [row], None,
+        )
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+        errors = []
+
+        def fail(*_args):
+            calls.append(1)
+            started.set()
+            self.assertTrue(release.wait(timeout=1))
+            raise OSError("catalog unavailable")
+
+        def load():
+            try:
+                mission_control_agents._load_sessions_metadata_catalog(None, 300)
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.object(mission_control_agents, "_scan_sessions_metadata_catalog", side_effect=fail):
+            first = threading.Thread(target=load)
+            second = threading.Thread(target=load)
+            first.start()
+            self.assertTrue(started.wait(timeout=1))
+            second.start()
+            release.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(all(isinstance(error, OSError) for error in errors))
+
+    def test_single_session_lookup_excludes_unrelated_runtime_presence(self):
+        requested = {"sessionId": "wanted", "sessionKey": "wanted-key", "profile": None,
+                     "lastActiveAt": 1, "endedAt": None, "status": "idle"}
+        unrelated = {"runtimeSessionId": "other", "sessionKey": "other-key", "profile": "default",
+                     "updatedAt": 2, "source": "mission-control", "model": "m"}
+        with patch.object(mission_control_agents, "active_runtime_presences", return_value=[unrelated]):
+            refreshed = mission_control_agents._refresh_catalog_runtime_state(
+                [requested], 300, None, "wanted-key",
+            )
+        self.assertEqual([item["sessionId"] for item in refreshed], ["wanted"])
+
+    def test_invalid_profile_does_not_allocate_catalog_cache_entry(self):
+        items, freshness = mission_control_agents._load_sessions_metadata_catalog("../../arbitrary", 300)
+        self.assertEqual(items, [])
+        self.assertEqual(freshness["state"], "fresh")
+        self.assertEqual(mission_control_agents._SESSION_CATALOG_CACHE, {})
 
     def test_db_discovery_uses_compact_rows(self):
         calls = {}
@@ -582,14 +778,14 @@ class MissionControlSessionOrderTests(unittest.TestCase):
         self.assertEqual(snapshot["facets"]["category"]["system"], 2)
         self.assertEqual(snapshot["tabCounts"], {"all": 3, "live": 0, "conversation": 1, "automation": 0, "system": 2})
 
-    def test_identical_snapshot_requests_use_short_cache(self):
-        payload = {"success": True, "items": [], "pagination": {"total": 0}}
-        with patch.object(mission_control_agents, "_load_agents_sessions_snapshot_uncached", return_value=payload) as uncached:
+    def test_request_variants_use_short_catalog_cache(self):
+        with patch.object(mission_control_agents, "_scan_sessions_metadata_catalog", return_value=[]) as scan:
             first = mission_control_agents.load_agents_sessions_snapshot(limit=7, offset=0, filters={"query": "cache-probe"})
-            second = mission_control_agents.load_agents_sessions_snapshot(limit=7, offset=0, filters={"query": "cache-probe"})
+            second = mission_control_agents.load_agents_sessions_snapshot(limit=1, offset=9, filters={"status": "idle"})
 
-        self.assertIs(first, second)
-        uncached.assert_called_once()
+        self.assertEqual(first["pagination"]["limit"], 7)
+        self.assertEqual(second["pagination"]["limit"], 1)
+        scan.assert_called_once()
 
     def test_agent_registry_skips_recent_messages(self):
         snapshot = {"success": True, "items": []}

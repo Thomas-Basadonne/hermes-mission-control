@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, Loader2, Search, X } from 'lucide-react';
 import { loadMissionControlAgentSessions, type MissionControlAgentSessionItem, type MissionControlAgentSessionStatus } from '../../lib/hermes-api';
 import { loadBotProfiles } from '../../lib/bot-gateway';
 import { createSessionPickerController } from '../../lib/chat-session-picker';
+import { createSessionFreshnessReconciler } from '../../lib/session-freshness-reconciler';
 import { useI18n } from '../../lib/i18n';
 import { formatRelativeSchedule, formatTimestamp } from '../../lib/format';
 import './SessionPicker.css';
@@ -19,6 +20,8 @@ export interface SessionPickerProps {
 export function SessionPicker({ open, storedToken, currentSessionId, currentProfile, onSelect, onClose }: SessionPickerProps) {
   const { t, locale } = useI18n();
   const pickerRef = useRef<HTMLDivElement>(null);
+  const openRef = useRef(open);
+  openRef.current = open;
 
   const listRef = useRef<HTMLUListElement>(null);
   const [query, setQuery] = useState('');
@@ -32,6 +35,23 @@ export function SessionPicker({ open, storedToken, currentSessionId, currentProf
     loadService: options => loadMissionControlAgentSessions(options.accessToken, options.limit, options.offset, options.filters, options.profile, { includeRecentMessages: false, signal: options.signal }),
   }), [storedToken]);
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
+  const freshnessReconciler = useMemo(() => createSessionFreshnessReconciler({
+    refresh: () => controller.load({ silent: true }),
+    isAllowed: () => openRef.current && document.visibilityState === 'visible',
+  }), [controller]);
+
+  useEffect(() => () => freshnessReconciler.cancel(), [freshnessReconciler]);
+  useEffect(() => {
+    if (!open) {
+      freshnessReconciler.cancel();
+      return;
+    }
+    freshnessReconciler.observe({
+      stale: state.stale,
+      refreshError: state.refreshError ?? state.error,
+      scopeKey: JSON.stringify([storedToken, state.query, state.profile, state.origin, state.status, state.pagination.offset]),
+    });
+  }, [freshnessReconciler, open, state.error, state.origin, state.pagination.offset, state.profile, state.query, state.refreshError, state.stale, state.status, storedToken]);
 
   useEffect(() => {
     const cancellation = new AbortController();
@@ -125,6 +145,7 @@ export function SessionPicker({ open, storedToken, currentSessionId, currentProf
         </select></label>
       </div>
       {profileError ? <div className="sp-notice" role="status">{t('sessionPicker.profilesFailed')} <button type="button" onClick={() => { profilesLoadedRef.current = false; setProfileReload(value => value + 1); }}>{t('sessions.retry')}</button></div> : null}
+      {state.stale ? <div className={`sp-notice ${state.refreshError ? 'sp-error' : ''}`} role="status">{t(state.refreshError ? 'sessions.updateFailed' : 'sessions.staleData')}</div> : null}
       {state.error ? <div className="sp-notice sp-error" role="alert"><span>{t('sessions.unableToLoad')}: {state.error}</span><button type="button" onClick={() => void controller.load()}>{t('sessions.retry')}</button></div> : null}
       <ul ref={listRef} className="sp-list" aria-label={t('sessionPicker.title')} aria-busy={loading}>
         {loading && state.items.length === 0 ? <li className="sp-empty" role="status"><Loader2 size={16} className="chat-spin" />{t('sessions.loading')}</li> : null}

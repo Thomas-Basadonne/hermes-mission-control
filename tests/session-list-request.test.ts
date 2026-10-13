@@ -9,5 +9,5 @@ assert.equal(query.get('query'),'older chat');
 assert.equal(query.get('origin'),'telegram');
 assert.equal(query.get('include_recent_messages'),'false');
 assert.equal(query.has('tab'),false);
-assert.equal(new URLSearchParams(request.buildSessionListQuery({limit:1,offset:0})).has('include_recent_messages'),false,'existing preview consumers retain messages');
+assert.equal(new URLSearchParams(request.buildSessionListQuery({limit:1,offset:0})).has('include_recent_messages'),false,'omitted preview policy is left to the endpoint default');
 console.log('session-list-request: ok');

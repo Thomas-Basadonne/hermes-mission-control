@@ -81,6 +81,14 @@ class SessionsTimeoutTests(unittest.TestCase):
         self.assertEqual((status, payload), (200, {"items": [], "stats": {"totalSessions": 0}}))
         kwargs = loader.call_args.kwargs
         self.assertEqual((kwargs["limit"], kwargs["offset"], kwargs["session_id"], kwargs["profile"]), (25, 50, "s1", "p"))
+        self.assertFalse(kwargs["include_recent_messages"], "session lists must default to metadata-only")
+
+    def test_explicit_single_session_preview_can_request_recent_messages(self):
+        loader = mock.Mock(return_value={"items": [], "stats": {"totalSessions": 0}})
+        with mock.patch.object(server_mod, "load_agents_sessions_snapshot", loader):
+            status, _ = self._get("/api/local/mission-control/sessions?limit=1&session_id=s1&include_recent_messages=true")
+        self.assertEqual(status, 200)
+        self.assertTrue(loader.call_args.kwargs["include_recent_messages"])
 
     def test_other_loader_errors_are_not_reported_as_unavailable(self):
         loader = mock.Mock(side_effect=RuntimeError("boom"))

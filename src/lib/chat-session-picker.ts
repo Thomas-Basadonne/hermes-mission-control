@@ -20,8 +20,29 @@ export interface SessionPickerState {
   origin: string | null;
   status: MissionControlAgentSessionStatus | null;
   loading: boolean;
+  stale: boolean;
+  refreshError: string | null;
   error: string | null;
 }
+
+type RetryableError = Error & { status?: number; retryAfterMs?: number | null };
+
+function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+const MAX_RETRY_AFTER_MS = 30_000;
 
 export function createSessionPickerController(init: {
   loadService: (options: LoadOptions) => Promise<MissionControlAgentsSessionsSnapshot>;
@@ -31,7 +52,7 @@ export function createSessionPickerController(init: {
     items: [], pagination: { total: 0, offset: 0, limit: 25, hasMore: false },
     stats: { totalSessions: 0, liveSessions: 0, activeAgents: 0 },
     facets: { status: { live: 0, idle: 0, ended: 0 }, category: {conversation:0,automation:0,system:0,unknown:0}, origin: {}, model: {} },
-    query: '', profile: null, origin: null, status: 'live', loading: false, error: null,
+    query: '', profile: null, origin: null, status: 'live', loading: false, stale: false, refreshError: null, error: null,
   };
   let generation = 0;
   let active: { generation: number; controller: AbortController; promise?: Promise<void> } | null = null;
@@ -45,9 +66,9 @@ export function createSessionPickerController(init: {
   const changeFilter = <K extends 'query' | 'profile' | 'origin' | 'status'>(key: K, value: SessionPickerState[K]) => {
     if (state[key] === value) return;
     invalidate();
-    update({ ...state, [key]: value, items: [], pagination: { ...state.pagination, total: 0, offset: 0, hasMore: false }, loading: false, error: null });
+    update({ ...state, [key]: value, items: [], pagination: { ...state.pagination, total: 0, offset: 0, hasMore: false }, loading: false, stale: false, refreshError: null, error: null });
   };
-  const load = (): Promise<void> => {
+  const load = (loadOptions: { silent?: boolean } = {}): Promise<void> => {
     if (active) return active.promise ?? Promise.resolve();
     const request = { generation: ++generation, controller: new AbortController(), promise: undefined as Promise<void> | undefined };
     active = request;
@@ -59,22 +80,33 @@ export function createSessionPickerController(init: {
       accessToken: init.storedToken, limit: state.pagination.limit, offset: state.pagination.offset,
       profile: state.profile, filters, includeRecentMessages: false, signal: request.controller.signal,
     };
-    update({ ...state, loading: true, error: null });
+    if (!loadOptions.silent) update({ ...state, loading: true, stale: state.items.length > 0, refreshError: null, error: null });
     request.promise = (async () => {
       try {
-        const payload = await init.loadService(options);
+        let payload: MissionControlAgentsSessionsSnapshot | undefined;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            payload = await init.loadService(options);
+            break;
+          } catch (error) {
+            const retryable = error as RetryableError;
+            if (retryable.status !== 503 || attempt === 2 || options.signal.aborted) throw error;
+            await abortableDelay(Math.min(MAX_RETRY_AFTER_MS, Math.max(0, retryable.retryAfterMs ?? 250)), options.signal);
+          }
+        }
+        if (!payload) throw new Error('Session list unavailable.');
         if (generation !== request.generation || options.signal.aborted) return;
         if (!payload.available || !payload.success) throw new Error('Session list unavailable.');
         // A deletion can empty the last page between polls. Return to its predecessor.
         if (payload.items.length === 0 && payload.pagination.total > 0 && options.offset >= payload.pagination.total) {
           active = null;
-          update({ ...state, pagination: { ...payload.pagination, offset: Math.floor((payload.pagination.total - 1) / options.limit) * options.limit }, loading: false });
+          update({ ...state, pagination: { ...payload.pagination, offset: Math.floor((payload.pagination.total - 1) / options.limit) * options.limit }, loading: false, stale: false, refreshError: null });
           await load();
           return;
         }
-        update({ ...state, items: payload.items, pagination: payload.pagination, stats: payload.stats, facets: payload.facets, loading: false, error: null });
+        update({ ...state, items: payload.items, pagination: payload.pagination, stats: payload.stats, facets: payload.facets, loading: false, stale: payload.catalogFreshness.state === 'stale', refreshError: payload.catalogFreshness.refreshError, error: null });
       } catch (error) {
-        if (generation === request.generation && !options.signal.aborted) update({ ...state, loading: false, error: error instanceof Error ? error.message : 'Unable to load sessions.' });
+        if (generation === request.generation && !options.signal.aborted) update({ ...state, loading: false, stale: state.items.length > 0, error: error instanceof Error ? error.message : 'Unable to load sessions.' });
       } finally {
         if (active === request) active = null;
       }
@@ -84,7 +116,7 @@ export function createSessionPickerController(init: {
   const page = (offset: number) => {
     if (state.loading) return Promise.resolve();
     invalidate();
-    update({ ...state, items: [], pagination: { ...state.pagination, offset }, error: null });
+    update({ ...state, items: [], pagination: { ...state.pagination, offset }, stale: false, refreshError: null, error: null });
     return load();
   };
   return {

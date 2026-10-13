@@ -5,6 +5,7 @@ import logging
 import re
 import threading
 import time
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -237,6 +238,16 @@ def _read_session_jsonl(session_id: str, profile: str | None = None) -> list[dic
     return _safe_read_jsonl(_sessions_dir(profile) / f"{session_id}.jsonl")
 
 
+def _sessions_artifact_exists(session_id: str, profile: str | None = None) -> bool:
+    directory = _sessions_dir(profile)
+    if (directory / f"{session_id}.jsonl").is_file():
+        return True
+    try:
+        return next(directory.glob(f"request_dump_{session_id}_*.json"), None) is not None
+    except OSError:
+        return False
+
+
 def _read_session_request_dump(session_id: str, profile: str | None = None) -> list[dict[str, Any]]:
     """Read only the provider request messages needed for a TODO fallback.
 
@@ -265,23 +276,78 @@ def _session_messages(db: Any, session_id: str, profile: str | None = None) -> l
     return _read_session_jsonl(session_id, profile) or _get_db_messages(db, session_id) or _read_session_request_dump(session_id, profile)
 
 
-def _iter_db_session_ids(profile: str | None = None) -> list[str]:
-    """Discover session IDs from the requested profile's SessionDB."""
-    db = _try_get_session_db(profile)
+def _read_session_jsonl_tail(session_id: str, profile: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    """Read at most the newest JSONL rows without scanning a whole transcript."""
+    path = _sessions_dir(profile) / f"{session_id}.jsonl"
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            position = handle.tell()
+            chunks: list[bytes] = []
+            newline_count = 0
+            while position > 0 and newline_count <= limit:
+                size = min(8192, position)
+                position -= size
+                handle.seek(position)
+                chunk = handle.read(size)
+                chunks.append(chunk)
+                newline_count += chunk.count(b"\n")
+        lines = b"".join(reversed(chunks)).splitlines()[-limit:]
+    except OSError:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except (UnicodeDecodeError, ValueError):
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def _session_preview_messages(
+    db: Any, session_id: str, profile: str | None = None, limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Load a bounded newest window for list/detail previews."""
+    if db is not None:
+        try:
+            rows = db.get_messages(session_id, limit=limit, latest=True)
+            return rows if isinstance(rows, list) else []
+        except Exception:
+            pass
+    rows = _read_session_jsonl_tail(session_id, profile, limit)
+    if rows:
+        return rows
+    return _read_session_request_dump(session_id, profile)[-limit:]
+
+
+def _iter_db_session_ids(
+    profile: str | None = None,
+    db: Any = None,
+    rows_out: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    """Discover session IDs and optionally retain the already-rich list rows."""
+    owns_db = db is None
+    if owns_db:
+        db = _try_get_session_db(profile)
     try:
         if db is None:
             return []
         rows = db.list_sessions_rich(
-            limit=2000,
+            limit=10000,
             order_by_last_active=True,
             compact_rows=True,
             include_hidden=profile is not None,
         )
+        if rows_out is not None:
+            rows_out.extend(row for row in rows if isinstance(row, dict))
         return [str(row.get("id", "")) for row in rows if row.get("id")]
     except Exception:
         return []
     finally:
-        _close_session_db(db)
+        if owns_db:
+            _close_session_db(db)
 
 
 def _try_get_session_db(profile: str | None = None):
@@ -711,7 +777,8 @@ def _recent_chat_messages(
     """
     if limit <= 0:
         return []
-    messages = messages or _session_messages(db, session_id)
+    if messages is None:
+        messages = _session_messages(db, session_id)
     if not messages:
         return []
 
@@ -1093,9 +1160,11 @@ def _collect_agent_sessions(
     include_recent_messages: bool = True,
     filters: dict[str, str] | None = None,
     profile: str | None = None,
+    bot_profiles_by_session: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     index_map = _read_gateway_sessions_index(profile)
-    bot_profiles_by_session = _bot_profiles_by_session()
+    if bot_profiles_by_session is None:
+        bot_profiles_by_session = _bot_profiles_by_session()
     presence_by_id: dict[str, dict[str, Any]] = {}
     for presence in active_runtime_presences():
         if not _presence_matches_profile(presence, profile):
@@ -1107,18 +1176,8 @@ def _collect_agent_sessions(
     # normally live gateway sessions that have not reached SessionDB yet; if we
     # append them after a large DB history, a small first page hides the active
     # session entirely.
-    db_ids = _iter_db_session_ids(profile)
-    db_id_set = set(db_ids)
-    index_only_ids = [
-        sid for sid in index_map.keys()
-        if sid not in db_id_set
-    ]
-    index_only_ids.sort(
-        key=lambda sid: (_parse_timestamp((index_map.get(sid) or {}).get("updated_at")) or 0),
-        reverse=True,
-    )
-    ordered_ids = index_only_ids + db_ids
     db = _try_get_session_db(profile)
+    db_rows_by_id: dict[str, dict[str, Any]] = {}
     if session_id:
         # Narrow to a single session for the chat drawer preview. Keep the
         # recency ordering contract; the id either exists or yields nothing.
@@ -1133,13 +1192,26 @@ def _collect_agent_sessions(
         # newest row for that key, which is the live conversation among the
         # rotations sharing it.
         resolved = session_id
-        if session_id not in db_id_set:
+        db_row = None if session_id.startswith("agent:") else _get_db_rich_row(db, resolved)
+        if db_row is None:
             candidate_id, _ = _resolve_chat_session(db, session_id)
-            if candidate_id and candidate_id != session_id:
+            if candidate_id:
                 resolved = candidate_id
-        ordered_ids = [sid for sid in ordered_ids if sid == resolved]
-        if not ordered_ids and (_read_session_jsonl(resolved, profile) or _read_session_request_dump(resolved, profile)):
-            ordered_ids = [resolved]
+            db_row = _get_db_rich_row(db, resolved)
+        if db_row:
+            db_rows_by_id[resolved] = db_row
+        ordered_ids = [resolved] if db_row or resolved in index_map or _sessions_artifact_exists(resolved, profile) else []
+    else:
+        db_rows: list[dict[str, Any]] = []
+        db_ids = _iter_db_session_ids(profile, db, db_rows)
+        db_rows_by_id = {str(row.get("id") or ""): row for row in db_rows if row.get("id")}
+        db_id_set = set(db_ids)
+        index_only_ids = [sid for sid in index_map.keys() if sid not in db_id_set]
+        index_only_ids.sort(
+            key=lambda sid: (_parse_timestamp((index_map.get(sid) or {}).get("updated_at")) or 0),
+            reverse=True,
+        )
+        ordered_ids = index_only_ids + db_ids
     # With filters, pagination must happen after item classification. Without
     # filters retain the cheap id-level window used by existing consumers.
     if not filters:
@@ -1150,8 +1222,8 @@ def _collect_agent_sessions(
     try:
         items: list[dict[str, Any]] = []
         for session_id in ordered_ids:
-            db_row = _get_db_rich_row(db, session_id)
-            session_messages = _session_messages(db, session_id, profile) if include_recent_messages else None
+            db_row = db_rows_by_id.get(session_id) or _get_db_rich_row(db, session_id)
+            session_messages = _session_preview_messages(db, session_id, profile) if include_recent_messages else None
             recent_messages = _recent_chat_messages(db, session_id, messages=session_messages) if include_recent_messages else []
             todo_plan = _derive_todo_plan(session_messages) if include_recent_messages else None
             item = _build_session_item(
@@ -1199,6 +1271,7 @@ def _collect_snapshot_sessions(
     # Scanning every JSONL transcript before returning 50 rows exceeds the
     # handler's socket deadline and turns a slow list into a proxy 500.
     per_scope_limit = None if filters else ((offset or 0) + limit if limit is not None else None)
+    bot_profiles_by_session = _bot_profiles_by_session()
     items: list[dict[str, Any]] = []
     for scope in scopes:
         items.extend(_collect_agent_sessions(
@@ -1209,6 +1282,7 @@ def _collect_snapshot_sessions(
             include_recent_messages=include_recent_messages,
             filters=filters,
             profile=scope,
+            bot_profiles_by_session=bot_profiles_by_session,
         ))
     deduped: dict[tuple[str, str], dict[str, Any]] = {}
     for item in items:
@@ -1234,35 +1308,21 @@ def _load_agents_sessions_snapshot_uncached(
     profile: str | None = None,
 ) -> dict[str, Any]:
     clamped_limit = max(1, min(limit, 500))
-    visible_items = _collect_snapshot_sessions(
-        live_window_seconds=live_window_seconds,
-        limit=clamped_limit,
-        offset=offset,
-        session_id=session_id,
-        filters=filters,
-        include_recent_messages=include_recent_messages,
-        profile=profile,
-    )
-    if include_facets and not session_id:
-        # Facets are collected without recent message previews. This keeps the
-        # global counts correct without loading conversation content for every
-        # historical session on each request.
+    if session_id:
         all_items = _collect_snapshot_sessions(
-            live_window_seconds=live_window_seconds,
-            include_recent_messages=False,
-            profile=profile,
+            live_window_seconds=live_window_seconds, session_id=session_id,
+            include_recent_messages=False, profile=profile,
         )
+        freshness = {"state": "fresh", "ageSeconds": 0.0}
     else:
-        all_items = visible_items
-    if filters and not session_id:
-        filtered_items = _collect_snapshot_sessions(
-            live_window_seconds=live_window_seconds,
-            include_recent_messages=False,
-            filters=filters,
-            profile=profile,
-        )
-    else:
-        filtered_items = all_items
+        all_items, freshness = _load_sessions_metadata_catalog(profile, live_window_seconds)
+    # Status is time-dependent even when durable metadata is not. Reclassify on
+    # every response so a cached live row ages to idle without another DB scan.
+    all_items = _refresh_catalog_runtime_state(all_items, live_window_seconds, profile, session_id)
+    filtered_items = [item for item in all_items if _session_matches_filters(item, filters)]
+    visible_items = filtered_items[offset:offset + clamped_limit]
+    if include_recent_messages and visible_items:
+        visible_items = _hydrate_session_previews(visible_items)
     facets = _build_session_facets(all_items)
     filtered_total = len(filtered_items)
     tab_counts = _build_session_tab_counts(all_items, filters)
@@ -1285,14 +1345,169 @@ def _load_agents_sessions_snapshot_uncached(
         },
         "facets": facets,
         "tabCounts": tab_counts,
+        "catalogFreshness": freshness,
     }
 
 
 _SESSION_SNAPSHOT_CACHE_TTL_SECONDS = 3.0
+_SESSION_CATALOG_MAX_STALE_SECONDS = 300.0
 _SESSION_SNAPSHOT_CACHE_LOCK = threading.Lock()
-_SESSION_SNAPSHOT_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
-_SESSION_SNAPSHOT_INFLIGHT: dict[tuple[Any, ...], threading.Event] = {}
-_SESSION_SNAPSHOT_WORK = threading.BoundedSemaphore(1)
+_SESSION_CATALOG_CACHE: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]], str | None]] = {}
+_SESSION_CATALOG_INFLIGHT: dict[tuple[Any, ...], threading.Event] = {}
+_SESSION_CATALOG_FAILURES: dict[tuple[Any, ...], tuple[float, BaseException]] = {}
+_SESSION_CATALOG_FAILURE_TTL_SECONDS = 1.0
+_SESSION_CATALOG_MAX_ENTRIES = 32
+
+
+def _scan_sessions_metadata_catalog(profile: str | None, live_window_seconds: int) -> list[dict[str, Any]]:
+    started = time.monotonic()
+    items = _collect_snapshot_sessions(
+        live_window_seconds=live_window_seconds,
+        include_recent_messages=False,
+        profile=profile,
+    )
+    _log.info(
+        "sessions metadata catalog scan profile=%s sessions=%d elapsed_ms=%.1f",
+        profile or "*", len(items), (time.monotonic() - started) * 1000,
+    )
+    return items
+
+
+def _finish_catalog_refresh(key: tuple[Any, ...], profile: str | None, live_window_seconds: int) -> BaseException | None:
+    error: str | None = None
+    failure: BaseException | None = None
+    try:
+        items = _scan_sessions_metadata_catalog(profile, live_window_seconds)
+    except Exception as exc:
+        items = []
+        failure = exc
+        error = type(exc).__name__
+        _log.warning("sessions metadata catalog refresh failed profile=%s error=%s", profile or "*", error)
+    with _SESSION_SNAPSHOT_CACHE_LOCK:
+        previous = _SESSION_CATALOG_CACHE.get(key)
+        if error is None:
+            _SESSION_CATALOG_CACHE[key] = (time.monotonic(), items, None)
+            _SESSION_CATALOG_FAILURES.pop(key, None)
+            if len(_SESSION_CATALOG_CACHE) > _SESSION_CATALOG_MAX_ENTRIES:
+                oldest = min(_SESSION_CATALOG_CACHE, key=lambda candidate: _SESSION_CATALOG_CACHE[candidate][0])
+                _SESSION_CATALOG_CACHE.pop(oldest, None)
+                _SESSION_CATALOG_FAILURES.pop(oldest, None)
+        elif previous:
+            _SESSION_CATALOG_CACHE[key] = (previous[0], previous[1], error)
+            _SESSION_CATALOG_FAILURES[key] = (time.monotonic(), failure or RuntimeError(error))
+        else:
+            _SESSION_CATALOG_FAILURES[key] = (time.monotonic(), failure or RuntimeError(error or "catalog refresh failed"))
+        if len(_SESSION_CATALOG_FAILURES) > _SESSION_CATALOG_MAX_ENTRIES:
+            oldest_failure = min(_SESSION_CATALOG_FAILURES, key=lambda candidate: _SESSION_CATALOG_FAILURES[candidate][0])
+            _SESSION_CATALOG_FAILURES.pop(oldest_failure, None)
+        event = _SESSION_CATALOG_INFLIGHT.pop(key, None)
+        if event:
+            event.set()
+    return failure
+
+
+def _load_sessions_metadata_catalog(
+    profile: str | None, live_window_seconds: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Share one lightweight scan across all filters, pages, and limits."""
+    if profile is not None and _profile_home(profile) is None:
+        return [], {"state": "fresh", "ageSeconds": 0.0}
+    key = (profile, live_window_seconds)
+    while True:
+        now = time.monotonic()
+        with _SESSION_SNAPSHOT_CACHE_LOCK:
+            cached = _SESSION_CATALOG_CACHE.get(key)
+            age = now - cached[0] if cached else None
+            if cached and age is not None and age < _SESSION_SNAPSHOT_CACHE_TTL_SECONDS:
+                return cached[1], {"state": "fresh", "ageSeconds": round(age, 3)}
+            inflight = _SESSION_CATALOG_INFLIGHT.get(key)
+            recent_failure = _SESSION_CATALOG_FAILURES.get(key)
+            if cached and age is not None and age < _SESSION_CATALOG_MAX_STALE_SECONDS:
+                failure_is_recent = bool(recent_failure and now - recent_failure[0] < _SESSION_CATALOG_FAILURE_TTL_SECONDS)
+                if inflight is None and not failure_is_recent:
+                    event = threading.Event()
+                    _SESSION_CATALOG_INFLIGHT[key] = event
+                    threading.Thread(
+                        target=_finish_catalog_refresh,
+                        args=(key, profile, live_window_seconds),
+                        daemon=True,
+                        name="mc-session-catalog-refresh",
+                    ).start()
+                freshness = {"state": "stale", "ageSeconds": round(age, 3)}
+                if cached[2]:
+                    freshness["refreshError"] = cached[2]
+                return cached[1], freshness
+            if recent_failure and now - recent_failure[0] < _SESSION_CATALOG_FAILURE_TTL_SECONDS and inflight is None:
+                raise recent_failure[1]
+            if inflight is None:
+                inflight = threading.Event()
+                _SESSION_CATALOG_INFLIGHT[key] = inflight
+                leader = True
+            else:
+                leader = False
+        if not leader:
+            if not inflight.wait(timeout=15):
+                raise TimeoutError("Mission Control session catalog timed out.")
+            continue
+        failure = _finish_catalog_refresh(key, profile, live_window_seconds)
+        if failure is not None:
+            raise failure
+        with _SESSION_SNAPSHOT_CACHE_LOCK:
+            cached = _SESSION_CATALOG_CACHE.get(key)
+        if cached is None:
+            if failure is not None:
+                raise failure
+            raise RuntimeError("Mission Control session catalog refresh failed.")
+
+
+def _refresh_catalog_runtime_state(
+    items: list[dict[str, Any]], live_window_seconds: int, profile: str | None = None,
+    session_id: str | None = None,
+) -> list[dict[str, Any]]:
+    refreshed = deepcopy(items)
+    resolved_session_ids = {str(item.get("sessionId") or "") for item in refreshed} if session_id else set()
+    for item in refreshed:
+        ended_at = _parse_timestamp(item.get("endedAt"))
+        item["status"] = "live" if _is_live(_parse_timestamp(item.get("lastActiveAt")), ended_at, live_window_seconds) else ("ended" if ended_at is not None else "idle")
+    for presence in active_runtime_presences():
+        owner = _normalize_text(presence.get("profile")) or "default"
+        aliases = set(_presence_aliases(presence))
+        match = next((item for item in refreshed if (item.get("profile") or "default") == owner and aliases.intersection(_item_aliases(item))), None)
+        if match:
+            _overlay_runtime_presence_item(match, presence)
+        elif profile is None or owner == profile:
+            refreshed.append(_build_runtime_presence_item(presence))
+    refreshed.sort(key=lambda item: _parse_timestamp(item.get("lastActiveAt")) or 0, reverse=True)
+    if session_id:
+        refreshed = [
+            item for item in refreshed
+            if session_id in {
+                *_item_aliases(item),
+                _normalize_text(item.get("runtimeSessionId")),
+                _normalize_text(item.get("resumedFrom")),
+            }
+            or str(item.get("sessionId") or "") in resolved_session_ids
+        ]
+    return refreshed
+
+
+def _hydrate_session_previews(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Read message content only for rows already selected for this page."""
+    hydrated = deepcopy(items)
+    databases: dict[str, Any] = {}
+    try:
+        for item in hydrated:
+            profile = str(item.get("profile") or "default")
+            if profile not in databases:
+                databases[profile] = _try_get_session_db(None if profile == "default" else profile)
+            db = databases[profile]
+            messages = _session_preview_messages(db, str(item.get("sessionId") or ""), None if profile == "default" else profile)
+            item["recentMessages"] = _recent_chat_messages(db, str(item.get("sessionId") or ""), messages=messages)
+            item["todoPlan"] = _derive_todo_plan(messages)
+    finally:
+        for db in databases.values():
+            _close_session_db(db)
+    return hydrated
 
 
 def load_agents_sessions_snapshot(
@@ -1313,74 +1528,18 @@ def load_agents_sessions_snapshot(
     SessionDB query runs: a slow read must not block unrelated cache lookups or
     turn one overloaded request into an API-wide access-control-looking outage.
     """
-    cache_key = (
-        limit,
-        live_window_seconds,
-        offset,
-        session_id,
-        include_facets,
-        include_recent_messages,
-        profile,
-        tuple(sorted((filters or {}).items())),
+    started = time.monotonic()
+    payload = _load_agents_sessions_snapshot_uncached(
+        limit=limit, live_window_seconds=live_window_seconds, offset=offset,
+        session_id=session_id, include_facets=include_facets,
+        include_recent_messages=include_recent_messages, filters=filters, profile=profile,
     )
-    while True:
-        now = time.monotonic()
-        with _SESSION_SNAPSHOT_CACHE_LOCK:
-            cached = _SESSION_SNAPSHOT_CACHE.get(cache_key)
-            if cached and now - cached[0] < _SESSION_SNAPSHOT_CACHE_TTL_SECONDS:
-                return cached[1]
-            inflight = _SESSION_SNAPSHOT_INFLIGHT.get(cache_key)
-            if inflight is None:
-                inflight = threading.Event()
-                _SESSION_SNAPSHOT_INFLIGHT[cache_key] = inflight
-                leader = True
-            else:
-                leader = False
-
-        if not leader:
-            # Wait outside the cache lock. If the leader fails, it signals and
-            # removes the entry; the next loop iteration becomes the new leader.
-            if not inflight.wait(timeout=30):
-                raise TimeoutError("Mission Control session snapshot timed out.")
-            continue
-
-        acquired = _SESSION_SNAPSHOT_WORK.acquire(timeout=15)
-        if not acquired:
-            with _SESSION_SNAPSHOT_CACHE_LOCK:
-                if _SESSION_SNAPSHOT_INFLIGHT.get(cache_key) is inflight:
-                    del _SESSION_SNAPSHOT_INFLIGHT[cache_key]
-                    inflight.set()
-            raise TimeoutError("Mission Control session snapshot worker pool is busy.")
-
-        try:
-            payload = _load_agents_sessions_snapshot_uncached(
-                limit=limit,
-                live_window_seconds=live_window_seconds,
-                offset=offset,
-                session_id=session_id,
-                include_facets=include_facets,
-                include_recent_messages=include_recent_messages,
-                filters=filters,
-                profile=profile,
-            )
-        except BaseException:
-            with _SESSION_SNAPSHOT_CACHE_LOCK:
-                if _SESSION_SNAPSHOT_INFLIGHT.get(cache_key) is inflight:
-                    del _SESSION_SNAPSHOT_INFLIGHT[cache_key]
-                    inflight.set()
-            raise
-        finally:
-            _SESSION_SNAPSHOT_WORK.release()
-
-        with _SESSION_SNAPSHOT_CACHE_LOCK:
-            _SESSION_SNAPSHOT_CACHE[cache_key] = (time.monotonic(), payload)
-            if len(_SESSION_SNAPSHOT_CACHE) > 64:
-                oldest_key = min(_SESSION_SNAPSHOT_CACHE, key=lambda key: _SESSION_SNAPSHOT_CACHE[key][0])
-                del _SESSION_SNAPSHOT_CACHE[oldest_key]
-            if _SESSION_SNAPSHOT_INFLIGHT.get(cache_key) is inflight:
-                del _SESSION_SNAPSHOT_INFLIGHT[cache_key]
-                inflight.set()
-            return payload
+    _log.info(
+        "sessions snapshot profile=%s returned=%d total=%d elapsed_ms=%.1f freshness=%s",
+        profile or "*", len(payload["items"]), payload["pagination"]["total"],
+        (time.monotonic() - started) * 1000, payload["catalogFreshness"]["state"],
+    )
+    return payload
 
 
 def _query_db_token_aggregates() -> dict[str, Any] | None:
