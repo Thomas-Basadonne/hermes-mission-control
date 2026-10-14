@@ -496,7 +496,8 @@ body.modal-open .route-page-scroll {
 }
 
 .side-menu-actions .theme-toggle-label,
-.side-menu-actions .lang-toggle-label {
+.side-menu-actions .lang-toggle-label,
+.side-menu-actions .push-toggle-label {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -510,8 +511,17 @@ body.modal-open .route-page-scroll {
   gap: 0;
 }
 
+/* Push states its two options the way Theme and Language do. */
+.side-menu-actions .push-toggle-track {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  flex-shrink: 0;
+  gap: 0;
+}
+
 .side-menu-actions .theme-toggle-option,
-.side-menu-actions .lang-toggle-option {
+.side-menu-actions .lang-toggle-option,
+.side-menu-actions .push-toggle-option {
   width: var(--touch-target);
   min-height: var(--touch-target);
   padding: 0;
@@ -523,7 +533,8 @@ body.modal-open .route-page-scroll {
 }
 
 .side-menu-actions .theme-toggle-option.is-active,
-.side-menu-actions .lang-toggle-option.is-active {
+.side-menu-actions .lang-toggle-option.is-active,
+.side-menu-actions .push-toggle-option.is-active {
   background-color: var(--color-accent-subtle);
   background-clip: padding-box;
   border-color: transparent;
@@ -535,27 +546,13 @@ body.modal-open .route-page-scroll {
 .side-menu-actions .lang-toggle-option .toggle-option-text { display: none; }
 
 .side-menu-actions .theme-toggle-option:hover,
-.side-menu-actions .lang-toggle-option:hover { border-color: transparent; }
+.side-menu-actions .lang-toggle-option:hover,
+.side-menu-actions .push-toggle-option:hover { border-color: transparent; }
 
-.side-menu-actions .push-toggle-state {
-  width: 1.75rem;
-  height: 1rem;
-  margin-left: auto;
-  border-radius: 999px;
-  background: var(--color-border);
-  padding: 2px;
-  flex-shrink: 0;
+.side-menu-actions .push-toggle-option:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
-.side-menu-actions .push-toggle-state::after {
-  content: '';
-  display: block;
-  width: 0.75rem;
-  height: 0.75rem;
-  border-radius: 50%;
-  background: var(--color-text-muted);
-}
-.side-menu-actions .push-toggle[aria-pressed='true'] .push-toggle-state { background: var(--color-accent); }
-.side-menu-actions .push-toggle[aria-pressed='true'] .push-toggle-state::after { transform: translateX(0.75rem); background: var(--color-surface); }
 
 .lock-icon {
   width: 16px;
@@ -564,19 +561,12 @@ body.modal-open .route-page-scroll {
 }
 
 .push-toggle {
+  display: flex;
+  align-items: center;
   justify-content: flex-start;
 }
 .push-toggle-label {
   font-size: 0.75rem;
-}
-.push-toggle[aria-pressed='true'] {
-  color: var(--color-accent);
-  border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
-  background: var(--color-accent-subtle);
-}
-.push-toggle:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
 }
 
 .theme-toggle {
@@ -3304,7 +3294,6 @@ body.modal-open .route-page-scroll {
     display: none;
   }
 
-  .layout-frame.is-collapsed .push-toggle-state { display: none; }
   .layout-frame.is-collapsed .side-menu-preferences,
   .layout-frame.is-collapsed .side-menu-action-group { align-items: center; }
 
@@ -3317,6 +3306,7 @@ body.modal-open .route-page-scroll {
     display: none;
   }
 
+  .layout-frame.is-collapsed .push-toggle,
   .layout-frame.is-collapsed .theme-toggle,
   .layout-frame.is-collapsed .lang-toggle {
     width: 44px;
@@ -3324,6 +3314,7 @@ body.modal-open .route-page-scroll {
     padding: 0;
   }
 
+  .layout-frame.is-collapsed .push-toggle-track,
   .layout-frame.is-collapsed .theme-toggle-track,
   .layout-frame.is-collapsed .lang-toggle-track {
     grid-template-columns: 1fr;
@@ -3331,6 +3322,7 @@ body.modal-open .route-page-scroll {
     gap: 0.375rem;
   }
 
+  .layout-frame.is-collapsed .push-toggle-option,
   .layout-frame.is-collapsed .theme-toggle-option,
   .layout-frame.is-collapsed .lang-toggle-option,
   .layout-frame.is-collapsed .side-action-button {

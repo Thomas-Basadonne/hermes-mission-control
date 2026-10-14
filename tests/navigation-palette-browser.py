@@ -228,14 +228,15 @@ def main():
                     assert evaluate('''(() => {
                         const card = document.querySelector('.side-menu-preferences');
                         const push = card?.querySelector('.push-toggle');
-                        return card?.children.length === 3 && !!push?.disabled
-                            && push.getAttribute('aria-pressed') === 'false'
+                        const options = push ? [...push.querySelectorAll('.push-toggle-option')] : [];
+                        return card?.children.length === 3 && options.length === 2 && options.every(option => option.disabled)
+                            && options[0].getAttribute('aria-pressed') === 'true' && options[1].getAttribute('aria-pressed') === 'false'
                             && push.querySelector('svg') && push.querySelector('.push-toggle-label')?.textContent === 'Push'
-                            && !!push.querySelector('.push-toggle-state')
-                            && getComputedStyle(push).cursor === 'not-allowed'
-                            && parseFloat(getComputedStyle(push).opacity) < 1;
+                            && push.getAttribute('role') === 'group' && push.getAttribute('aria-label') === push.title
+                            && getComputedStyle(options[0]).cursor === 'not-allowed'
+                            && parseFloat(getComputedStyle(options[0]).opacity) < 1;
                     })()'''), f'{mode}: three preference rows and a visibly disabled off Push control required'
-                    evaluate("document.querySelector('.push-toggle').click()")
+                    evaluate("document.querySelectorAll('.push-toggle-option')[1].click()")
                     assert evaluate('window.__pushRegisterCalls') == 1, 'disabled Push must not start a subscription'
                     screenshot(f'sidebar-push-{mode}')
                     check(f'{mode}: preferences retain three rows; Push is off, disabled and non-interactive')
@@ -243,7 +244,7 @@ def main():
                 assert_disabled_push('loading')
                 loading_height = evaluate("document.querySelector('.side-menu-preferences').getBoundingClientRect().height")
                 evaluate('window.__resolvePushRegister({pushManager: {getSubscription: async () => null}})')
-                wait("document.querySelector('.push-toggle')?.disabled === false", 'loaded idle Push must become interactive')
+                wait("[...document.querySelectorAll('.push-toggle-option')].every(option => !option.disabled)", 'loaded idle Push must become interactive')
                 assert evaluate("document.querySelector('.side-menu-preferences').getBoundingClientRect().height") == loading_height, 'loading completion must not resize the preference card'
                 evaluate('''(() => {
                     navigator.serviceWorker.register = window.__originalPushRegister;
@@ -256,7 +257,7 @@ def main():
                 assert evaluate("document.querySelector('.side-menu-preferences').getBoundingClientRect().height") == loading_height, 'unsupported Push must preserve card height'
                 evaluate('window.PushManager = window.__originalPushManager; delete window.__originalPushManager; delete window.__originalPushRegister')
                 remount([])
-                wait("document.querySelector('.push-toggle')?.disabled === false", 'supported idle Push must be restored')
+                wait("[...document.querySelectorAll('.push-toggle-option')].every(option => !option.disabled)", 'supported idle Push must be restored')
 
                 # Phase 2 intent groups and uniform rows, exercised on the mounted shell.
                 wait("!!document.querySelector('.push-toggle')", 'Push row must render on the supported fixture browser')
@@ -316,7 +317,7 @@ def main():
                         const card = style('.side-menu-preferences');
                         const lock = style('.lock-button');
                         const rows = [...find('.side-menu-preferences').children];
-                        const segments = [...find('.side-menu-preferences').querySelectorAll('.theme-toggle-option, .lang-toggle-option')];
+                        const segments = [...find('.side-menu-preferences').querySelectorAll('.theme-toggle-option, .lang-toggle-option, .push-toggle-option')];
                         const pills = [find('.palette-open-button'), ...rows, find('.lock-button')];
                         const measurements = pills.map(el => {
                             const s = getComputedStyle(el), r = el.getBoundingClientRect();
@@ -340,12 +341,12 @@ def main():
                             uniformRhythm: rhythm.length === 4 && (() => { const rowGap = parseFloat(getComputedStyle(find('.side-menu-actions')).rowGap); return rowGap > 0 && rhythm.every(gap => Math.abs(gap - rowGap) < 1); })(),
                             noPointerCursor: [...find('.side-menu-actions').querySelectorAll('*')].every(el => getComputedStyle(el).cursor !== 'pointer'),
                             lockAccent: lock.color === token('--color-accent', 'color') && lock.color !== token('--color-negative', 'color') && lock.backgroundColor === token('--color-accent-subtle', 'backgroundColor') && parseFloat(lock.borderRadius) >= 22,
-                            segments: segments.length === 4 && segments.every(el => el.getBoundingClientRect().width === 44 && el.getBoundingClientRect().height === 44 && getComputedStyle(el).backgroundClip === 'padding-box' && parseFloat(getComputedStyle(el).borderLeftWidth) === 5 && getComputedStyle(el).backgroundColor === token(el.classList.contains('is-active') ? '--color-accent-subtle' : '--color-surface-sunken', 'backgroundColor')),
-                            pushAligned: rect('.push-toggle-label').right <= rect('.push-toggle-state').left && Math.abs(rect('.push-toggle-label').top + rect('.push-toggle-label').height / 2 - rect('.push-toggle-state').top - rect('.push-toggle-state').height / 2) < 3,
+                            segments: segments.length === 6 && segments.every(el => el.getBoundingClientRect().width === 44 && el.getBoundingClientRect().height === 44 && getComputedStyle(el).backgroundClip === 'padding-box' && parseFloat(getComputedStyle(el).borderLeftWidth) === 5 && getComputedStyle(el).backgroundColor === token(el.classList.contains('is-active') ? '--color-accent-subtle' : '--color-surface-sunken', 'backgroundColor')),
+                            pushAligned: rect('.push-toggle-label').right <= rect('.push-toggle-track').left && Math.abs(rect('.push-toggle-label').top + rect('.push-toggle-label').height / 2 - rect('.push-toggle-track').top - rect('.push-toggle-track').height / 2) < 3,
                         };
                     })()''')
                     report.setdefault('action_surfaces', {})[mode] = surfaces
-                    report.setdefault('segment_styles', {})[mode] = evaluate("[...document.querySelectorAll('.side-menu-actions .theme-toggle-option, .side-menu-actions .lang-toggle-option')].map(el => ({clip: getComputedStyle(el).backgroundClip, border: getComputedStyle(el).borderLeftWidth, background: getComputedStyle(el).backgroundColor}))")
+                    report.setdefault('segment_styles', {})[mode] = evaluate("[...document.querySelectorAll('.side-menu-actions .theme-toggle-option, .side-menu-actions .lang-toggle-option, .side-menu-actions .push-toggle-option')].map(el => ({clip: getComputedStyle(el).backgroundClip, border: getComputedStyle(el).borderLeftWidth, background: getComputedStyle(el).backgroundColor}))")
                     report.setdefault('action_measurements', {})[mode] = evaluate('window.__actionMeasurements')
                     report['browser_errors'] = evaluate('window.failures || []')
                     assert all(surfaces.values()), (mode, surfaces, report['segment_styles'][mode])
@@ -429,10 +430,10 @@ def main():
                     check(f'{width}px: first sidebar action is full-width, named, with shortcut chip; header title and Chat align')
                     check(f'{width}px: all five actions have uniform full-width 44px rows; preference labels sit left of segments; version aligns beside collapse')
                 click_selector('.lang-toggle-option:last-child')
-                wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'false'", 'Italian idle Push must have a stable label and accessible off state')
+                wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelectorAll('.push-toggle-option')[1].getAttribute('aria-pressed') === 'false'", 'Italian idle Push must have a stable label and accessible off state')
                 assert evaluate("document.querySelector('.push-toggle').title === 'Attiva le notifiche push per le risposte di Hermes'"), 'Push tooltip must be localized too'
                 click_selector('.lang-toggle-option:first-child')
-                wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'false'", 'English idle Push must keep its label and accessible off state')
+                wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelectorAll('.push-toggle-option')[1].getAttribute('aria-pressed') === 'false'", 'English idle Push must keep its label and accessible off state')
                 check('Language segments change locale; Push label and tooltip use existing translations')
                 # Simulate only the browser subscription boundary: mount the real
                 # PushToggle/getPushState without requesting permission or sending push.
@@ -441,32 +442,34 @@ def main():
                     navigator.serviceWorker.register = async () => ({pushManager: {getSubscription: async () => ({})}});
                 })()''')
                 remount([])
-                wait("document.querySelector('.push-toggle-label')?.textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'true'", 'English subscribed Push must retain its label and accessible on state')
+                wait("document.querySelector('.push-toggle-label')?.textContent === 'Push' && document.querySelectorAll('.push-toggle-option')[1].getAttribute('aria-pressed') === 'true'", 'English subscribed Push must retain its label and accessible on state')
                 assert evaluate("document.querySelector('.push-toggle').title === 'Push notifications are on' && document.querySelector('.push-toggle').getAttribute('aria-label') === document.querySelector('.push-toggle').title"), 'English on state remains accessible'
-                on_switch = evaluate("({background: getComputedStyle(document.querySelector('.push-toggle-state')).backgroundColor, thumb: getComputedStyle(document.querySelector('.push-toggle-state'), '::after').transform})")
+                on_options = evaluate("[...document.querySelectorAll('.push-toggle-option')].map(option => ({pressed: option.getAttribute('aria-pressed'), active: option.classList.contains('is-active'), background: getComputedStyle(option).backgroundColor}))")
                 for theme in ('dark', 'light'):
                     evaluate(f'document.documentElement.dataset.theme = {json.dumps(theme)}')
                     wait('''(() => {
-                        const push = document.querySelector('.side-menu-actions .push-toggle');
+                        const on = document.querySelectorAll('.push-toggle-option')[1];
                         const probe = document.createElement('span');
                         probe.style.backgroundColor = 'var(--color-accent-subtle)';
-                        push.parentElement.appendChild(probe);
+                        document.querySelector('.side-menu-actions').appendChild(probe);
                         const expected = getComputedStyle(probe).backgroundColor;
                         probe.remove();
-                        return getComputedStyle(push).backgroundColor === expected;
-                    })()''', f'{theme}: subscribed Push must retain its accent-subtle surface')
-                    report.setdefault('push_on_background', {})[theme] = evaluate("getComputedStyle(document.querySelector('.push-toggle')).backgroundColor")
+                        return getComputedStyle(on).backgroundColor === expected;
+                    })()''', f'{theme}: the active On option must keep its accent-subtle surface')
+                    report.setdefault('push_on_background', {})[theme] = evaluate("getComputedStyle(document.querySelectorAll('.push-toggle-option')[1]).backgroundColor")
                 click_selector('.lang-toggle-option:last-child')
-                wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'true'", 'Italian subscribed Push must retain its label and accessible on state')
-                assert evaluate("document.querySelector('.push-toggle').title === 'Le notifiche push sono attive' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'true'"), 'subscribed Push must retain pressed state and localized tooltip'
+                wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelectorAll('.push-toggle-option')[1].getAttribute('aria-pressed') === 'true'", 'Italian subscribed Push must retain its label and accessible on state')
+                assert evaluate("document.querySelector('.push-toggle').title === 'Le notifiche push sono attive' && document.querySelectorAll('.push-toggle-option')[1].getAttribute('aria-pressed') === 'true'"), 'subscribed Push must retain pressed state and localized tooltip'
                 click_selector('.lang-toggle-option:first-child')
-                wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'true'", 'English subscribed Push state must be restored')
+                wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelectorAll('.push-toggle-option')[1].getAttribute('aria-pressed') === 'true'", 'English subscribed Push state must be restored')
                 evaluate('navigator.serviceWorker.register = window.__originalSWRegister; delete window.__originalSWRegister')
                 remount([])
-                wait("document.querySelector('.push-toggle-label')?.textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'false'", 'real idle Push fixture must be restored')
-                off_switch = evaluate("({background: getComputedStyle(document.querySelector('.push-toggle-state')).backgroundColor, thumb: getComputedStyle(document.querySelector('.push-toggle-state'), '::after').transform})")
-                assert on_switch['background'] != off_switch['background'] and on_switch['thumb'] != off_switch['thumb'], 'Push switch must reflect the changed subscription state'
-                check('Push label stays stable in EN/IT and on/off states; accessible state and localized tooltips follow the real component')
+                wait("document.querySelector('.push-toggle-label')?.textContent === 'Push' && document.querySelectorAll('.push-toggle-option')[1].getAttribute('aria-pressed') === 'false'", 'real idle Push fixture must be restored')
+                off_options = evaluate("[...document.querySelectorAll('.push-toggle-option')].map(option => ({pressed: option.getAttribute('aria-pressed'), active: option.classList.contains('is-active'), background: getComputedStyle(option).backgroundColor}))")
+                assert on_options[1]['pressed'] == 'true' and on_options[0]['pressed'] == 'false' and on_options[1]['active'] and not on_options[0]['active'], 'subscribed Push must move the active option to On'
+                assert off_options[0]['pressed'] == 'true' and off_options[1]['pressed'] == 'false' and off_options[0]['active'] and not off_options[1]['active'], 'idle Push must move the active option back to Off'
+                assert on_options[1]['background'] != off_options[1]['background'], 'the On option must change surface with the subscription state'
+                check('Push keeps its label in EN/IT and moves the active option between Off and On; accessible state and localized tooltips follow the real component')
                 click_selector('.desktop-sidebar-toggle')
                 wait("document.querySelector('.layout-frame').classList.contains('is-collapsed')", 'sidebar did not collapse')
                 assert evaluate('''(() => {
@@ -478,12 +481,12 @@ def main():
                 })()'''), 'collapsed opener must be a named 44x44 icon-only control'
                 assert evaluate('''(() => {
                     const controls = [...document.querySelectorAll('.side-menu-actions button')];
-                    return controls.length === 7 && controls.every(el => {
+                    return controls.length === 8 && controls.every(el => {
                         const r = el.getBoundingClientRect();
                         return r.width === 44 && r.height === 44 && !!el.getAttribute('aria-label');
                     }) && document.querySelector('.sidebar-version').getBoundingClientRect().width === 0
-                        && [...document.querySelectorAll('.theme-toggle-label, .lang-toggle-label, .push-toggle-label, .push-toggle-state, .lock-label')].every(el => el.getBoundingClientRect().width === 0);
-                })()'''), 'collapsed actions must preserve separate named 44x44 controls with labels, state and version hidden'
+                        && [...document.querySelectorAll('.theme-toggle-label, .lang-toggle-label, .push-toggle-label, .lock-label')].every(el => el.getBoundingClientRect().width === 0);
+                })()'''), 'collapsed actions must keep every option named and 44x44 with row labels and version hidden'
                 click_selector('.palette-open-button')
                 wait("!!document.querySelector('.navigation-palette')", 'collapsed opener did not open palette')
                 press_escape()
