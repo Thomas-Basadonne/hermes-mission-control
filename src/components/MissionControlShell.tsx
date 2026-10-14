@@ -173,7 +173,7 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
   }, []);
 
   // Mobile gating: the palette is a desktop affordance. Below the CSS
-  // breakpoint the header trigger is hidden and the shortcut is inert so the
+  // breakpoint the sidebar trigger is hidden and the shortcut is inert so the
   // palette cannot be reached at all (it is not rendered either).
   useEffect(() => {
     const query = window.matchMedia(NAVIGATION_PALETTE_MOBILE_QUERY);
@@ -533,6 +533,13 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
           <div className="side-menu-head">
             <div className="side-menu-head-top">
               <p className="eyebrow">{t('nav.missionControl')}</p>
+              <span
+                className="sidebar-version"
+                aria-label={t('nav.version', { version: APP_VERSION })}
+                title={t('nav.version', { version: APP_VERSION })}
+              >
+                v{APP_VERSION}
+              </span>
               <Button
                 variant="ghost"
                 size="md"
@@ -598,29 +605,40 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
           </nav>
 
           <div className="side-menu-actions">
-            <PushToggle />
-            <ThemeSelector />
-            <LanguageSwitcher />
-            <Button
-              variant="secondary"
-              size="md"
-              icon={<LockKeyhole size={16} />}
-              className="side-action-button lock-button"
-              type="button"
-              onClick={logout}
-              aria-label={t('auth.lockDashboard')}
-              title={t('auth.lock')}
-            >
-              <span className="lock-label">{t('auth.lock')}</span>
-            </Button>
+            {paletteMobile ? null : (
+              <Button
+                variant="secondary"
+                size="md"
+                icon={<Search size={16} />}
+                className="pill pill-subtle side-action-button palette-open-button"
+                type="button"
+                onClick={openPalette}
+                aria-label={t('palette.open')}
+                title={t('palette.open')}
+              >
+                <span className="palette-open-label">{t('palette.open')}</span><kbd>{typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl+K'}</kbd>
+              </Button>
+            )}
+            <div className="side-menu-preferences">
+              <PushToggle />
+              <ThemeSelector />
+              <LanguageSwitcher />
+            </div>
+            <div className="side-menu-action-group">
+              <Button
+                variant="secondary"
+                size="md"
+                icon={<LockKeyhole size={16} />}
+                className="side-action-button lock-button"
+                type="button"
+                onClick={logout}
+                aria-label={t('auth.lockDashboard')}
+                title={t('auth.lock')}
+              >
+                <span className="lock-label">{t('auth.lock')}</span>
+              </Button>
+            </div>
           </div>
-          <span
-            className="sidebar-version"
-            aria-label={t('nav.version', { version: APP_VERSION })}
-            title={t('nav.version', { version: APP_VERSION })}
-          >
-            v{APP_VERSION}
-          </span>
         </aside>
 
         {sideOpen ? (
@@ -651,20 +669,6 @@ export function MissionControlShell({ registry, navItems: runtimeNavItems = [] }
                 <h1>{activeNav ? (activeNav.label.includes('.') ? t(activeNav.label) : activeNav.label) : t('nav.overview')}</h1>
               </div>
             </div>
-            {paletteMobile ? null : (
-              <Button
-                variant="secondary"
-                size="md"
-                icon={<Search size={16} />}
-                className="palette-open-button"
-                type="button"
-                onClick={openPalette}
-                aria-label={t('palette.open')}
-                title={t('palette.open')}
-              >
-                <span>{t('palette.open')}</span><kbd>{typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl+K'}</kbd>
-              </Button>
-            )}
             <Button
               ref={chatButtonRef}
               variant="secondary"

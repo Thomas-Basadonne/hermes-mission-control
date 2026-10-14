@@ -103,7 +103,7 @@ try {
   const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
   const breakpoint = /max-width:\s*(\d+)px/.exec(NAVIGATION_PALETTE_MOBILE_QUERY);
   assert.ok(breakpoint, `mobile query must carry a px breakpoint: ${NAVIGATION_PALETTE_MOBILE_QUERY}`);
-  assert.match(styles, new RegExp(`@media \\(max-width: ${breakpoint[1]}px\\)[\\s\\S]*?\\.palette-open-button\\s*\\{[^}]*display:\\s*none`), 'mobile stylesheet must hide the header trigger');
+  assert.match(styles, new RegExp(`@media \\(max-width: ${breakpoint[1]}px\\)[\\s\\S]*?\\.palette-open-button\\s*\\{[^}]*display:\\s*none`), 'mobile stylesheet must hide the sidebar trigger');
   assert.match(styles, new RegExp(`@media \\(max-width: ${breakpoint[1]}px\\)[\\s\\S]*?\\.navigation-palette-backdrop\\s*\\{[^}]*display:\\s*none`), 'mobile stylesheet must hide the palette overlay');
 
   const en = JSON.parse(readFileSync(new URL('../src/locales/en.json', import.meta.url), 'utf8'));
@@ -130,7 +130,7 @@ assert.match(shell, /stepNavigationPaletteIndex\(/, 'arrow handling must use the
 assert.match(shell, /paletteSelectionIndexAfterChange\(/, 'the shell must clear a stale selection when the query changes');
 assert.match(shell, /event\.key === 'Enter'[\s\S]*?activatePaletteItemRef\.current/, 'Enter must activate the selected/resolved option');
 assert.match(shell, /paletteOpen && !paletteMobile/, 'the palette overlay must not render on mobile');
-assert.match(shell, /paletteMobile \? null : \(/, 'the header trigger must not render on mobile');
+assert.match(shell, /paletteMobile \? null : \(/, 'the palette trigger rendering must be gated by paletteMobile (placement is covered by the browser harness)');
 assert.match(shell, /if \(paletteMobile\) return;/, 'the shortcut must be inert on mobile');
 
 console.log('navigation palette filtering, catalog merge, keyboard selection, mobile gating, shortcut target and Escape-layer behavior passed');

@@ -1,4 +1,5 @@
 import { useI18n } from '../lib/i18n';
+import { Sun } from 'lucide-react';
 import { useMissionControl } from '../lib/mission-control-store';
 
 function SunIcon() {
@@ -30,7 +31,12 @@ export function ThemeSelector({ showLabel = true, className = '' }: { showLabel?
 
   return (
     <div className={`theme-toggle ${className}`.trim()} role="group" aria-label="Theme mode">
-      {showLabel ? <span className="theme-toggle-label">{t('theme.label')}</span> : null}
+      {showLabel ? (
+        <span className="theme-toggle-label">
+          <Sun size={16} className="sidebar-preference-icon" aria-hidden />
+          {t('theme.label')}
+        </span>
+      ) : null}
       <div className="theme-toggle-track">
         <button
           type="button"
@@ -41,7 +47,7 @@ export function ThemeSelector({ showLabel = true, className = '' }: { showLabel?
           aria-pressed={resolvedTheme === 'light'}
         >
           <SunIcon />
-          <span>{t('theme.light')}</span>
+          <span className="toggle-option-text">{t('theme.light')}</span>
         </button>
         <button
           type="button"
@@ -52,7 +58,7 @@ export function ThemeSelector({ showLabel = true, className = '' }: { showLabel?
           aria-pressed={resolvedTheme === 'dark'}
         >
           <MoonIcon />
-          <span>{t('theme.dark')}</span>
+          <span className="toggle-option-text">{t('theme.dark')}</span>
         </button>
       </div>
     </div>

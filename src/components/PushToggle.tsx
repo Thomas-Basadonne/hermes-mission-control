@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Bell, BellOff, Loader2 } from 'lucide-react';
 import { useMissionControl } from '../lib/mission-control-store';
+import { useI18n } from '../lib/i18n';
 import { getPushState, pushSupported, subscribeToPush, unsubscribeFromPush, type PushSubscriptionState } from '../lib/push-client';
 
 /**
@@ -10,6 +11,7 @@ import { getPushState, pushSupported, subscribeToPush, unsubscribeFromPush, type
  * while the app is in the background or closed.
  */
 export function PushToggle() {
+  const { t } = useI18n();
   const { storedToken } = useMissionControl();
   const [state, setState] = useState<PushSubscriptionState | null>(null);
   const [busy, setBusy] = useState(false);
@@ -22,13 +24,12 @@ export function PushToggle() {
     refresh();
   }, [refresh]);
 
-  if (!pushSupported()) return null;
-  if (!state) return null;
-
-  const subscribed = state.status === 'subscribed';
+  const unsupported = !pushSupported() || state?.status === 'unsupported';
+  const subscribed = state?.status === 'subscribed';
+  const disabled = busy || !state || unsupported || state.status === 'denied';
 
   const toggle = async () => {
-    if (busy) return;
+    if (disabled) return;
     setBusy(true);
     try {
       const next = subscribed
@@ -41,29 +42,30 @@ export function PushToggle() {
   };
 
   const title = subscribed
-    ? 'Push notifications are on'
-    : state.status === 'denied'
-      ? 'Notifications blocked in browser settings'
-      : 'Enable push notifications for Hermes responses';
+    ? t('push.onTitle')
+    : unsupported || state?.status === 'denied'
+      ? t('push.blocked')
+      : t('push.enable');
 
   return (
     <button
       className="pill pill-subtle pill-button side-action-button push-toggle"
       type="button"
       onClick={() => void toggle()}
-      disabled={busy || state.status === 'denied'}
+      disabled={disabled}
       aria-label={title}
       title={title}
       aria-pressed={subscribed}
     >
       {busy ? (
-        <Loader2 size={15} className="chat-spin" />
+        <Loader2 size={16} className="chat-spin" />
       ) : subscribed ? (
-        <Bell size={15} />
+        <Bell size={16} />
       ) : (
-        <BellOff size={15} />
+        <BellOff size={16} />
       )}
-      <span className="push-toggle-label">{subscribed ? 'Push: On' : 'Push: Off'}</span>
+      <span className="push-toggle-label">{t('push.label')}</span>
+      <span className="push-toggle-state" aria-hidden="true" />
     </button>
   );
 }
