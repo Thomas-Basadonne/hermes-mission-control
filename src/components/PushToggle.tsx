@@ -24,13 +24,12 @@ export function PushToggle() {
     refresh();
   }, [refresh]);
 
-  if (!pushSupported()) return null;
-  if (!state) return null;
-
-  const subscribed = state.status === 'subscribed';
+  const unsupported = !pushSupported() || state?.status === 'unsupported';
+  const subscribed = state?.status === 'subscribed';
+  const disabled = busy || !state || unsupported || state.status === 'denied';
 
   const toggle = async () => {
-    if (busy) return;
+    if (disabled) return;
     setBusy(true);
     try {
       const next = subscribed
@@ -44,7 +43,7 @@ export function PushToggle() {
 
   const title = subscribed
     ? t('push.onTitle')
-    : state.status === 'denied'
+    : unsupported || state?.status === 'denied'
       ? t('push.blocked')
       : t('push.enable');
 
@@ -53,7 +52,7 @@ export function PushToggle() {
       className="pill pill-subtle pill-button side-action-button push-toggle"
       type="button"
       onClick={() => void toggle()}
-      disabled={busy || state.status === 'denied'}
+      disabled={disabled}
       aria-label={title}
       title={title}
       aria-pressed={subscribed}

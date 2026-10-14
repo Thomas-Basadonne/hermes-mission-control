@@ -212,10 +212,91 @@ def main():
                 wait("!!document.querySelector('.workspace-bar')", 'Shell failed to mount')
                 wait("!!document.querySelector('.side-menu-actions > .palette-open-button:first-child')", 'the palette opener must be the first row of the sidebar actions')
 
+                # Hold the real getPushState at the browser boundary, not a mocked component.
+                evaluate('''(() => {
+                    window.__originalPushRegister = navigator.serviceWorker.register;
+                    window.__pushRegisterCalls = 0;
+                    navigator.serviceWorker.register = () => {
+                        window.__pushRegisterCalls++;
+                        return new Promise(resolve => { window.__resolvePushRegister = resolve; });
+                    };
+                })()''')
+                remount([])
+                wait('!!window.__resolvePushRegister', 'Push state must be held pending')
+
+                def assert_disabled_push(mode):
+                    assert evaluate('''(() => {
+                        const card = document.querySelector('.side-menu-preferences');
+                        const push = card?.querySelector('.push-toggle');
+                        return card?.children.length === 3 && !!push?.disabled
+                            && push.getAttribute('aria-pressed') === 'false'
+                            && push.querySelector('svg') && push.querySelector('.push-toggle-label')?.textContent === 'Push'
+                            && !!push.querySelector('.push-toggle-state')
+                            && getComputedStyle(push).cursor === 'not-allowed'
+                            && parseFloat(getComputedStyle(push).opacity) < 1;
+                    })()'''), f'{mode}: three preference rows and a visibly disabled off Push control required'
+                    evaluate("document.querySelector('.push-toggle').click()")
+                    assert evaluate('window.__pushRegisterCalls') == 1, 'disabled Push must not start a subscription'
+                    screenshot(f'sidebar-push-{mode}')
+                    check(f'{mode}: preference card retains three rows; Push is off, disabled and non-interactive')
+
+                assert_disabled_push('loading')
+                loading_height = evaluate("document.querySelector('.side-menu-preferences').getBoundingClientRect().height")
+                evaluate('window.__resolvePushRegister({pushManager: {getSubscription: async () => null}})')
+                wait("document.querySelector('.push-toggle')?.disabled === false", 'loaded idle Push must become interactive')
+                assert evaluate("document.querySelector('.side-menu-preferences').getBoundingClientRect().height") == loading_height, 'loading completion must not resize the preference card'
+                evaluate('''(() => {
+                    navigator.serviceWorker.register = window.__originalPushRegister;
+                    window.__originalPushManager = window.PushManager;
+                    delete window.PushManager;
+                })()''')
+                remount([])
+                assert_disabled_push('unsupported')
+                assert evaluate("document.querySelector('.push-toggle').title === 'Notifications blocked in browser settings' && document.querySelector('.push-toggle').getAttribute('aria-label') === document.querySelector('.push-toggle').title"), 'unsupported Push must use the existing blocked translation'
+                assert evaluate("document.querySelector('.side-menu-preferences').getBoundingClientRect().height") == loading_height, 'unsupported Push must preserve card height'
+                evaluate('window.PushManager = window.__originalPushManager; delete window.__originalPushManager; delete window.__originalPushRegister')
+                remount([])
+                wait("document.querySelector('.push-toggle')?.disabled === false", 'supported idle Push must be restored')
+
                 # Phase 2 intent groups and uniform rows, exercised on the mounted shell.
                 wait("!!document.querySelector('.push-toggle')", 'Push row must render on the supported fixture browser')
                 assert evaluate("!!document.querySelector('.side-menu-head-top .sidebar-version') && !document.querySelector('.side-menu-actions .sidebar-version')"), 'version must move to the sidebar head beside collapse'
                 assert evaluate("document.querySelector('.side-menu-preferences')?.querySelectorAll('.push-toggle, .theme-toggle, .lang-toggle').length === 3 && !!document.querySelector('.side-menu-action-group > .lock-button')"), 'preferences and Lock must have separate intent groups'
+
+                # Reused by the real surface check and CSS mutation probes below.
+                evaluate('''window.__noPreferenceDividers = () => {
+                    const card = document.querySelector('.side-menu-preferences');
+                    const elements = [card, document.querySelector('.side-menu-action-group'), ...card.children];
+                    const noBorders = s => ['Top', 'Right', 'Bottom', 'Left'].every(side => parseFloat(s['border' + side + 'Width']) === 0);
+                    const noVisiblePseudo = (el, pseudo) => {
+                        const s = getComputedStyle(el, pseudo);
+                        if (s.content === 'none' || s.content === 'normal' || s.display === 'none'
+                            || s.visibility === 'hidden' || parseFloat(s.opacity) === 0) return true;
+                        // Conservatively reject generated boxes with height, borders,
+                        // text or shadows, even if their current color is transparent.
+                        return noBorders(s) && !(parseFloat(s.height) > 0)
+                            && ['\"\"', "''"].includes(s.content) && s.boxShadow === 'none'
+                            && s.backgroundImage === 'none';
+                    };
+                    return elements.every(el => noBorders(getComputedStyle(el))
+                        && noVisiblePseudo(el, '::before') && noVisiblePseudo(el, '::after'));
+                }''')
+                for selector in ('.side-menu-preferences', '.side-menu-action-group', '.push-toggle', '.theme-toggle', '.lang-toggle'):
+                    for side in ('top', 'right', 'bottom', 'left'):
+                        evaluate(f'''(() => {{ const s = document.createElement('style'); s.id = 'divider-probe';
+                            s.textContent = {json.dumps(selector + ' { border-' + side + ': 1px solid red !important; }')};
+                            document.head.appendChild(s); }})()''')
+                        assert not evaluate('window.__noPreferenceDividers()'), (selector, side)
+                        evaluate("document.getElementById('divider-probe').remove()")
+                    for pseudo in ('::before', '::after'):
+                        for rule in ('height: 1px; background: red;', 'border-bottom: 1px solid red;', 'content: "separator";'):
+                            evaluate(f'''(() => {{ const s = document.createElement('style'); s.id = 'divider-probe';
+                                s.textContent = {json.dumps(selector + pseudo + ' { content: ""; display: block; ' + rule + ' }')};
+                                document.head.appendChild(s); }})()''')
+                            assert not evaluate('window.__noPreferenceDividers()'), (selector, pseudo, rule)
+                            evaluate("document.getElementById('divider-probe').remove()")
+                assert evaluate('window.__noPreferenceDividers()'), 'removing synthetic dividers must restore the clean card'
+                check('divider guard rejects all four borders and before/after height, border and content separators on card, group and every row')
 
                 def assert_action_surfaces(mode):
                     surfaces = evaluate('''(() => {
@@ -237,7 +318,7 @@ def main():
                         return {
                             searchPill: parseFloat(search.borderRadius) >= 22 && parseFloat(search.borderTopWidth) === 0 && search.backgroundColor !== style('.side-menu').backgroundColor && search.backgroundColor !== 'rgba(0, 0, 0, 0)',
                             cardSurface: parseFloat(card.borderRadius) >= 12 && card.backgroundColor !== style('.side-menu').backgroundColor && card.backgroundColor !== 'rgba(0, 0, 0, 0)',
-                            noDividers: [card, style('.side-menu-action-group'), ...rows.map(el => getComputedStyle(el))].every(s => parseFloat(s.borderTopWidth) === 0),
+                            noDividers: window.__noPreferenceDividers(),
                             contiguous: rows.every((el, i) => i === 0 || Math.abs(el.getBoundingClientRect().top - rows[i-1].getBoundingClientRect().bottom) < 1),
                             spacing: rect('.side-menu-preferences').top - rect('.palette-open-button').bottom >= 12 && rect('.lock-button').top - rect('.side-menu-preferences').bottom >= 8,
                             lockAccent: lock.color === token('--color-accent', 'color') && lock.color !== token('--color-negative', 'color') && lock.backgroundColor === token('--color-accent-subtle', 'backgroundColor') && parseFloat(lock.borderRadius) >= 22,
