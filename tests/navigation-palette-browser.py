@@ -238,7 +238,7 @@ def main():
                     evaluate("document.querySelector('.push-toggle').click()")
                     assert evaluate('window.__pushRegisterCalls') == 1, 'disabled Push must not start a subscription'
                     screenshot(f'sidebar-push-{mode}')
-                    check(f'{mode}: preference card retains three rows; Push is off, disabled and non-interactive')
+                    check(f'{mode}: preferences retain three rows; Push is off, disabled and non-interactive')
 
                 assert_disabled_push('loading')
                 loading_height = evaluate("document.querySelector('.side-menu-preferences').getBoundingClientRect().height")
@@ -266,7 +266,9 @@ def main():
                 # Reused by the real surface check and CSS mutation probes below.
                 evaluate('''window.__noPreferenceDividers = () => {
                     const card = document.querySelector('.side-menu-preferences');
-                    const elements = [card, document.querySelector('.side-menu-action-group'), ...card.children];
+                    const elements = [card, document.querySelector('.side-menu-action-group'),
+                        document.querySelector('.side-menu-actions .palette-open-button'),
+                        document.querySelector('.side-menu-actions .lock-button'), ...card.children];
                     const noBorders = s => ['Top', 'Right', 'Bottom', 'Left'].every(side => parseFloat(s['border' + side + 'Width']) === 0);
                     const noVisiblePseudo = (el, pseudo) => {
                         const s = getComputedStyle(el, pseudo);
@@ -281,7 +283,7 @@ def main():
                     return elements.every(el => noBorders(getComputedStyle(el))
                         && noVisiblePseudo(el, '::before') && noVisiblePseudo(el, '::after'));
                 }''')
-                for selector in ('.side-menu-preferences', '.side-menu-action-group', '.push-toggle', '.theme-toggle', '.lang-toggle'):
+                for selector in ('.side-menu-preferences', '.side-menu-action-group', '.push-toggle', '.theme-toggle', '.lang-toggle', '.side-menu-actions .palette-open-button', '.side-menu-actions .lock-button'):
                     for side in ('top', 'right', 'bottom', 'left'):
                         evaluate(f'''(() => {{ const s = document.createElement('style'); s.id = 'divider-probe';
                             s.textContent = {json.dumps(selector + ' { border-' + side + ': 1px solid red !important; }')};
@@ -295,8 +297,8 @@ def main():
                                 document.head.appendChild(s); }})()''')
                             assert not evaluate('window.__noPreferenceDividers()'), (selector, pseudo, rule)
                             evaluate("document.getElementById('divider-probe').remove()")
-                assert evaluate('window.__noPreferenceDividers()'), 'removing synthetic dividers must restore the clean card'
-                check('divider guard rejects all four borders and before/after height, border and content separators on card, group and every row')
+                assert evaluate('window.__noPreferenceDividers()'), 'removing synthetic dividers must restore clean pills and wrappers'
+                check('divider guard rejects all four borders and before/after height, border and content separators on wrappers and every pill')
 
                 def assert_action_surfaces(mode):
                     surfaces = evaluate('''(() => {
@@ -315,11 +317,24 @@ def main():
                         const lock = style('.lock-button');
                         const rows = [...find('.side-menu-preferences').children];
                         const segments = [...find('.side-menu-preferences').querySelectorAll('.theme-toggle-option, .lang-toggle-option')];
+                        const pills = [find('.palette-open-button'), ...rows, find('.lock-button')];
+                        const measurements = pills.map(el => {
+                            const s = getComputedStyle(el), r = el.getBoundingClientRect();
+                            return {height: r.height, left: r.left, right: r.right,
+                                radius: s.borderRadius, background: s.backgroundColor};
+                        });
+                        const gaps = rows.slice(1).map((el, i) => el.getBoundingClientRect().top - rows[i].getBoundingClientRect().bottom);
+                        window.__actionMeasurements = {pills: measurements, gaps,
+                            wrapperBackground: card.backgroundColor,
+                            surfaceRaised: token('--color-surface-raised', 'backgroundColor'),
+                            accent: lock.color, accentSubtle: lock.backgroundColor};
                         return {
-                            searchPill: parseFloat(search.borderRadius) >= 22 && parseFloat(search.borderTopWidth) === 0 && search.backgroundColor !== style('.side-menu').backgroundColor && search.backgroundColor !== 'rgba(0, 0, 0, 0)',
-                            cardSurface: parseFloat(card.borderRadius) >= 12 && card.backgroundColor !== style('.side-menu').backgroundColor && card.backgroundColor !== 'rgba(0, 0, 0, 0)',
+                            searchPill: search.backgroundColor === token('--color-surface-raised', 'backgroundColor') && parseFloat(search.borderTopWidth) === 0 && search.backgroundColor !== style('.side-menu').backgroundColor && search.backgroundColor !== 'rgba(0, 0, 0, 0)',
+                            transparentContainer: card.backgroundColor === 'rgba(0, 0, 0, 0)' && card.borderRadius === '0px' && ['Top', 'Right', 'Bottom', 'Left'].every(side => parseFloat(card['padding' + side]) === 0),
+                            independentPills: rows.every(el => getComputedStyle(el).backgroundColor === search.backgroundColor && getComputedStyle(el).borderRadius === '999px'),
+                            uniformPills: measurements.length === 5 && measurements.every(r => r.height === 44 && r.radius === '999px' && r.left === measurements[0].left && r.right === measurements[0].right),
                             noDividers: window.__noPreferenceDividers(),
-                            contiguous: rows.every((el, i) => i === 0 || Math.abs(el.getBoundingClientRect().top - rows[i-1].getBoundingClientRect().bottom) < 1),
+                            separated: gaps.every(gap => gap >= 4),
                             spacing: rect('.side-menu-preferences').top - rect('.palette-open-button').bottom >= 12 && rect('.lock-button').top - rect('.side-menu-preferences').bottom >= 8,
                             lockAccent: lock.color === token('--color-accent', 'color') && lock.color !== token('--color-negative', 'color') && lock.backgroundColor === token('--color-accent-subtle', 'backgroundColor') && parseFloat(lock.borderRadius) >= 22,
                             segments: segments.length === 4 && segments.every(el => el.getBoundingClientRect().width === 44 && el.getBoundingClientRect().height === 44 && getComputedStyle(el).backgroundClip === 'padding-box' && parseFloat(getComputedStyle(el).borderLeftWidth) === 5 && getComputedStyle(el).backgroundColor === token(el.classList.contains('is-active') ? '--color-accent-subtle' : '--color-surface-sunken', 'backgroundColor')),
@@ -328,7 +343,26 @@ def main():
                     })()''')
                     report.setdefault('action_surfaces', {})[mode] = surfaces
                     report.setdefault('segment_styles', {})[mode] = evaluate("[...document.querySelectorAll('.side-menu-actions .theme-toggle-option, .side-menu-actions .lang-toggle-option')].map(el => ({clip: getComputedStyle(el).backgroundClip, border: getComputedStyle(el).borderLeftWidth, background: getComputedStyle(el).backgroundColor}))")
+                    report.setdefault('action_measurements', {})[mode] = evaluate('window.__actionMeasurements')
+                    report['browser_errors'] = evaluate('window.failures || []')
                     assert all(surfaces.values()), (mode, surfaces, report['segment_styles'][mode])
+                    for selector in ('.side-menu-actions .palette-open-button', '.side-menu-actions .push-toggle'):
+                        before = evaluate(f'getComputedStyle(document.querySelector({json.dumps(selector)})).backgroundColor')
+                        point = evaluate(f'''(() => {{ const r = document.querySelector({json.dumps(selector)}).getBoundingClientRect();
+                            return {{x: r.x + r.width / 2, y: r.y + r.height / 2}}; }})()''')
+                        driver.call('Input.dispatchMouseEvent', type='mouseMoved', **point)
+                        wait(f'''(() => {{
+                            const probe = document.createElement('span');
+                            probe.style.backgroundColor = 'color-mix(in srgb, var(--color-text) 5%, var(--color-surface-raised))';
+                            document.querySelector('.side-menu-actions').appendChild(probe);
+                            const expected = getComputedStyle(probe).backgroundColor;
+                            probe.remove();
+                            const actual = getComputedStyle(document.querySelector({json.dumps(selector)})).backgroundColor;
+                            return actual === expected && actual !== {json.dumps(before)};
+                        }})()''', f'{mode}: neutral hover must resolve to the 5% text mix')
+                        report.setdefault('neutral_hover', {}).setdefault(mode, {})[selector] = evaluate(f'getComputedStyle(document.querySelector({json.dumps(selector)})).backgroundColor')
+                        driver.call('Input.dispatchMouseEvent', type='mouseMoved', x=500, y=100)
+                        wait(f'getComputedStyle(document.querySelector({json.dumps(selector)})).backgroundColor === {json.dumps(before)}', 'neutral hover surface must reset')
                     before_hover = evaluate("getComputedStyle(document.querySelector('.lock-button')).backgroundColor")
                     point = evaluate("(() => { const r = document.querySelector('.lock-button').getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()")
                     driver.call('Input.dispatchMouseEvent', type='mouseMoved', **point)
@@ -336,7 +370,7 @@ def main():
                     assert evaluate("document.querySelector('.lock-button').querySelectorAll('svg').length === 1 && !document.querySelector('.lock-button kbd, .lock-button input, .lock-button [role=switch]')"), 'Lock remains a single action without a trailing control'
                     driver.call('Input.dispatchMouseEvent', type='mouseMoved', x=500, y=100)
                     wait(f"getComputedStyle(document.querySelector('.lock-button')).backgroundColor === {json.dumps(before_hover)}", 'Lock hover surface must reset')
-                    check(f'{mode}: computed search pill, contiguous preference card, isolated accent Lock, aligned Push and 44px segments')
+                    check(f'{mode}: computed independent neutral pills, transparent spaced preferences, uniform 44px geometry, perceptible neutral hover, isolated accent Lock, aligned Push and 44px segments')
 
                 evaluate("document.documentElement.dataset.theme = 'dark'")
                 time.sleep(0.3)  # Let token-dependent control transitions settle before sampling.
@@ -396,6 +430,18 @@ def main():
                 wait("document.querySelector('.push-toggle-label')?.textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'true'", 'English subscribed Push must retain its label and accessible on state')
                 assert evaluate("document.querySelector('.push-toggle').title === 'Push notifications are on' && document.querySelector('.push-toggle').getAttribute('aria-label') === document.querySelector('.push-toggle').title"), 'English on state remains accessible'
                 on_switch = evaluate("({background: getComputedStyle(document.querySelector('.push-toggle-state')).backgroundColor, thumb: getComputedStyle(document.querySelector('.push-toggle-state'), '::after').transform})")
+                for theme in ('dark', 'light'):
+                    evaluate(f'document.documentElement.dataset.theme = {json.dumps(theme)}')
+                    wait('''(() => {
+                        const push = document.querySelector('.side-menu-actions .push-toggle');
+                        const probe = document.createElement('span');
+                        probe.style.backgroundColor = 'var(--color-accent-subtle)';
+                        push.parentElement.appendChild(probe);
+                        const expected = getComputedStyle(probe).backgroundColor;
+                        probe.remove();
+                        return getComputedStyle(push).backgroundColor === expected;
+                    })()''', f'{theme}: subscribed Push must retain its accent-subtle surface')
+                    report.setdefault('push_on_background', {})[theme] = evaluate("getComputedStyle(document.querySelector('.push-toggle')).backgroundColor")
                 click_selector('.lang-toggle-option:last-child')
                 wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'true'", 'Italian subscribed Push must retain its label and accessible on state')
                 assert evaluate("document.querySelector('.push-toggle').title === 'Le notifiche push sono attive' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'true'"), 'subscribed Push must retain pressed state and localized tooltip'
@@ -405,7 +451,7 @@ def main():
                 remount([])
                 wait("document.querySelector('.push-toggle-label')?.textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'false'", 'real idle Push fixture must be restored')
                 off_switch = evaluate("({background: getComputedStyle(document.querySelector('.push-toggle-state')).backgroundColor, thumb: getComputedStyle(document.querySelector('.push-toggle-state'), '::after').transform})")
-                assert on_switch['background'] != off_switch['background'] and on_switch['thumb'] != off_switch['thumb'], 'Only the switch must visually reflect the changed Push state'
+                assert on_switch['background'] != off_switch['background'] and on_switch['thumb'] != off_switch['thumb'], 'Push switch must reflect the changed subscription state'
                 check('Push label stays stable in EN/IT and on/off states; accessible state and localized tooltips follow the real component')
                 click_selector('.desktop-sidebar-toggle')
                 wait("document.querySelector('.layout-frame').classList.contains('is-collapsed')", 'sidebar did not collapse')

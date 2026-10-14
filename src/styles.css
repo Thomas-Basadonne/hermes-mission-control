@@ -447,8 +447,7 @@ body.modal-open .route-page-scroll {
 }
 
 .side-menu-actions .side-menu-preferences {
-  border-radius: var(--control-radius);
-  background: var(--color-surface);
+  gap: 0.5rem;
 }
 
 .side-menu-actions .palette-open-button { margin-bottom: 0.5rem; }
@@ -464,14 +463,15 @@ body.modal-open .route-page-scroll {
   padding: 0 0.625rem;
   gap: 0.5rem;
   border: 0;
-  border-radius: 10px;
-  background: transparent;
+  border-radius: 999px;
+  background: var(--color-surface-raised);
   color: var(--color-text-subtle);
   font-size: 0.75rem;
 }
 
-.side-menu-actions .side-action-button:hover { background: var(--color-surface-raised); }
+.side-menu-actions .side-action-button:hover { background: color-mix(in srgb, var(--color-text) 5%, var(--color-surface-raised)); }
 .side-menu-actions button.side-action-button.palette-open-button,
+.side-menu-actions button.side-action-button.push-toggle,
 .side-menu-actions button.side-action-button.lock-button {
   border-radius: 999px !important; /* Override global button geometry, sidebar only. */
 }
