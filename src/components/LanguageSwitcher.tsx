@@ -1,4 +1,5 @@
 import { useI18n } from '../lib/i18n';
+import { Languages } from 'lucide-react';
 
 function BritishFlag() {
   return (
@@ -31,7 +32,12 @@ export function LanguageSwitcher({ showLabel = true, className = '' }: { showLab
 
   return (
     <div className={`lang-toggle ${className}`.trim()} role="group" aria-label={t('lang.label')}>
-      {showLabel ? <span className="lang-toggle-label">{t('lang.label')}</span> : null}
+      {showLabel ? (
+        <span className="lang-toggle-label">
+          <Languages size={16} className="sidebar-preference-icon" aria-hidden />
+          {t('lang.label')}
+        </span>
+      ) : null}
       <div className="lang-toggle-track">
         <button
           type="button"
@@ -42,7 +48,7 @@ export function LanguageSwitcher({ showLabel = true, className = '' }: { showLab
           aria-pressed={locale === 'en'}
         >
           <BritishFlag />
-          <span>{t('lang.english')}</span>
+          <span className="toggle-option-text">{t('lang.english')}</span>
         </button>
         <button
           type="button"
@@ -53,7 +59,7 @@ export function LanguageSwitcher({ showLabel = true, className = '' }: { showLab
           aria-pressed={locale === 'it'}
         >
           <ItalianFlag />
-          <span>{t('lang.italian')}</span>
+          <span className="toggle-option-text">{t('lang.italian')}</span>
         </button>
       </div>
     </div>

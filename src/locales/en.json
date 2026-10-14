@@ -1087,6 +1087,7 @@
   "theme.enableLight": "Enable light theme",
   "theme.enableDark": "Enable dark theme",
   "push.on": "Push: On",
+  "push.label": "Push",
   "push.off": "Push: Off",
   "push.onTitle": "Push notifications are on",
   "push.blocked": "Notifications blocked in browser settings",

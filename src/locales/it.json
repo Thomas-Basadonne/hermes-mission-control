@@ -1087,6 +1087,7 @@
   "theme.enableLight": "Attiva tema chiaro",
   "theme.enableDark": "Attiva tema scuro",
   "push.on": "Push: Attivo",
+  "push.label": "Push",
   "push.off": "Push: Disattivo",
   "push.onTitle": "Le notifiche push sono attive",
   "push.blocked": "Notifiche bloccate nelle impostazioni del browser",

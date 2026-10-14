@@ -8,7 +8,7 @@ touches user data, the user's Chrome profile, or the live telemetry backend.
 Covers the acceptance contract of epic MC-F07: keyboard open/close, search,
 keyboard navigation (up/down selection, Enter activation, single-match Enter),
 navigation, focus entry/restoration, Escape, editor/composer non-interference,
-plugin-present vs plugin-absent catalogs, and the mobile behavior (no header
+plugin-present vs plugin-absent catalogs, and the mobile behavior (no sidebar
 trigger, palette not reachable below the breakpoint).
 """
 from __future__ import annotations
@@ -200,7 +200,7 @@ def main():
                     wait("!document.querySelector('.workspace-bar')", 'Shell did not unmount')
                     evaluate(f'window.mountShell({{pluginItems: {json.dumps(plugin_items)}}})')
                     wait("!!document.querySelector('.workspace-bar')", 'Shell failed to mount')
-                    wait("!!document.querySelector('.palette-open-button')", 'Palette opener missing')
+                    wait("!!document.querySelector('.side-menu-actions > .palette-open-button:first-child')", 'the palette opener must be the first row of the sidebar actions')
 
                 # A real Lucide icon name (resolveIcon returns undefined for unknown
                 # names, which renders a fallback icon span and would make label
@@ -210,7 +210,169 @@ def main():
                 driver.call('Emulation.setDeviceMetricsOverride', width=1280, height=1000, deviceScaleFactor=1, mobile=False)
                 driver.call('Page.navigate', url=base)
                 wait("!!document.querySelector('.workspace-bar')", 'Shell failed to mount')
-                wait("!!document.querySelector('.palette-open-button')", 'Palette opener missing')
+                wait("!!document.querySelector('.side-menu-actions > .palette-open-button:first-child')", 'the palette opener must be the first row of the sidebar actions')
+
+                # Phase 2 intent groups and uniform rows, exercised on the mounted shell.
+                wait("!!document.querySelector('.push-toggle')", 'Push row must render on the supported fixture browser')
+                assert evaluate("!!document.querySelector('.side-menu-head-top .sidebar-version') && !document.querySelector('.side-menu-actions .sidebar-version')"), 'version must move to the sidebar head beside collapse'
+                assert evaluate("document.querySelector('.side-menu-preferences')?.querySelectorAll('.push-toggle, .theme-toggle, .lang-toggle').length === 3 && !!document.querySelector('.side-menu-action-group > .lock-button')"), 'preferences and Lock must have separate intent groups'
+
+                def assert_action_surfaces(mode):
+                    surfaces = evaluate('''(() => {
+                        const find = selector => document.querySelector(selector);
+                        const style = selector => getComputedStyle(find(selector));
+                        const rect = selector => find(selector).getBoundingClientRect();
+                        const token = (name, property) => {
+                            const probe = document.createElement('span');
+                            probe.style[property] = 'var(' + name + ')';
+                            find('.side-menu-actions').appendChild(probe);
+                            const value = getComputedStyle(probe)[property];
+                            probe.remove(); return value;
+                        };
+                        const search = style('.palette-open-button');
+                        const card = style('.side-menu-preferences');
+                        const lock = style('.lock-button');
+                        const rows = [...find('.side-menu-preferences').children];
+                        const segments = [...find('.side-menu-preferences').querySelectorAll('.theme-toggle-option, .lang-toggle-option')];
+                        return {
+                            searchPill: parseFloat(search.borderRadius) >= 22 && parseFloat(search.borderTopWidth) === 0 && search.backgroundColor !== style('.side-menu').backgroundColor && search.backgroundColor !== 'rgba(0, 0, 0, 0)',
+                            cardSurface: parseFloat(card.borderRadius) >= 12 && card.backgroundColor !== style('.side-menu').backgroundColor && card.backgroundColor !== 'rgba(0, 0, 0, 0)',
+                            noDividers: [card, style('.side-menu-action-group'), ...rows.map(el => getComputedStyle(el))].every(s => parseFloat(s.borderTopWidth) === 0),
+                            contiguous: rows.every((el, i) => i === 0 || Math.abs(el.getBoundingClientRect().top - rows[i-1].getBoundingClientRect().bottom) < 1),
+                            spacing: rect('.side-menu-preferences').top - rect('.palette-open-button').bottom >= 12 && rect('.lock-button').top - rect('.side-menu-preferences').bottom >= 8,
+                            lockAccent: lock.color === token('--color-accent', 'color') && lock.color !== token('--color-negative', 'color') && lock.backgroundColor === token('--color-accent-subtle', 'backgroundColor') && parseFloat(lock.borderRadius) >= 22,
+                            segments: segments.length === 4 && segments.every(el => el.getBoundingClientRect().width === 44 && el.getBoundingClientRect().height === 44 && getComputedStyle(el).backgroundClip === 'padding-box' && parseFloat(getComputedStyle(el).borderLeftWidth) === 5 && getComputedStyle(el).backgroundColor === token(el.classList.contains('is-active') ? '--color-accent-subtle' : '--color-surface-sunken', 'backgroundColor')),
+                            pushAligned: rect('.push-toggle-label').right <= rect('.push-toggle-state').left && Math.abs(rect('.push-toggle-label').top + rect('.push-toggle-label').height / 2 - rect('.push-toggle-state').top - rect('.push-toggle-state').height / 2) < 3,
+                        };
+                    })()''')
+                    report.setdefault('action_surfaces', {})[mode] = surfaces
+                    report.setdefault('segment_styles', {})[mode] = evaluate("[...document.querySelectorAll('.side-menu-actions .theme-toggle-option, .side-menu-actions .lang-toggle-option')].map(el => ({clip: getComputedStyle(el).backgroundClip, border: getComputedStyle(el).borderLeftWidth, background: getComputedStyle(el).backgroundColor}))")
+                    assert all(surfaces.values()), (mode, surfaces, report['segment_styles'][mode])
+                    before_hover = evaluate("getComputedStyle(document.querySelector('.lock-button')).backgroundColor")
+                    point = evaluate("(() => { const r = document.querySelector('.lock-button').getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()")
+                    driver.call('Input.dispatchMouseEvent', type='mouseMoved', **point)
+                    wait(f"getComputedStyle(document.querySelector('.lock-button')).backgroundColor !== {json.dumps(before_hover)}", 'Lock hover must strengthen its own accent surface')
+                    assert evaluate("document.querySelector('.lock-button').querySelectorAll('svg').length === 1 && !document.querySelector('.lock-button kbd, .lock-button input, .lock-button [role=switch]')"), 'Lock remains a single action without a trailing control'
+                    driver.call('Input.dispatchMouseEvent', type='mouseMoved', x=500, y=100)
+                    wait(f"getComputedStyle(document.querySelector('.lock-button')).backgroundColor === {json.dumps(before_hover)}", 'Lock hover surface must reset')
+                    check(f'{mode}: computed search pill, contiguous preference card, isolated accent Lock, aligned Push and 44px segments')
+
+                evaluate("document.documentElement.dataset.theme = 'dark'")
+                time.sleep(0.3)  # Let token-dependent control transitions settle before sampling.
+                assert_action_surfaces('dark')
+                screenshot('sidebar-actions-dark')
+                evaluate("document.documentElement.classList.remove('dark'); document.documentElement.dataset.theme = 'light'; window.__mcFixtureStore.resolvedTheme = 'light'")
+                remount([])
+                wait("!!document.querySelector('.push-toggle')", 'light Push row must render')
+                time.sleep(0.3)
+                assert_action_surfaces('light')
+                screenshot('sidebar-actions-light')
+
+                # Phase 1 placement and responsive shell geometry, using mounted controls.
+                assert evaluate("document.querySelectorAll('.palette-open-button').length === 1 && !document.querySelector('.workspace-bar .palette-open-button')"), 'the sidebar must own the only opener'
+                for width in (1024, 1440):
+                    driver.call('Emulation.setDeviceMetricsOverride', width=width, height=1000, deviceScaleFactor=1, mobile=False)
+                    wait("!document.querySelector('.layout-frame').classList.contains('is-collapsed')", 'sidebar must be expanded for the row check')
+                    geometry = evaluate('''(() => {
+                        const button = document.querySelector('.palette-open-button');
+                        const row = button.getBoundingClientRect();
+                        const actions = button.parentElement.getBoundingClientRect();
+                        const title = document.querySelector('.workspace-title-wrap').getBoundingClientRect();
+                        const chat = document.querySelector('.chat-open-button').getBoundingClientRect();
+                        const rows = [...document.querySelectorAll('.side-menu-actions .side-action-button, .side-menu-actions .theme-toggle, .side-menu-actions .lang-toggle')];
+                        const preferences = ['theme', 'lang'].every(prefix => {
+                            const label = document.querySelector('.' + prefix + '-toggle-label').getBoundingClientRect();
+                            const track = document.querySelector('.' + prefix + '-toggle-track').getBoundingClientRect();
+                            return label.right <= track.left && Math.abs(label.y + label.height / 2 - track.y - track.height / 2) < 3;
+                        });
+                        const version = document.querySelector('.sidebar-version').getBoundingClientRect();
+                        const collapse = document.querySelector('.desktop-sidebar-toggle').getBoundingClientRect();
+                        return {fullWidth: Math.abs(row.width - actions.width) <= 2,
+                            uniform: rows.length === 5 && rows.every(el => Math.abs(el.getBoundingClientRect().width - actions.width) <= 2 && el.getBoundingClientRect().height >= 44),
+                            preferences,
+                            headAligned: version.right <= collapse.left && Math.abs(version.y + version.height / 2 - collapse.y - collapse.height / 2) < 3,
+                            chipVisible: button.querySelector('kbd').getBoundingClientRect().width > 0,
+                            named: button.getAttribute('aria-label') === button.title && !!button.title,
+                            aligned: title.right <= chat.left && Math.abs(title.y + title.height / 2 - chat.y - chat.height / 2) < 3};
+                    })()''')
+                    assert all(geometry.values()), (width, geometry)
+                    screenshot(f'sidebar-palette-expanded-{width}')
+                    check(f'{width}px: first sidebar action is full-width, named, with shortcut chip; header title and Chat align')
+                    check(f'{width}px: all five actions have uniform full-width 44px rows; preference labels sit left of segments; version aligns beside collapse')
+                click_selector('.lang-toggle-option:last-child')
+                wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'false'", 'Italian idle Push must have a stable label and accessible off state')
+                assert evaluate("document.querySelector('.push-toggle').title === 'Attiva le notifiche push per le risposte di Hermes'"), 'Push tooltip must be localized too'
+                click_selector('.lang-toggle-option:first-child')
+                wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'false'", 'English idle Push must keep its label and accessible off state')
+                check('Language segments change locale; Push label and tooltip use existing translations')
+                # Simulate only the browser subscription boundary: mount the real
+                # PushToggle/getPushState without requesting permission or sending push.
+                evaluate('''(() => {
+                    window.__originalSWRegister = navigator.serviceWorker.register.bind(navigator.serviceWorker);
+                    navigator.serviceWorker.register = async () => ({pushManager: {getSubscription: async () => ({})}});
+                })()''')
+                remount([])
+                wait("document.querySelector('.push-toggle-label')?.textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'true'", 'English subscribed Push must retain its label and accessible on state')
+                assert evaluate("document.querySelector('.push-toggle').title === 'Push notifications are on' && document.querySelector('.push-toggle').getAttribute('aria-label') === document.querySelector('.push-toggle').title"), 'English on state remains accessible'
+                on_switch = evaluate("({background: getComputedStyle(document.querySelector('.push-toggle-state')).backgroundColor, thumb: getComputedStyle(document.querySelector('.push-toggle-state'), '::after').transform})")
+                click_selector('.lang-toggle-option:last-child')
+                wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'true'", 'Italian subscribed Push must retain its label and accessible on state')
+                assert evaluate("document.querySelector('.push-toggle').title === 'Le notifiche push sono attive' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'true'"), 'subscribed Push must retain pressed state and localized tooltip'
+                click_selector('.lang-toggle-option:first-child')
+                wait("document.querySelector('.push-toggle-label').textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'true'", 'English subscribed Push state must be restored')
+                evaluate('navigator.serviceWorker.register = window.__originalSWRegister; delete window.__originalSWRegister')
+                remount([])
+                wait("document.querySelector('.push-toggle-label')?.textContent === 'Push' && document.querySelector('.push-toggle').getAttribute('aria-pressed') === 'false'", 'real idle Push fixture must be restored')
+                off_switch = evaluate("({background: getComputedStyle(document.querySelector('.push-toggle-state')).backgroundColor, thumb: getComputedStyle(document.querySelector('.push-toggle-state'), '::after').transform})")
+                assert on_switch['background'] != off_switch['background'] and on_switch['thumb'] != off_switch['thumb'], 'Only the switch must visually reflect the changed Push state'
+                check('Push label stays stable in EN/IT and on/off states; accessible state and localized tooltips follow the real component')
+                click_selector('.desktop-sidebar-toggle')
+                wait("document.querySelector('.layout-frame').classList.contains('is-collapsed')", 'sidebar did not collapse')
+                assert evaluate('''(() => {
+                    const b = document.querySelector('.palette-open-button');
+                    const r = b.getBoundingClientRect();
+                    return r.width === 44 && r.height === 44 && !!b.getAttribute('aria-label')
+                        && b.querySelector('svg').getBoundingClientRect().width > 0
+                        && [...b.querySelectorAll('.palette-open-label, kbd')].every(el => el.getBoundingClientRect().width === 0);
+                })()'''), 'collapsed opener must be a named 44x44 icon-only control'
+                assert evaluate('''(() => {
+                    const controls = [...document.querySelectorAll('.side-menu-actions button')];
+                    return controls.length === 7 && controls.every(el => {
+                        const r = el.getBoundingClientRect();
+                        return r.width === 44 && r.height === 44 && !!el.getAttribute('aria-label');
+                    }) && document.querySelector('.sidebar-version').getBoundingClientRect().width === 0
+                        && [...document.querySelectorAll('.theme-toggle-label, .lang-toggle-label, .push-toggle-label, .push-toggle-state, .lock-label')].every(el => el.getBoundingClientRect().width === 0);
+                })()'''), 'collapsed actions must preserve separate named 44x44 controls with labels, state and version hidden'
+                click_selector('.palette-open-button')
+                wait("!!document.querySelector('.navigation-palette')", 'collapsed opener did not open palette')
+                press_escape()
+                wait("document.activeElement === document.querySelector('.palette-open-button')", 'collapsed opener focus was not restored')
+                screenshot('sidebar-palette-collapsed')
+                check('collapsed sidebar: named 44x44 icon-only opener opens palette and receives restored focus')
+                click_selector('.desktop-sidebar-toggle')
+                # Accepted drawer band (641-980px): the sidebar is off-canvas here, so
+                # the trigger moved out of the header is NOT visible with the drawer
+                # closed — reachable via Cmd+K or after opening the drawer. The
+                # assertions below pin that consequence explicitly instead of assuming
+                # the previous header placement's behavior.
+                driver.call('Emulation.setDeviceMetricsOverride', width=800, height=1000, deviceScaleFactor=1, mobile=False)
+                wait("document.querySelector('.palette-open-button').getBoundingClientRect().right <= 0", '800px closed drawer must hide the palette trigger off-canvas')
+                press_shortcut(4)
+                wait("!!document.querySelector('.navigation-palette')", '800px Cmd+K must open the palette immediately with drawer closed')
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", '800px Escape must close palette')
+                click_selector('.mobile-sidebar-toggle')
+                wait("document.querySelector('.palette-open-button').getBoundingClientRect().left >= 0", '800px open drawer must reveal the palette trigger')
+                click_selector('.palette-open-button')
+                wait("!!document.querySelector('.navigation-palette')", '800px drawer trigger must open palette on click')
+                press_escape()
+                wait("!document.querySelector('.navigation-palette')", '800px palette must close')
+                assert evaluate("document.documentElement.scrollWidth <= innerWidth && document.querySelector('.side-menu').scrollWidth <= document.querySelector('.side-menu').clientWidth"), '800px open drawer must not overflow horizontally'
+                screenshot('sidebar-actions-drawer-800')
+                check('800px: closed drawer hides trigger; Cmd+K opens immediately; header toggle reveals clickable trigger; open drawer has no horizontal overflow')
+                click_selector('.mobile-nav-backdrop')
+                wait("!document.querySelector('.layout-frame').classList.contains('is-open')", '800px backdrop must close the drawer before desktop checks')
+                driver.call('Emulation.setDeviceMetricsOverride', width=1280, height=1000, deviceScaleFactor=1, mobile=False)
 
                 # Cmd+K must not put the palette above the independent Overview restart dialog.
                 wait("!!document.querySelector('.widget-quick-actions button')", 'Quick Actions widget did not render on Overview')
@@ -782,18 +944,25 @@ def main():
                 wait("!!document.querySelector('.workspace-bar')", 'mobile shell failed to mount')
                 assert evaluate('innerWidth') == 390, evaluate('innerWidth')
                 report['mobile_debug'] = evaluate("({ innerWidth, mm: matchMedia('(max-width: 640px)').matches, buttons: document.querySelectorAll('.palette-open-button').length })")
-                # No palette trigger in the header at mobile width. The shell reads
+                # No palette trigger in the sidebar at mobile width. The shell reads
                 # the media query through a listener, so give the state a tick.
                 wait("document.querySelectorAll('.palette-open-button').length === 0",
-                     f"the palette header trigger must not render on mobile: {report['mobile_debug']}")
+                     f"the palette sidebar trigger must not render on mobile: {report['mobile_debug']}")
                 # The shortcut is inert and the overlay is not rendered: the palette
                 # cannot be reached at all.
                 press_shortcut(4)
                 time.sleep(0.4)
                 assert not is_open(), 'Cmd+K must not open the palette on mobile'
                 assert not is_open(), 'the palette must be hidden on mobile'
+                assert evaluate('''(() => {
+                    const title = document.querySelector('.workspace-title-wrap').getBoundingClientRect();
+                    const chat = document.querySelector('.chat-open-button').getBoundingClientRect();
+                    return title.right <= chat.left && chat.right <= innerWidth
+                        && Math.abs(title.y + title.height / 2 - chat.y - chat.height / 2) < 3;
+                })()'''), '390px header title and Chat must align without overlap or overflow'
+                check('390px: header title and Chat align without overlap or overflow')
                 screenshot('palette-mobile-390')
-                check('mobile 390px: no palette trigger in the header and the palette is not reachable (inert shortcut, hidden overlay)')
+                check('mobile 390px: no palette trigger in the sidebar and the palette is not reachable (inert shortcut, hidden overlay)')
 
                 # Back to desktop: the palette is reachable again.
                 driver.call('Emulation.setDeviceMetricsOverride', width=1280, height=1000, deviceScaleFactor=1, mobile=False)
