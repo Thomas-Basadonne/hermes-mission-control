@@ -48,6 +48,7 @@ globalThis.fetch = async (url, init = {}) => {
 const cacheDir = mkdtempSync(path.join(tmpdir(), 'mc-tools-pull-'));
 const server = await createServer({
   root: process.cwd(), configFile: false, cacheDir, appType: 'custom', logLevel: 'silent',
+  optimizeDeps: { noDiscovery: true, include: [] },
   server: { middlewareMode: true, hmr: false },
   plugins: [react(), {
     name: 'tools-pull-fixtures', enforce: 'pre',

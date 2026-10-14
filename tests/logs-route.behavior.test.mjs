@@ -44,6 +44,7 @@ globalThis.__logsFixtures = { get snapshots() { return snapshots; }, get loadCou
 const cacheDir = mkdtempSync(path.join(tmpdir(), 'mc-logs-behavior-'));
 const server = await createServer({
   root: process.cwd(), configFile: false, cacheDir, appType: 'custom', logLevel: 'silent',
+  optimizeDeps: { noDiscovery: true, include: [] },
   server: { middlewareMode: true, hmr: false },
   plugins: [react(), {
     name: 'logs-route-fixtures', enforce: 'pre',
@@ -65,6 +66,7 @@ const server = await createServer({
 });
 const apiServer = await createServer({
   root: process.cwd(), configFile: false, cacheDir, appType: 'custom', logLevel: 'silent',
+  optimizeDeps: { noDiscovery: true, include: [] },
   server: { middlewareMode: true, hmr: false }, plugins: [react()],
 });
 const { createRoot } = await import('react-dom/client');
