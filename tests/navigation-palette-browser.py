@@ -320,11 +320,13 @@ def main():
                         const pills = [find('.palette-open-button'), ...rows, find('.lock-button')];
                         const measurements = pills.map(el => {
                             const s = getComputedStyle(el), r = el.getBoundingClientRect();
-                            return {height: r.height, left: r.left, right: r.right,
+                            return {height: r.height, left: r.left, right: r.right, top: r.top, bottom: r.bottom,
                                 radius: s.borderRadius, background: s.backgroundColor};
                         });
                         const gaps = rows.slice(1).map((el, i) => el.getBoundingClientRect().top - rows[i].getBoundingClientRect().bottom);
-                        window.__actionMeasurements = {pills: measurements, gaps,
+                        // Uniform rhythm: the opener above the block is spaced like the rows inside it.
+                        const rhythm = measurements.slice(1).map((m, i) => m.top - measurements[i].bottom);
+                        window.__actionMeasurements = {pills: measurements, gaps, rhythm,
                             wrapperBackground: card.backgroundColor,
                             surfaceRaised: token('--color-surface-raised', 'backgroundColor'),
                             accent: lock.color, accentSubtle: lock.backgroundColor};
@@ -335,7 +337,8 @@ def main():
                             uniformPills: measurements.length === 5 && measurements.every(r => r.height === 44 && r.radius === '999px' && r.left === measurements[0].left && r.right === measurements[0].right),
                             noDividers: window.__noPreferenceDividers(),
                             separated: gaps.every(gap => gap >= 4),
-                            spacing: rect('.side-menu-preferences').top - rect('.palette-open-button').bottom >= 12 && rect('.lock-button').top - rect('.side-menu-preferences').bottom >= 8,
+                            uniformRhythm: rhythm.length === 4 && (() => { const rowGap = parseFloat(getComputedStyle(find('.side-menu-actions')).rowGap); return rowGap > 0 && rhythm.every(gap => Math.abs(gap - rowGap) < 1); })(),
+                            noPointerCursor: [...find('.side-menu-actions').querySelectorAll('*')].every(el => getComputedStyle(el).cursor !== 'pointer'),
                             lockAccent: lock.color === token('--color-accent', 'color') && lock.color !== token('--color-negative', 'color') && lock.backgroundColor === token('--color-accent-subtle', 'backgroundColor') && parseFloat(lock.borderRadius) >= 22,
                             segments: segments.length === 4 && segments.every(el => el.getBoundingClientRect().width === 44 && el.getBoundingClientRect().height === 44 && getComputedStyle(el).backgroundClip === 'padding-box' && parseFloat(getComputedStyle(el).borderLeftWidth) === 5 && getComputedStyle(el).backgroundColor === token(el.classList.contains('is-active') ? '--color-accent-subtle' : '--color-surface-sunken', 'backgroundColor')),
                             pushAligned: rect('.push-toggle-label').right <= rect('.push-toggle-state').left && Math.abs(rect('.push-toggle-label').top + rect('.push-toggle-label').height / 2 - rect('.push-toggle-state').top - rect('.push-toggle-state').height / 2) < 3,
@@ -346,23 +349,34 @@ def main():
                     report.setdefault('action_measurements', {})[mode] = evaluate('window.__actionMeasurements')
                     report['browser_errors'] = evaluate('window.failures || []')
                     assert all(surfaces.values()), (mode, surfaces, report['segment_styles'][mode])
-                    for selector in ('.side-menu-actions .palette-open-button', '.side-menu-actions .push-toggle'):
-                        before = evaluate(f'getComputedStyle(document.querySelector({json.dumps(selector)})).backgroundColor')
+                    opener = '.side-menu-actions .palette-open-button'
+                    before = evaluate(f'getComputedStyle(document.querySelector({json.dumps(opener)})).backgroundColor')
+                    point = evaluate(f'''(() => {{ const r = document.querySelector({json.dumps(opener)}).getBoundingClientRect();
+                        return {{x: r.x + r.width / 2, y: r.y + r.height / 2}}; }})()''')
+                    driver.call('Input.dispatchMouseEvent', type='mouseMoved', **point)
+                    wait(f'''(() => {{
+                        const probe = document.createElement('span');
+                        probe.style.backgroundColor = 'color-mix(in srgb, var(--color-text) 5%, var(--color-surface-raised))';
+                        document.querySelector('.side-menu-actions').appendChild(probe);
+                        const expected = getComputedStyle(probe).backgroundColor;
+                        probe.remove();
+                        const actual = getComputedStyle(document.querySelector({json.dumps(opener)})).backgroundColor;
+                        return actual === expected && actual !== {json.dumps(before)};
+                    }})()''', f'{mode}: the opener, an action of its own, must react on hover')
+                    report.setdefault('opener_hover', {}).setdefault(mode, {})[opener] = evaluate(f'getComputedStyle(document.querySelector({json.dumps(opener)})).backgroundColor')
+                    driver.call('Input.dispatchMouseEvent', type='mouseMoved', x=500, y=100)
+                    wait(f'getComputedStyle(document.querySelector({json.dumps(opener)})).backgroundColor === {json.dumps(before)}', 'opener hover surface must reset')
+                    # A row hosting a control does not react as a whole: its switch or its segments are the target.
+                    for selector in ('.side-menu-actions .push-toggle', '.side-menu-actions .theme-toggle', '.side-menu-actions .lang-toggle'):
+                        resting = evaluate(f'getComputedStyle(document.querySelector({json.dumps(selector)})).backgroundColor')
                         point = evaluate(f'''(() => {{ const r = document.querySelector({json.dumps(selector)}).getBoundingClientRect();
                             return {{x: r.x + r.width / 2, y: r.y + r.height / 2}}; }})()''')
                         driver.call('Input.dispatchMouseEvent', type='mouseMoved', **point)
-                        wait(f'''(() => {{
-                            const probe = document.createElement('span');
-                            probe.style.backgroundColor = 'color-mix(in srgb, var(--color-text) 5%, var(--color-surface-raised))';
-                            document.querySelector('.side-menu-actions').appendChild(probe);
-                            const expected = getComputedStyle(probe).backgroundColor;
-                            probe.remove();
-                            const actual = getComputedStyle(document.querySelector({json.dumps(selector)})).backgroundColor;
-                            return actual === expected && actual !== {json.dumps(before)};
-                        }})()''', f'{mode}: neutral hover must resolve to the 5% text mix')
-                        report.setdefault('neutral_hover', {}).setdefault(mode, {})[selector] = evaluate(f'getComputedStyle(document.querySelector({json.dumps(selector)})).backgroundColor')
+                        time.sleep(0.35)  # Let any hover transition settle before sampling.
+                        hovered = evaluate(f'getComputedStyle(document.querySelector({json.dumps(selector)})).backgroundColor')
+                        assert hovered == resting, (mode, selector, 'a row hosting a control must not react on hover', resting, hovered)
+                        report.setdefault('row_hover', {}).setdefault(mode, {})[selector] = hovered
                         driver.call('Input.dispatchMouseEvent', type='mouseMoved', x=500, y=100)
-                        wait(f'getComputedStyle(document.querySelector({json.dumps(selector)})).backgroundColor === {json.dumps(before)}', 'neutral hover surface must reset')
                     before_hover = evaluate("getComputedStyle(document.querySelector('.lock-button')).backgroundColor")
                     point = evaluate("(() => { const r = document.querySelector('.lock-button').getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()")
                     driver.call('Input.dispatchMouseEvent', type='mouseMoved', **point)
@@ -370,7 +384,7 @@ def main():
                     assert evaluate("document.querySelector('.lock-button').querySelectorAll('svg').length === 1 && !document.querySelector('.lock-button kbd, .lock-button input, .lock-button [role=switch]')"), 'Lock remains a single action without a trailing control'
                     driver.call('Input.dispatchMouseEvent', type='mouseMoved', x=500, y=100)
                     wait(f"getComputedStyle(document.querySelector('.lock-button')).backgroundColor === {json.dumps(before_hover)}", 'Lock hover surface must reset')
-                    check(f'{mode}: computed independent neutral pills, transparent spaced preferences, uniform 44px geometry, perceptible neutral hover, isolated accent Lock, aligned Push and 44px segments')
+                    check(f'{mode}: independent neutral pills on one rhythm with the opener, transparent spaced preferences, uniform 44px geometry, no pointer cursor, hosting rows that do not react on hover, isolated accent Lock, aligned Push and 44px segments')
 
                 evaluate("document.documentElement.dataset.theme = 'dark'")
                 time.sleep(0.3)  # Let token-dependent control transitions settle before sampling.

@@ -450,11 +450,10 @@ body.modal-open .route-page-scroll {
   gap: 0.5rem;
 }
 
-.side-menu-actions .palette-open-button { margin-bottom: 0.5rem; }
-
 .sidebar-preference-icon { display: none; }
 .side-menu-actions .sidebar-preference-icon { display: block; flex-shrink: 0; }
 
+/* Every row is its own pill and shares one rhythm with the palette opener above it. */
 .side-menu-actions .side-action-button,
 .side-menu-actions .theme-toggle,
 .side-menu-actions .lang-toggle {
@@ -467,9 +466,12 @@ body.modal-open .route-page-scroll {
   background: var(--color-surface-raised);
   color: var(--color-text-subtle);
   font-size: 0.75rem;
+  cursor: default; /* The block's controls do not advertise a pointer; Tailwind's .pill-button does. */
 }
 
-.side-menu-actions .side-action-button:hover { background: color-mix(in srgb, var(--color-text) 5%, var(--color-surface-raised)); }
+.side-menu-actions .side-action-button:not(.push-toggle):hover { background: color-mix(in srgb, var(--color-text) 5%, var(--color-surface-raised)); }
+/* Push hosts its switch the way Theme and Language host their segments: the row itself does not react. */
+.side-menu-actions .push-toggle:hover { background: var(--color-surface-raised); }
 .side-menu-actions button.side-action-button.palette-open-button,
 .side-menu-actions button.side-action-button.push-toggle,
 .side-menu-actions button.side-action-button.lock-button {
