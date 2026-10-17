@@ -31,7 +31,7 @@ assertIncludes(component, '<ChatTodoPlan plan={showTodoPlan}', 'chat drawer expo
 assertIncludes(component, 'todoPlan: gatewayTodoPlan', 'chat drawer consumes the gateway TODO state');
 assertIncludes(component, 'const [previewTodoPlan, setPreviewTodoPlan] = useState<TodoPlan | null>(null);', 'preview TODO state survives explicit resume');
 assertIncludes(component, 'const visibleTodoPlan = gatewayTodoPlan ?? previewTodoPlan ?? derivedTodoPlan;', 'gateway TODO state has priority over preview fallback');
-assertIncludes(component, 'let originSessionId = await ensureSession();', 'Bot handoffs bootstrap a fresh origin session');
+assertIncludes(component, 'let originSessionId = await ensureSession(undefined, { reuseLive: true });', 'Bot handoffs bootstrap a fresh origin session');
 assertIncludes(component, "originSessionId = await claimLastChatPointer('submit', originSessionId);", 'Bot handoffs claim the shared last-chat pointer');
 assertIncludes(component, "appendChatMessage(attributedReply, 'assistant_message');", 'Bot replies are projected into the primary chat transcript');
 assertIncludes(component, "id: `bot-request-${handoffId}`", 'first Bot mention is recorded as a primary user message');

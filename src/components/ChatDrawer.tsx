@@ -1273,7 +1273,7 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
       // Resolve the origin ONCE for the whole submit, before fanning out: every mention in
       // this submit shares one origin, and the reply-delivery path must not re-derive it
       // later (a settle can arrive minutes after the user moved to another chat).
-      let originSessionId = await ensureSession();
+      let originSessionId = await ensureSession(undefined, { reuseLive: true });
       originSessionId = await claimLastChatPointer('submit', originSessionId);
       if (originSessionId !== sessionId) {
         originSessionId = await ensureSession(originSessionId);
@@ -1300,7 +1300,9 @@ const CanonicalChatDrawer = memo(function CanonicalChatDrawer({ open, storedToke
         contextMessages.length > 0 ? { mode: 'transcript', messages: contextMessages } : { mode: 'none', messages: [] },
       );
       const handoffId = envelope.handoffId;
-      await titleSession(originSessionId, handoffMention.request || `@${handle}`);
+      // The title is cosmetic for the handoff: the envelope does not depend on it, so it must
+      // not hold the attributed request card behind one more gateway round trip.
+      void titleSession(originSessionId, handoffMention.request || `@${handle}`);
       appendChatMessage({
         id: `bot-request-${handoffId}`,
         role: 'user',

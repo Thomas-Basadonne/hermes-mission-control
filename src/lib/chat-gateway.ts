@@ -49,6 +49,7 @@ import { clearPendingChatSubmit, persistPendingChatSubmit, readPendingChatSubmit
 import { createChatSyncRelay } from './chat-sync-stream';
 import { applySyncedAssistantMessage, applySyncedChatMessage, applySyncedUserMessage, eventRequiresCanonicalReconcile, fetchChatTranscript, publishChatSync, replaceWithCanonicalChatMessages, shouldApplySequencedEvent, type ChatSyncEnvelope } from './chat-sync';
 import { getWebSocketUrl, MAX_RECONNECTS, mintWsCredential, nextReconnectDelay, RPC_TIMEOUT_MS } from './chat-transport';
+import { canReuseLiveRuntime, isStaleRuntimeError } from './chat-live-runtime';
 import { commandOutput, executeReasoningSlashCommand, resultText } from './chat-commands';
 import { setSessionReasoning } from './chat-status-runtime';
 import {
@@ -245,6 +246,9 @@ export function useGatewayChat(
   const pendingPromptRef = useRef<PendingPrompt | null>(readPendingChatSubmit());
   const durableTranscriptRef = useRef<ReturnType<typeof extractTranscript>>([]);
   const transcriptReadyRef = useRef(false);
+  // The socket the current runtime session id was resumed (or created) over. A runtime
+  // id is only valid on that socket; see canReuseLiveRuntime.
+  const liveRuntimeSocketRef = useRef<WebSocket | null>(null);
   // True while a resumed session's canonical transcript fetch is in flight and
   // the transcript is not ready yet — the drawer shows a hydration loader.
   const [hydrating, setHydrating] = useState(false);
@@ -904,11 +908,24 @@ export function useGatewayChat(
 
   const ensureSession = useCallback(async (
     preferredSessionId?: string | null,
-    options?: { fresh?: boolean },
+    options?: { fresh?: boolean; reuseLive?: boolean },
   ) => {
     const lifecycleGeneration = sessionLifecycleGenerationRef.current;
     const forceFresh = options?.fresh === true;
+    const socketAtStart = wsRef.current;
     const explicitSessionId = forceFresh ? null : (preferredSessionId?.trim() || initialSessionId?.trim() || null);
+    if (options?.reuseLive && !forceFresh && canReuseLiveRuntime({
+      socket: socketAtStart,
+      resumedOnSocket: liveRuntimeSocketRef.current,
+      liveSessionId: sessionIdRef.current,
+      requestedSessionRef: explicitSessionId,
+      liveSessionKey: sessionKeyRef.current,
+      preview: previewModeRef.current,
+    })) {
+      // Sending into the runtime already resumed on this socket: no session.resume and no
+      // canonical transcript fetch on the send path.
+      return sessionIdRef.current ?? '';
+    }
     const existingKey = forceFresh ? null : (sessionKeyRef.current || explicitSessionId || requestedSessionIdRef.current || sessionIdRef.current);
     const isExplicitResume = Boolean(explicitSessionId);
     if (existingKey) {
@@ -963,6 +980,7 @@ export function useGatewayChat(
         const resolvedSessionKey = extractSessionKey(resumed) ?? existingKey;
         setSessionId(resolvedSessionId);
         sessionIdRef.current = resolvedSessionId;
+        liveRuntimeSocketRef.current = socketAtStart;
         setSessionKey(resolvedSessionKey);
         sessionKeyRef.current = resolvedSessionKey;
         setResumedRuntime({
@@ -1012,6 +1030,7 @@ export function useGatewayChat(
     setTodoPlan(null);
     setSessionId(createdSessionId);
     sessionIdRef.current = createdSessionId;
+    liveRuntimeSocketRef.current = socketAtStart;
     setSessionKey(createdSessionKey);
     sessionKeyRef.current = createdSessionKey;
     setRunning(false);
@@ -1541,8 +1560,28 @@ export function useGatewayChat(
     if ((!trimmed && attachments.length === 0) || submitting) return false;
     setSubmitting(true);
     setError(null);
+    // The user's bubble appears before any round trip. Resume, the canonical transcript and
+    // the pointer claim used to run first, which hid the message for seconds on long sessions.
+    const userMessageId = `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const shownText = displayText.trim() || trimmed || 'Attached files';
+    const summaries = attachments.map(({ dataUrl: _dataUrl, ...summary }) => summary);
+    const optimisticMessage: ChatMessage = {
+      id: userMessageId,
+      role: 'user',
+      kind: 'user',
+      source: 'live',
+      text: shownText,
+      attachments: summaries,
+      status: 'complete',
+      createdAt: Date.now(),
+    };
+    setMessages((current) => [...current, optimisticMessage]);
+    setRunning(true);
+    // Once the outbox entry is persisted the bubble belongs to a queued prompt and stays on a
+    // retryable failure. Before that, a failed send removes it and the composer keeps the draft.
+    let outboxPersisted = false;
     try {
-      let activeSessionId = await ensureSession();
+      let activeSessionId = await ensureSession(undefined, { reuseLive: true });
       const canonicalSessionId = await claimLastChatPointer('submit', activeSessionId);
       if (canonicalSessionId !== activeSessionId) {
         activeSessionId = await ensureSession();
@@ -1568,11 +1607,9 @@ export function useGatewayChat(
       }
 
       const promptText = [trimmed, ...attachmentRefs].filter(Boolean).join('\n\n') || 'Please analyze the attached files.';
-      const summaries = attachments.map(({ dataUrl: _dataUrl, ...summary }) => summary);
-      const userMessageId = `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const pendingPrompt: PendingPrompt = {
         text: promptText,
-        displayText: displayText.trim() || trimmed || 'Attached files',
+        displayText: shownText,
         attachments: summaries,
         baselineUserCount: durableTranscriptRef.current.filter((message) => message.role === 'user').length,
         sessionKey: sessionKeyRef.current || activeSessionId,
@@ -1580,20 +1617,17 @@ export function useGatewayChat(
       };
       pendingPromptRef.current = pendingPrompt;
       persistPendingChatSubmit(pendingPrompt);
-      const userMessage: ChatMessage = {
-        id: userMessageId,
-        role: 'user',
-        kind: 'user',
-        source: 'live',
-        text: displayText.trim() || trimmed || 'Attached files',
-        attachments: summaries,
-        status: 'complete',
-        createdAt: Date.now(),
-      };
-      setMessages((current) => [...current, userMessage]);
-      void publishChatSync(storedToken, activeSessionId, 'user_message', userMessage as unknown as Record<string, unknown>);
-      setRunning(true);
-      await request('prompt.submit', { session_id: activeSessionId, text: promptText });
+      outboxPersisted = true;
+      void publishChatSync(storedToken, activeSessionId, 'user_message', optimisticMessage as unknown as Record<string, unknown>);
+      try {
+        await request('prompt.submit', { session_id: activeSessionId, text: promptText });
+      } catch (err) {
+        if (!isStaleRuntimeError(err instanceof Error ? err.message : '')) throw err;
+        // The runtime died with an earlier socket. The gateway accepted nothing, so resume on
+        // the live socket and submit once more.
+        activeSessionId = await ensureSession();
+        await request('prompt.submit', { session_id: activeSessionId, text: promptText });
+      }
       clearPendingPrompt();
       void refreshModel(activeSessionId);
       return true;
@@ -1601,13 +1635,18 @@ export function useGatewayChat(
       const message = err instanceof Error ? err.message : 'Prompt submission failed.';
       const retryable = /disconnected|not connected|connection|timed out|closed|send chat request/i.test(message);
       if (!retryable) clearPendingPrompt();
+      // A bubble is removed unless a queued outbox entry backs it, so it never shows a prompt
+      // that was not sent.
+      if (!outboxPersisted || !retryable) {
+        setMessages((current) => current.filter((item) => item.id !== userMessageId));
+      }
       setRunning(false);
       setError(retryable ? 'Message queued until the chat connection is restored.' : message);
       return false;
     } finally {
       setSubmitting(false);
     }
-  }, [claimLastChatPointer, clearPendingPrompt, ensureSession, refreshModel, request, submitting]);
+  }, [claimLastChatPointer, clearPendingPrompt, ensureSession, refreshModel, request, storedToken, submitting]);
 
   const closeModelPicker = useCallback(() => {
     setModelPickerOpen(false);
