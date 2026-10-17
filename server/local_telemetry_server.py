@@ -241,7 +241,7 @@ def collect_system_snapshot() -> Dict[str, Any]:
         round(((float(disk.total) - float(disk.free)) / float(disk.total)) * 100.0, 1)
         if disk.total else 0.0
     )
-    thermal = collect_thermal_snapshot()
+    thermal = _cached_thermal_snapshot()
 
     if disk.percent >= 92 or (load_per_core is not None and load_per_core >= 2.0):
         health = "degraded"
@@ -468,6 +468,29 @@ def collect_thermal_snapshot() -> Dict[str, Any]:
     if current_platform == "Darwin":
         return _collect_macos_thermal_snapshot()
     return _thermal_unavailable(f"unsupported platform: {current_platform or 'unknown'}")
+
+
+_THERMAL_CACHE_LOCK = threading.Lock()
+_THERMAL_CACHE: tuple[float, Dict[str, Any]] | None = None
+_THERMAL_CACHE_TTL_SECONDS = 30.0
+
+
+def _cached_thermal_snapshot() -> Dict[str, Any]:
+    """Share one thermal reading across the system-snapshot polls.
+
+    The macOS backend forks ``powermetrics`` with a 1 s sample. Every open
+    tab polls ``/api/local/system``, so an uncached read forks a sampler per
+    request. Thermal pressure moves on a scale of tens of seconds; the lock
+    makes concurrent pollers wait for the one in-flight reading instead of
+    each starting their own.
+    """
+    global _THERMAL_CACHE
+    with _THERMAL_CACHE_LOCK:
+        if _THERMAL_CACHE and time.monotonic() - _THERMAL_CACHE[0] < _THERMAL_CACHE_TTL_SECONDS:
+            return dict(_THERMAL_CACHE[1])
+        snapshot = collect_thermal_snapshot()
+        _THERMAL_CACHE = (time.monotonic(), snapshot)
+        return dict(snapshot)
 
 
 _PROVIDER_USAGE_CATALOG_LOCK = threading.Lock()
@@ -784,6 +807,7 @@ def _candidates_enabled() -> bool:
 _STATUS_CACHE_LOCK = threading.Lock()
 _STATUS_CACHE: tuple[float, Dict[str, Any]] | None = None
 _STATUS_CACHE_TTL_SECONDS = 2.0
+_STATUS_LIVE_WINDOW_SECONDS = 300
 
 
 def _gateway_process_start_time(pid: int) -> Optional[int]:
@@ -871,8 +895,19 @@ def _collect_status_payload_uncached() -> Dict[str, Any]:
         sessions_dir = _get_hermes_home() / 'sessions'
         if sessions_dir.exists():
             now = time.time()
+            live_cutoff = now - _STATUS_LIVE_WINDOW_SECONDS
             for entry in os.scandir(sessions_dir):
                 if entry.is_file() and entry.name.endswith('.json'):
+                    # A session file is rewritten whenever its activity
+                    # changes, so one untouched for the whole live window
+                    # cannot be live. Skipping it by mtime avoids re-reading
+                    # and parsing every legacy transcript and request dump
+                    # (GBs on long-lived hosts) on each status poll.
+                    try:
+                        if entry.stat().st_mtime < live_cutoff:
+                            continue
+                    except OSError:
+                        continue
                     try:
                         data = json.loads(open(entry.path).read())
                         ended = data.get('ended_at')
@@ -880,7 +915,7 @@ def _collect_status_payload_uncached() -> Dict[str, Any]:
                             data.get('last_active', 0),
                             data.get('started_at', 0),
                         )
-                        if ended is None and (now - last_active) < 300:
+                        if ended is None and (now - last_active) < _STATUS_LIVE_WINDOW_SECONDS:
                             active_sessions += 1
                     except Exception:
                         pass
