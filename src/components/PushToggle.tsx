@@ -5,8 +5,8 @@ import { useI18n } from '../lib/i18n';
 import { getPushState, pushSupported, subscribeToPush, unsubscribeFromPush, type PushSubscriptionState } from '../lib/push-client';
 
 /**
- * Push notifications control. States the two options instead of a switch, the
- * same way the theme and language rows do. Enabling requests permission and
+ * Push notifications control. Expanded rows offer two options; the compact
+ * sidebar uses a single icon toggle. Enabling requests permission and
  * registers the subscription with the backend so Hermes responses can arrive as
  * system notifications while the app is in the background or closed.
  */
@@ -49,6 +49,18 @@ export function PushToggle() {
 
   return (
     <div className="push-toggle side-action-button" role="group" aria-label={title} title={title}>
+      <button
+        type="button"
+        className={`sidebar-preference-compact ${subscribed ? 'is-active' : ''}`.trim()}
+        onClick={() => void activate(!subscribed)}
+        disabled={disabled}
+        aria-pressed={subscribed}
+        aria-label={title}
+        title={title}
+      >
+        {busy ? <Loader2 size={16} className="chat-spin" aria-hidden />
+          : subscribed ? <Bell size={16} aria-hidden /> : <BellOff size={16} aria-hidden />}
+      </button>
       <span className="push-toggle-label">
         {busy ? (
           <Loader2 size={16} className="chat-spin" aria-hidden />

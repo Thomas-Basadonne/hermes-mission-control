@@ -240,6 +240,12 @@ def main():
                     assert evaluate('window.__pushRegisterCalls') == 1, 'disabled Push must not start a subscription'
                     screenshot(f'sidebar-push-{mode}')
                     check(f'{mode}: preferences retain three rows; Push is off, disabled and non-interactive')
+                    click_selector('.desktop-sidebar-toggle')
+                    assert evaluate("document.querySelector('.push-toggle .sidebar-preference-compact')?.disabled === true && document.querySelector('.push-toggle').getBoundingClientRect().height === 44"), f'{mode}: collapsed Push must remain a disabled single icon'
+                    evaluate("document.querySelector('.push-toggle .sidebar-preference-compact').click()")
+                    assert evaluate('window.__pushRegisterCalls') == 1, f'{mode}: disabled compact Push must not subscribe'
+                    click_selector('.desktop-sidebar-toggle')
+                    check(f'{mode}: collapsed Push is a disabled icon and cannot subscribe')
 
                 assert_disabled_push('loading')
                 loading_height = evaluate("document.querySelector('.side-menu-preferences').getBoundingClientRect().height")
@@ -480,13 +486,118 @@ def main():
                         && [...b.querySelectorAll('.palette-open-label, kbd')].every(el => el.getBoundingClientRect().width === 0);
                 })()'''), 'collapsed opener must be a named 44x44 icon-only control'
                 assert evaluate('''(() => {
-                    const controls = [...document.querySelectorAll('.side-menu-actions button')];
-                    return controls.length === 8 && controls.every(el => {
+                    const controls = [...document.querySelectorAll('.side-menu-actions button')].filter(el => el.getClientRects().length);
+                    return controls.length === 5 && controls.every(el => {
                         const r = el.getBoundingClientRect();
-                        return r.width === 44 && r.height === 44 && !!el.getAttribute('aria-label');
+                        return r.width === 44 && r.height === 44 && !!el.getAttribute('aria-label')
+                            && el.innerText.trim() === '' && el.querySelector('svg')?.getBoundingClientRect().width > 0;
                     }) && document.querySelector('.sidebar-version').getBoundingClientRect().width === 0
+                        && [...document.querySelectorAll('.side-menu-preferences > div')].every(el => el.getBoundingClientRect().height === 44)
                         && [...document.querySelectorAll('.theme-toggle-label, .lang-toggle-label, .push-toggle-label, .lock-label')].every(el => el.getBoundingClientRect().width === 0);
-                })()'''), 'collapsed actions must keep every option named and 44x44 with row labels and version hidden'
+                })()'''), 'collapsed actions must expose five named 44x44 icon-only buttons: one per function, not stacked options'
+                check('collapsed sidebar exposes exactly one icon-only 44x44 button per action, not stacked options')
+                # The production selectors call the fixture store; record and render
+                # its updates so the second click exercises the newly selected state.
+                evaluate('''(() => {
+                    window.__originalSetTheme = window.__mcFixtureStore.setTheme;
+                    window.__compactThemes = [];
+                    window.__mcFixtureStore.setTheme = theme => {
+                        window.__compactThemes.push(theme);
+                        window.__mcFixtureStore.resolvedTheme = theme;
+                        document.documentElement.dataset.theme = theme;
+                        window.mountShell(window.__mcShellOptions);
+                    };
+                    window.__mcFixtureStore.setTheme('dark');
+                    window.__compactThemes = [];
+                })()''')
+                wait("document.querySelector('.theme-toggle .sidebar-preference-compact').getAttribute('aria-pressed') === 'true'", 'compact theme probe must start in dark mode')
+                click_selector('.theme-toggle .sidebar-preference-compact')
+                wait("document.querySelector('.theme-toggle .sidebar-preference-compact').getAttribute('aria-pressed') === 'false'", 'compact theme icon must switch to light')
+                driver.call('Input.dispatchMouseEvent', type='mouseMoved', x=500, y=100)
+                time.sleep(0.35)  # Measure settled light-theme colors, not the dark-to-light transition.
+                contrast = evaluate('''(() => {
+                    const style = getComputedStyle(document.querySelector('.theme-toggle .sidebar-preference-compact'));
+                    const luminance = color => {
+                        const channels = color.match(/[0-9.]+/g).slice(0, 3).map(value => {
+                            const c = Number(value) / 255;
+                            return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+                        });
+                        return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+                    };
+                    const a = luminance(style.color), b = luminance(style.backgroundColor);
+                    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+                })()''')
+                assert contrast >= 3, f'compact light-theme icon contrast must be at least 3:1, got {contrast:.2f}:1'
+                report['compact_light_icon_contrast'] = contrast
+                check('compact icon contrast in light theme is at least 3:1')
+                assert evaluate("document.querySelector('.theme-toggle .sidebar-preference-compact').getAttribute('aria-label') === 'Dark theme'"), 'compact theme toggle must have a stable state label, not an inverse action paired with pressed'
+                click_selector('.theme-toggle .sidebar-preference-compact')
+                wait("document.querySelector('.theme-toggle .sidebar-preference-compact').getAttribute('aria-pressed') === 'true'", 'compact theme icon must switch back to dark')
+                assert evaluate('window.__compactThemes') == ['light', 'dark'], 'one compact theme click must request exactly one opposite theme'
+                evaluate('window.__mcFixtureStore.setTheme = window.__originalSetTheme; delete window.__originalSetTheme')
+                check('compact theme icon alternates light/dark once per click and reflects the current state')
+                click_selector('.lang-toggle .sidebar-preference-compact')
+                wait('document.querySelector(".lang-toggle .sidebar-preference-compact").title === "Passa all\'inglese"', 'compact language must switch to Italian')
+                assert evaluate("document.querySelector('.lang-toggle-option:last-child').getAttribute('aria-pressed') === 'true'"), 'expanded language options must share compact state'
+                click_selector('.lang-toggle .sidebar-preference-compact')
+                wait("document.querySelector('.lang-toggle-option:first-child').getAttribute('aria-pressed') === 'true'", 'compact language must switch back to English')
+                check('compact language icon alternates EN/IT and shares state with the expanded segments')
+                # Stub only browser permission/subscription boundaries. Requests go
+                # to this fixture's synthetic API, with cross-origin fetch forbidden.
+                evaluate('''(() => {
+                    window.__compactPushRegister = navigator.serviceWorker.register;
+                    window.__compactPermission = Notification.requestPermission;
+                    window.__compactPushCalls = {subscribe: 0, unsubscribe: 0};
+                    window.__compactSubscription = null;
+                    Notification.requestPermission = async () => 'granted';
+                    navigator.serviceWorker.register = async () => ({pushManager: {
+                        getSubscription: async () => window.__compactSubscription,
+                        subscribe: () => {
+                            window.__compactPushCalls.subscribe++;
+                            return new Promise(resolve => { window.__resolveCompactSubscribe = () => {
+                                window.__compactSubscription = {
+                                    endpoint: 'https://push.invalid/synthetic',
+                                    toJSON: () => ({endpoint: 'https://push.invalid/synthetic', keys: {}}),
+                                    unsubscribe: async () => { window.__compactPushCalls.unsubscribe++; window.__compactSubscription = null; return true; },
+                                };
+                                resolve(window.__compactSubscription);
+                            }; });
+                        },
+                    }});
+                })()''')
+                click_selector('.push-toggle .sidebar-preference-compact')
+                wait('!!window.__resolveCompactSubscribe', 'compact Push must start one browser subscription')
+                assert evaluate("document.querySelector('.push-toggle .sidebar-preference-compact').disabled && !!document.querySelector('.push-toggle .sidebar-preference-compact .chat-spin')"), 'busy compact Push must disable its icon and show its spinner'
+                evaluate("document.querySelector('.push-toggle .sidebar-preference-compact').click()")
+                assert evaluate('window.__compactPushCalls.subscribe') == 1, 'busy compact Push must reject duplicate clicks'
+                evaluate('window.__resolveCompactSubscribe()')
+                wait("document.querySelector('.push-toggle .sidebar-preference-compact').getAttribute('aria-pressed') === 'true' && !document.querySelector('.push-toggle .sidebar-preference-compact').disabled", 'compact Push icon must become subscribed')
+                assert evaluate("document.querySelectorAll('.push-toggle-option')[1].getAttribute('aria-pressed') === 'true'"), 'expanded Push options must share compact state'
+                click_selector('.push-toggle .sidebar-preference-compact')
+                wait("document.querySelector('.push-toggle .sidebar-preference-compact').getAttribute('aria-pressed') === 'false' && !document.querySelector('.push-toggle .sidebar-preference-compact').disabled", 'compact Push icon must unsubscribe')
+                assert evaluate('window.__compactPushCalls') == {'subscribe': 1, 'unsubscribe': 1}, 'one compact click per direction must perform exactly one operation'
+                evaluate('navigator.serviceWorker.register = window.__compactPushRegister; Notification.requestPermission = window.__compactPermission')
+                check('compact Push icon subscribes/unsubscribes once per click, shares expanded state and blocks busy duplicates')
+                # Keyboard activation must reach the same compact action.
+                evaluate("document.querySelector('.lang-toggle .sidebar-preference-compact').focus()")
+                driver.call('Input.dispatchKeyEvent', type='keyDown', key='Enter', code='Enter', text='\r')
+                driver.call('Input.dispatchKeyEvent', type='keyUp', key='Enter', code='Enter')
+                wait("document.querySelector('.lang-toggle-option:last-child').getAttribute('aria-pressed') === 'true'", 'Enter must activate the focused compact icon')
+                click_selector('.lang-toggle .sidebar-preference-compact')
+                wait("document.querySelector('.lang-toggle-option:first-child').getAttribute('aria-pressed') === 'true'", 'restore English after keyboard probe')
+                check('compact icon buttons are reachable through native keyboard activation')
+                evaluate('window.__mcFixtureStore.authRequired = true; window.mountShell(window.__mcShellOptions)')
+                wait("!!document.querySelector('.auth-overlay .auth-theme-toggle')", 'locked fixture must render the shared theme selector')
+                assert evaluate('''(() => {
+                    const theme = document.querySelector('.auth-theme-toggle');
+                    return document.querySelector('.layout-frame').classList.contains('is-collapsed')
+                        && [...theme.querySelectorAll('.theme-toggle-option')].every(el => el.getClientRects().length > 0)
+                        && theme.querySelector('.sidebar-preference-compact').getClientRects().length === 0;
+                })()'''), 'collapsed sidebar must not hide the theme options in the independent auth overlay'
+                screenshot('auth-theme-with-collapsed-sidebar')
+                evaluate('window.__mcFixtureStore.authRequired = false; window.mountShell(window.__mcShellOptions)')
+                wait("!document.querySelector('.auth-overlay')", 'locked fixture must be reset without submitting credentials')
+                check('collapsed sidebar leaves the auth overlay theme options visible and its compact button hidden')
                 click_selector('.palette-open-button')
                 wait("!!document.querySelector('.navigation-palette')", 'collapsed opener did not open palette')
                 press_escape()

@@ -452,6 +452,7 @@ body.modal-open .route-page-scroll {
 
 .sidebar-preference-icon { display: none; }
 .side-menu-actions .sidebar-preference-icon { display: block; flex-shrink: 0; }
+.sidebar-preference-compact { display: none; }
 
 /* Every row is its own pill and shares one rhythm with the palette opener above it. */
 .side-menu-actions .side-action-button,
@@ -3314,12 +3315,39 @@ body.modal-open .route-page-scroll {
     padding: 0;
   }
 
-  .layout-frame.is-collapsed .push-toggle-track,
-  .layout-frame.is-collapsed .theme-toggle-track,
-  .layout-frame.is-collapsed .lang-toggle-track {
-    grid-template-columns: 1fr;
+  .layout-frame.is-collapsed .side-menu-actions .push-toggle-track,
+  .layout-frame.is-collapsed .side-menu-actions .theme-toggle-track,
+  .layout-frame.is-collapsed .side-menu-actions .lang-toggle-track {
+    display: none;
+  }
+
+  .layout-frame.is-collapsed .side-menu-actions .sidebar-preference-compact {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 44px;
-    gap: 0.375rem;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 12px;
+    background: var(--color-surface-raised);
+    color: var(--color-text);
+    cursor: pointer;
+  }
+
+  .layout-frame.is-collapsed .side-menu-actions .sidebar-preference-compact:hover {
+    background: color-mix(in srgb, var(--color-text) 5%, var(--color-surface-raised));
+  }
+
+  .layout-frame.is-collapsed .side-menu-actions .sidebar-preference-compact.is-active {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+  }
+
+  .layout-frame.is-collapsed .side-menu-actions .sidebar-preference-compact:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
   }
 
   .layout-frame.is-collapsed .push-toggle-option,
