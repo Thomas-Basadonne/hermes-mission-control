@@ -65,9 +65,9 @@ export function AgentStatusBar() {
 
         {/* Model */}
         <div className="agent-status-model flex items-center gap-1.5 min-w-0 max-w-full">
-          <span className="sr-only min-[641px]:not-sr-only text-xs text-text-muted shrink-0">{t('statusbar.model')}</span>
+          <span className="sr-only min-[640px]:not-sr-only text-xs text-text-muted shrink-0">{t('statusbar.model')}</span>
           <code
-            className="min-w-0 flex-1 text-xs font-mono bg-surface-raised px-1.5 py-0.5 rounded text-text truncate min-[641px]:flex-none min-[641px]:max-w-[260px] md:max-w-none"
+            className="min-w-0 flex-1 text-xs font-mono bg-surface-raised px-1.5 py-0.5 rounded text-text truncate min-[640px]:flex-none min-[640px]:max-w-[260px] md:max-w-none"
             title={snapshot.activeModel}
           >
             {snapshot.activeModel}

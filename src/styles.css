@@ -391,7 +391,7 @@ body.modal-open .route-page-scroll {
 .agent-status-count { grid-area: count; justify-self: end; }
 .agent-status-separator { display: none; }
 
-@media (min-width: 641px) {
+@media (min-width: 640px) {
   .agent-status-layout { display: flex; flex-wrap: wrap; }
   .agent-status-count { margin-left: auto; }
   .agent-status-separator { display: block; }
@@ -3339,9 +3339,6 @@ body.modal-open .route-page-scroll {
     align-items: center;
   }
 
-  .layout-frame.is-collapsed .sidebar-version {
-    display: none;
-  }
 
   .layout-frame.is-collapsed .push-toggle,
   .layout-frame.is-collapsed .theme-toggle,
