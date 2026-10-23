@@ -235,7 +235,7 @@ def main():
                 check('sidebar header contains only Mission Control and collapse; one version lives in the footer')
 
                 report['mobile_status'] = []
-                for width in (320, 390, 640):
+                for width in (320, 390, 639):
                     driver.call('Emulation.setDeviceMetricsOverride', width=width, height=800, deviceScaleFactor=1, mobile=True)
                     driver.call('Emulation.setTouchEmulationEnabled', enabled=True)
                     for name in ('Primary Agent', 'Primary Agent with a deliberately long display name'):
@@ -258,6 +258,59 @@ def main():
                         assert model['right'] <= count['x'] and model['width'] > 170 and geometry['scroll'] <= width, geometry
                         screenshot(f'overview-mobile-{width}-' + ('long' if len(name) > 20 else 'normal'))
                     check(f'{width}px: identity/status and model/count occupy two deliberate rows, including long names')
+
+                # The mobile boundary is 640px inclusive, so the desktop flex row
+                # must already be in place at exactly 640px: same line for every
+                # item, visible separators and the agent count pinned to the end.
+                report['breakpoint_status'] = []
+                driver.call('Emulation.setDeviceMetricsOverride', width=640, height=800, deviceScaleFactor=1, mobile=True)
+                driver.call('Emulation.setTouchEmulationEnabled', enabled=True)
+
+                def row_center(box):
+                    return box['y'] + box['height'] / 2
+
+                for name, single_row in (('Primary Agent', True),
+                                         ('Primary Agent with a deliberately long display name', False)):
+                    evaluate(f'window.__mcPrimaryName = {json.dumps(name)}; window.dispatchEvent(new Event("focus"))')
+                    wait(f'!!document.querySelector("[title=" + CSS.escape({json.dumps(name)}) + "]")', 'identity refresh must settle')
+                    desktop = evaluate('''(() => {
+                        const layout = document.querySelector('.agent-status-layout');
+                        const identity = [...document.querySelectorAll('[title]')].find(el => el.title === window.__mcPrimaryName);
+                        const model = [...document.querySelectorAll('code')].find(el => el.title === window.__mcFixtureStore.snapshot.activeModel);
+                        const status = [...document.querySelectorAll('span.rounded-full')].find(el => el.textContent.trim() === 'Thinking');
+                        const count = [...document.querySelectorAll('span')].find(el => el.textContent.trim() === '1 agent');
+                        const box = el => { const r = el.getBoundingClientRect(); return { x:r.x, y:r.y, right:r.right, bottom:r.bottom, width:r.width, height:r.height }; };
+                        const separators = [...document.querySelectorAll('.agent-status-separator')]
+                            .filter(el => el.getClientRects().length > 0).map(box);
+                        return { width: innerWidth, display: getComputedStyle(layout).display, layout: box(layout),
+                            identity: box(identity), model: box(model), status: box(status), count: box(count),
+                            separators, scroll: document.documentElement.scrollWidth, name: identity.textContent };
+                    })()''')
+                    report['breakpoint_status'].append(desktop)
+                    assert desktop['display'] == 'flex', desktop
+                    assert len(desktop['separators']) == 2, desktop
+                    assert all(abs(separator['width'] - 1) < 0.6 for separator in desktop['separators']), desktop
+                    assert desktop['identity']['right'] <= desktop['model']['x'], desktop
+                    assert desktop['status']['right'] <= desktop['count']['x'], desktop
+                    assert abs(desktop['count']['right'] - desktop['layout']['right']) <= 1, desktop
+                    assert desktop['model']['width'] > 170, desktop
+                    assert desktop['scroll'] <= 640, desktop
+                    if single_row:
+                        # The short identity fits next to the uncapped model, so the
+                        # desktop toolbar stays on one line instead of wrapping.
+                        assert all(abs(row_center(desktop[left]) - row_center(desktop[right])) < 3
+                                   for left, right in (('identity', 'model'), ('model', 'status'), ('status', 'count'))), desktop
+                    else:
+                        # A long identity legitimately wraps the desktop toolbar onto a
+                        # second line; the wrap must stay inside the layout, keep the
+                        # model uncapped and leave the agent count pinned to the right.
+                        assert desktop['count']['y'] >= desktop['model']['bottom'] - 1, desktop
+                        assert abs(row_center(desktop['status']) - row_center(desktop['count'])) < 3, desktop
+                        assert desktop['model']['right'] <= desktop['layout']['right'] + 0.5, desktop
+                        assert desktop['status']['x'] >= desktop['layout']['x'] - 0.5, desktop
+                    screenshot('overview-breakpoint-640-' + ('long' if not single_row else 'normal'))
+                check('640px: desktop flex row with visible separators and the agent count pinned to the end, wrapping safely on a long name')
+
                 driver.call('Emulation.setTouchEmulationEnabled', enabled=False)
                 driver.call('Emulation.setDeviceMetricsOverride', width=1280, height=1000, deviceScaleFactor=1, mobile=False)
                 evaluate('window.__mcPrimaryName = "Primary Agent"; window.dispatchEvent(new Event("focus"))')
