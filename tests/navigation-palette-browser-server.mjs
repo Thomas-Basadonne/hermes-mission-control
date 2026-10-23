@@ -186,6 +186,9 @@ const server = createHttpServer(async (req, res) => {
     }
     if (path === '/api/auth/ws-ticket' && req.method === 'POST') return json(res, 200, { ticket: 'fixture-ticket' });
     if (path === '/api/local/client-diagnostics') return json(res, 200, { accepted: true });
+    // Push acceptance uses synthetic browser subscriptions, never real permission or delivery.
+    if (path === '/api/local/push/vapid-public-key') return json(res, 200, { publicKey: 'AQID' });
+    if (path === '/api/local/push/subscriptions' && ['POST', 'DELETE'].includes(req.method)) return json(res, 200, { accepted: true });
     // Every other reference endpoint answers "absent" rather than 401, so the
     // fixture store keeps authRequired false and the shell stays unlocked.
     return json(res, 404, { error: 'Unknown fixture route' });
